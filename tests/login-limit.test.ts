@@ -60,10 +60,18 @@ describe('login rate limit', () => {
 		expect(results.filter((wait) => wait === null)).toHaveLength(10);
 	});
 
-	test('the same account from another IP is still blocked', async () => {
+	test('a lockout from one IP does not block the owner on another', async () => {
 		const db = open();
-		for (let i = 0; i < 10; i++) await reserveLoginAttempt(db, loginKeys('203.0.113.7', 'ada@example.com'), start);
-		expect(await reserveLoginAttempt(db, loginKeys('198.51.100.9', 'ADA@example.com'), start)).not.toBeNull();
+		for (let i = 0; i < 15; i++) await reserveLoginAttempt(db, loginKeys('203.0.113.7', 'ada@example.com'), start);
+		expect(await reserveLoginAttempt(db, loginKeys('198.51.100.9', 'ADA@example.com'), start)).toBeNull();
+	});
+
+	test('guesses spread over many IPs still hit the account ceiling', async () => {
+		const db = open();
+		for (let i = 0; i < 100; i++) {
+			expect(await reserveLoginAttempt(db, loginKeys(`10.0.${Math.floor(i / 5)}.${i % 5}`, 'ada@example.com'), start)).toBeNull();
+		}
+		expect(await reserveLoginAttempt(db, loginKeys('198.51.100.9', 'ada@example.com'), start)).not.toBeNull();
 	});
 
 	test('a new window starts once the old one has passed', async () => {

@@ -58,7 +58,7 @@ For a full tour with screenshots of every screen, see **[docs/FEATURES.md](docs/
 
 - Multiple domains and multiple users. Each user has their own addresses and a default sending identity
 - Role addresses such as `postmaster@`, `abuse@`, and `billing@` can only be handed out by an admin
-- Sign-in is rate limited: 10 failures per account or 20 per IP lock that key out for 15 minutes
+- Sign-in is rate limited over 15 minutes: 10 tries per account from one IP, 20 per IP, and 100 per account across all IPs. One attacker cannot lock the owner out from elsewhere
 - Admins get a domain catch-all and a view of unrouted mail
 - Delivery status (delivered, bounced, complained) via Resend webhooks
 

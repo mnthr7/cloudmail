@@ -2,16 +2,20 @@ import type { D1Database } from '@cloudflare/workers-types';
 
 /** Failed sign-ins allowed per window before that key has to wait. */
 export const LOGIN_WINDOW_MS = 15 * 60 * 1000;
-const LIMITS = { ip: 20, account: 10 } as const;
+const LIMITS = { pair: 10, ip: 20, account: 100 } as const;
 
 export type LoginKey = { key: string; limit: number };
 
 /**
- * One key for the client and one for the account. The account key stops a
- * guess spread across many IPs; the IP key stops one client trying many accounts.
+ * Three keys, so a stranger can't cheaply lock out a real user:
+ * - account + IP (10): the brute-force brake, and it only blocks that client;
+ * - IP (20): one client trying many accounts;
+ * - account (100): a loose ceiling on guesses spread across many IPs.
  */
 export function loginKeys(ip: string | null, email: string): LoginKey[] {
-	const keys: LoginKey[] = [{ key: `account:${email.trim().toLowerCase()}`, limit: LIMITS.account }];
+	const account = email.trim().toLowerCase();
+	const keys: LoginKey[] = [{ key: `account:${account}`, limit: LIMITS.account }];
+	keys.push({ key: `pair:${ip ?? 'unknown'}|${account}`, limit: LIMITS.pair });
 	if (ip) keys.push({ key: `ip:${ip}`, limit: LIMITS.ip });
 	return keys;
 }
@@ -53,12 +57,12 @@ export async function reserveLoginAttempt(
 }
 
 /**
- * A correct password gives the attempt back: the account's count is cleared
- * and the IP's reserved attempt is refunded, so only failures accumulate.
+ * A correct password gives the attempt back: this client's count for the
+ * account is cleared, and the reserved attempt is refunded on the shared keys.
  */
 export async function releaseLoginAttempt(db: D1Database, keys: LoginKey[]): Promise<void> {
 	for (const { key } of keys) {
-		if (key.startsWith('account:')) {
+		if (key.startsWith('pair:')) {
 			await db.prepare('DELETE FROM login_failures WHERE key = ?').bind(key).run();
 		} else {
 			await db

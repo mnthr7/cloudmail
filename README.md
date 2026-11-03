@@ -355,7 +355,9 @@ If you forget the admin password:
 bun scripts/reset-admin-password.mjs you@example.com newpassword --local
 ```
 
-Drop `--local` to reset it in production.
+Drop `--local` to reset it in production, and add `--config wrangler.<name>.jsonc`
+if your live settings are in their own file. A reset signs that user out
+everywhere, and browsers trusted under the old password stop counting as trusted.
 
 ## How inbound mail is routed
 

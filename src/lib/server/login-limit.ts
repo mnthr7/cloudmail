@@ -3,7 +3,10 @@ import { createSessionToken, hashToken } from './crypto';
 
 /** Failed sign-ins allowed per window before that key has to wait. */
 export const LOGIN_WINDOW_MS = 15 * 60 * 1000;
-const LIMITS = { pair: 10, ip: 20, account: 20, device: 10 } as const;
+const LIMITS = { pair: 10, ip: 20, account: 20, device: 10, knownAccount: 50 } as const;
+
+/** Trusted browsers kept per account; signing in on another retires the oldest. */
+const MAX_DEVICES = 10;
 
 /** The cookie that marks a browser as one that has signed in to an account before. */
 export const DEVICE_COOKIE = 'cm_device';
@@ -16,8 +19,9 @@ export type LoginKey = { key: string; limit: number };
  * - IP (20): one client, or one IPv6 /64, trying many accounts;
  * - unknown device: account + IP (10) and the whole account across all IPs (20),
  *   which caps guessing however many machines join in;
- * - known device (`deviceHash`): only its own count (10). It skips the shared
- *   account count, so a flood of wrong passwords can't lock the owner out.
+ * - known device (`deviceHash`): its own count (10) and a looser count shared by
+ *   all of the account's known devices (50). It skips the tight account count,
+ *   so a flood of wrong passwords from unknown devices can't lock the owner out.
  */
 export function loginKeys(
 	rawIp: string | null,
@@ -27,7 +31,10 @@ export function loginKeys(
 	const ip = rawIp ? clientNetwork(rawIp) : null;
 	const account = email.trim().toLowerCase();
 	const keys: LoginKey[] = deviceHash
-		? [{ key: `device:${deviceHash}`, limit: LIMITS.device }]
+		? [
+				{ key: `device:${deviceHash}`, limit: LIMITS.device },
+				{ key: `known:${account}`, limit: LIMITS.knownAccount }
+			]
 		: [
 				{ key: `account:${account}`, limit: LIMITS.account },
 				{ key: `pair:${ip ?? 'unknown'}|${account}`, limit: LIMITS.pair }
@@ -36,7 +43,19 @@ export function loginKeys(
 	return keys;
 }
 
-/** The device's hash when its cookie belongs to this account, else null. */
+/** A fingerprint of the account's current password hash, or null for no such account. */
+async function credentialOf(db: D1Database, account: string): Promise<string | null> {
+	const row = await db
+		.prepare('SELECT password_hash FROM users WHERE email = ?')
+		.bind(account)
+		.first<{ password_hash: string }>();
+	return row ? hashToken(row.password_hash) : null;
+}
+
+/**
+ * The device's hash when its cookie belongs to this account and was issued
+ * under the account's current password, else null.
+ */
 export async function knownDevice(
 	db: D1Database,
 	token: string | undefined,
@@ -44,22 +63,41 @@ export async function knownDevice(
 	now: Date
 ): Promise<string | null> {
 	if (!token) return null;
+	const account = email.trim().toLowerCase();
 	const hash = await hashToken(token);
 	const since = new Date(now.getTime() - DEVICE_DAYS * 24 * 60 * 60 * 1000).toISOString();
 	const row = await db
-		.prepare('SELECT 1 AS ok FROM login_devices WHERE token_hash = ? AND account = ? AND created_at > ?')
-		.bind(hash, email.trim().toLowerCase(), since)
-		.first<{ ok: number }>();
-	return row ? hash : null;
+		.prepare(
+			'SELECT credential FROM login_devices WHERE token_hash = ? AND account = ? AND created_at > ?'
+		)
+		.bind(hash, account, since)
+		.first<{ credential: string }>();
+	if (!row) return null;
+	return row.credential === (await credentialOf(db, account)) ? hash : null;
 }
 
-/** Remember this browser for the account. Returns the cookie token to set. */
+/**
+ * Remember this browser for the account, under its current password. Keeps
+ * the newest few devices per account. Returns the cookie token to set.
+ */
 export async function rememberDevice(db: D1Database, email: string, now: Date): Promise<string> {
 	const token = createSessionToken();
 	const account = email.trim().toLowerCase();
+	const credential = await credentialOf(db, account);
+	if (!credential) throw new Error('No such account');
 	await db
-		.prepare('INSERT INTO login_devices (token_hash, account, created_at) VALUES (?, ?, ?)')
-		.bind(await hashToken(token), account, now.toISOString())
+		.prepare(
+			'INSERT INTO login_devices (token_hash, account, credential, created_at) VALUES (?, ?, ?, ?)'
+		)
+		.bind(await hashToken(token), account, credential, now.toISOString())
+		.run();
+	await db
+		.prepare(
+			`DELETE FROM login_devices WHERE account = ? AND (credential != ? OR token_hash NOT IN (
+				SELECT token_hash FROM login_devices WHERE account = ? ORDER BY created_at DESC LIMIT ?
+			))`
+		)
+		.bind(account, credential, account, MAX_DEVICES)
 		.run();
 	await db
 		.prepare('DELETE FROM login_devices WHERE created_at < ?')

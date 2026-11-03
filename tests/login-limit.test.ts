@@ -13,9 +13,16 @@ import {
 	reserveLoginAttempt
 } from '../src/lib/server/login-limit';
 
+let lastSqlite: Database;
+
 function open() {
 	const sqlite = new Database(':memory:');
 	sqlite.exec(readFileSync(path.join(import.meta.dir, '../migrations/0014_login_limit.sql'), 'utf8'));
+	sqlite.exec(
+		`CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE COLLATE NOCASE, password_hash TEXT NOT NULL)`
+	);
+	sqlite.run(`INSERT INTO users (id, email, password_hash) VALUES ('u1', 'ada@example.com', 'salt:hash-1')`);
+	lastSqlite = sqlite;
 	return adapt(sqlite);
 }
 
@@ -152,5 +159,45 @@ describe('trusted devices', () => {
 			expect(await reserveLoginAttempt(db, loginKeys(`10.2.${i}.1`, 'ada@example.com', device), start)).toBeNull();
 		}
 		expect(await reserveLoginAttempt(db, loginKeys('10.2.99.1', 'ada@example.com', device), start)).not.toBeNull();
+	});
+});
+
+describe('trusted device revocation', () => {
+	const start = new Date('2026-11-03T12:00:00Z');
+
+	test('changing the password retires every trusted device', async () => {
+		const db = open();
+		const token = await rememberDevice(db, 'ada@example.com', start);
+		expect(await knownDevice(db, token, 'ada@example.com', start)).not.toBeNull();
+		lastSqlite.run(`UPDATE users SET password_hash = 'salt2:hash-2' WHERE id = 'u1'`);
+		expect(await knownDevice(db, token, 'ada@example.com', start)).toBeNull();
+	});
+
+	test('an account keeps only its ten newest devices', async () => {
+		const db = open();
+		const tokens: string[] = [];
+		for (let i = 0; i < 12; i++) {
+			tokens.push(await rememberDevice(db, 'ada@example.com', new Date(start.getTime() + i * 1000)));
+		}
+		const later = new Date(start.getTime() + 60_000);
+		expect(await knownDevice(db, tokens[0], 'ada@example.com', later)).toBeNull();
+		expect(await knownDevice(db, tokens[1], 'ada@example.com', later)).toBeNull();
+		expect(await knownDevice(db, tokens[11], 'ada@example.com', later)).not.toBeNull();
+	});
+
+	test('all known devices together share a looser account limit', async () => {
+		const db = open();
+		const devices: (string | null)[] = [];
+		for (let i = 0; i < 10; i++) {
+			const token = await rememberDevice(db, 'ada@example.com', new Date(start.getTime() + i));
+			devices.push(await knownDevice(db, token, 'ada@example.com', start));
+		}
+		let allowed = 0;
+		for (let round = 0; round < 6; round++) {
+			for (const device of devices) {
+				if ((await reserveLoginAttempt(db, loginKeys(`10.9.${round}.1`, 'ada@example.com', device), start)) === null) allowed++;
+			}
+		}
+		expect(allowed).toBe(50);
 	});
 });

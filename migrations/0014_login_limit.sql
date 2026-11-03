@@ -6,11 +6,13 @@ CREATE TABLE IF NOT EXISTS login_failures (
 );
 
 -- Browsers that have signed in to an account before. Only a hash of the cookie
--- token is kept. A known device skips the shared per-account count, so a flood
--- of wrong passwords from elsewhere can't lock the owner out.
+-- token is kept. A known device skips the tight per-account count, so a flood
+-- of wrong passwords from elsewhere can't lock the owner out. `credential` is a
+-- fingerprint of the password hash at sign-in: a new password retires them all.
 CREATE TABLE IF NOT EXISTS login_devices (
 	token_hash TEXT PRIMARY KEY,
 	account TEXT NOT NULL,
+	credential TEXT NOT NULL,
 	created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_login_devices_account ON login_devices(account, created_at);

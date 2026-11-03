@@ -1,23 +1,94 @@
 import type { D1Database } from '@cloudflare/workers-types';
+import { createSessionToken, hashToken } from './crypto';
 
 /** Failed sign-ins allowed per window before that key has to wait. */
 export const LOGIN_WINDOW_MS = 15 * 60 * 1000;
-const LIMITS = { pair: 10, ip: 20, account: 100 } as const;
+const LIMITS = { pair: 10, ip: 20, account: 20, device: 10 } as const;
+
+/** The cookie that marks a browser as one that has signed in to an account before. */
+export const DEVICE_COOKIE = 'cm_device';
+export const DEVICE_DAYS = 180;
 
 export type LoginKey = { key: string; limit: number };
 
 /**
- * Three keys, so a stranger can't cheaply lock out a real user:
- * - account + IP (10): the brute-force brake, and it only blocks that client;
- * - IP (20): one client trying many accounts;
- * - account (100): a loose ceiling on guesses spread across many IPs.
+ * Which counts an attempt is held to:
+ * - IP (20): one client, or one IPv6 /64, trying many accounts;
+ * - unknown device: account + IP (10) and the whole account across all IPs (20),
+ *   which caps guessing however many machines join in;
+ * - known device (`deviceHash`): only its own count (10). It skips the shared
+ *   account count, so a flood of wrong passwords can't lock the owner out.
  */
-export function loginKeys(ip: string | null, email: string): LoginKey[] {
+export function loginKeys(
+	rawIp: string | null,
+	email: string,
+	deviceHash: string | null = null
+): LoginKey[] {
+	const ip = rawIp ? clientNetwork(rawIp) : null;
 	const account = email.trim().toLowerCase();
-	const keys: LoginKey[] = [{ key: `account:${account}`, limit: LIMITS.account }];
-	keys.push({ key: `pair:${ip ?? 'unknown'}|${account}`, limit: LIMITS.pair });
+	const keys: LoginKey[] = deviceHash
+		? [{ key: `device:${deviceHash}`, limit: LIMITS.device }]
+		: [
+				{ key: `account:${account}`, limit: LIMITS.account },
+				{ key: `pair:${ip ?? 'unknown'}|${account}`, limit: LIMITS.pair }
+			];
 	if (ip) keys.push({ key: `ip:${ip}`, limit: LIMITS.ip });
 	return keys;
+}
+
+/** The device's hash when its cookie belongs to this account, else null. */
+export async function knownDevice(
+	db: D1Database,
+	token: string | undefined,
+	email: string,
+	now: Date
+): Promise<string | null> {
+	if (!token) return null;
+	const hash = await hashToken(token);
+	const since = new Date(now.getTime() - DEVICE_DAYS * 24 * 60 * 60 * 1000).toISOString();
+	const row = await db
+		.prepare('SELECT 1 AS ok FROM login_devices WHERE token_hash = ? AND account = ? AND created_at > ?')
+		.bind(hash, email.trim().toLowerCase(), since)
+		.first<{ ok: number }>();
+	return row ? hash : null;
+}
+
+/** Remember this browser for the account. Returns the cookie token to set. */
+export async function rememberDevice(db: D1Database, email: string, now: Date): Promise<string> {
+	const token = createSessionToken();
+	const account = email.trim().toLowerCase();
+	await db
+		.prepare('INSERT INTO login_devices (token_hash, account, created_at) VALUES (?, ?, ?)')
+		.bind(await hashToken(token), account, now.toISOString())
+		.run();
+	await db
+		.prepare('DELETE FROM login_devices WHERE created_at < ?')
+		.bind(new Date(now.getTime() - DEVICE_DAYS * 24 * 60 * 60 * 1000).toISOString())
+		.run();
+	return token;
+}
+
+/**
+ * The unit an attacker can cheaply rotate through. IPv4 stays a single address;
+ * IPv6 is grouped by its /64, since one host is usually handed a whole /64.
+ */
+export function clientNetwork(ip: string): string {
+	const address = ip.trim().toLowerCase().replace(/^\[|\]$/g, '').split('%')[0] ?? '';
+	if (!address.includes(':')) return address;
+	const mapped = address.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+	if (mapped) return mapped[1];
+
+	const [head, tail = ''] = address.split('::');
+	const left = head ? head.split(':') : [];
+	const right = address.includes('::') && tail ? tail.split(':') : [];
+	const groups = address.includes('::')
+		? [...left, ...Array(Math.max(0, 8 - left.length - right.length)).fill('0'), ...right]
+		: left;
+	const prefix = groups
+		.slice(0, 4)
+		.map((group) => (group || '0').replace(/^0+(?=.)/, ''))
+		.join(':');
+	return `${prefix}::/64`;
 }
 
 /**
@@ -57,12 +128,12 @@ export async function reserveLoginAttempt(
 }
 
 /**
- * A correct password gives the attempt back: this client's count for the
- * account is cleared, and the reserved attempt is refunded on the shared keys.
+ * A correct password gives the attempt back: this client's or device's count
+ * is cleared, and the reserved attempt is refunded on the shared keys.
  */
 export async function releaseLoginAttempt(db: D1Database, keys: LoginKey[]): Promise<void> {
 	for (const { key } of keys) {
-		if (key.startsWith('pair:')) {
+		if (key.startsWith('pair:') || key.startsWith('device:')) {
 			await db.prepare('DELETE FROM login_failures WHERE key = ?').bind(key).run();
 		} else {
 			await db

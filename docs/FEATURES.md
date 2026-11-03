@@ -152,8 +152,9 @@ conversation opens as its own screen.
   address. Role addresses (`postmaster@`, `abuse@`, `billing@`, `support@`, …)
   can only be assigned by an admin.
 - **Sign-in protection.** Passwords are hashed with PBKDF2, sessions are random
-  tokens stored as hashes, and repeated failed sign-ins are slowed per client
-  and per account for 15 minutes, without letting a stranger lock you out.
+  tokens stored as hashes, and failed sign-ins are capped per account, per
+  client, and per network for 15 minutes. Browsers you've signed in with before
+  keep working while an account is under attack.
 - **Two mail providers.** Resend works with any DNS host. Cloudflare Email
   Service keeps everything on one Cloudflare account. Pick one per deploy; see
   the [README](../README.md#choose-a-mail-provider).

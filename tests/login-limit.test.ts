@@ -4,6 +4,9 @@ import type { D1Database } from '@cloudflare/workers-types';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import {
+	clientNetwork,
+	knownDevice,
+	rememberDevice,
 	LOGIN_WINDOW_MS,
 	loginKeys,
 	releaseLoginAttempt,
@@ -68,7 +71,7 @@ describe('login rate limit', () => {
 
 	test('guesses spread over many IPs still hit the account ceiling', async () => {
 		const db = open();
-		for (let i = 0; i < 100; i++) {
+		for (let i = 0; i < 20; i++) {
 			expect(await reserveLoginAttempt(db, loginKeys(`10.0.${Math.floor(i / 5)}.${i % 5}`, 'ada@example.com'), start)).toBeNull();
 		}
 		expect(await reserveLoginAttempt(db, loginKeys('198.51.100.9', 'ada@example.com'), start)).not.toBeNull();
@@ -89,5 +92,65 @@ describe('login rate limit', () => {
 			expect(await reserveLoginAttempt(db, keys, start)).toBeNull();
 			await releaseLoginAttempt(db, keys);
 		}
+	});
+});
+
+describe('clientNetwork', () => {
+	test('IPv6 addresses in one /64 share a key', () => {
+		expect(clientNetwork('2001:db8:abcd:12:1::5')).toBe('2001:db8:abcd:12::/64');
+		expect(clientNetwork('2001:0db8:abcd:0012:ffff:ffff:ffff:ffff')).toBe('2001:db8:abcd:12::/64');
+		expect(clientNetwork('[2001:db8::1]')).toBe('2001:db8:0:0::/64');
+		expect(clientNetwork('fe80::1%en0')).toBe('fe80:0:0:0::/64');
+	});
+
+	test('IPv4 and mapped IPv4 stay single addresses', () => {
+		expect(clientNetwork('203.0.113.7')).toBe('203.0.113.7');
+		expect(clientNetwork('::ffff:203.0.113.7')).toBe('203.0.113.7');
+	});
+
+	test('rotating through a /64 does not escape the per-client limit', async () => {
+		const db = open();
+		const start = new Date('2026-11-03T12:00:00Z');
+		const results: (number | null)[] = [];
+		for (let i = 1; i <= 11; i++) {
+			results.push(await reserveLoginAttempt(db, loginKeys(`2001:db8:1:2::${i.toString(16)}`, 'ada@example.com'), start));
+		}
+		expect(results.slice(0, 10).every((wait) => wait === null)).toBe(true);
+		expect(results[10]).not.toBeNull();
+	});
+});
+
+describe('trusted devices', () => {
+	const start = new Date('2026-11-03T12:00:00Z');
+
+	test('a flood from many IPs blocks new devices but not the owner\'s known one', async () => {
+		const db = open();
+		const token = await rememberDevice(db, 'Ada@example.com', start);
+		for (let i = 0; i < 25; i++) {
+			await reserveLoginAttempt(db, loginKeys(`10.1.${i}.1`, 'ada@example.com'), start);
+		}
+		expect(await reserveLoginAttempt(db, loginKeys('198.51.100.9', 'ada@example.com'), start)).not.toBeNull();
+
+		const device = await knownDevice(db, token, 'ada@example.com', start);
+		expect(device).not.toBeNull();
+		expect(await reserveLoginAttempt(db, loginKeys('198.51.100.9', 'ada@example.com', device), start)).toBeNull();
+	});
+
+	test('a device token only vouches for its own account and expires', async () => {
+		const db = open();
+		const token = await rememberDevice(db, 'ada@example.com', start);
+		expect(await knownDevice(db, token, 'eve@example.com', start)).toBeNull();
+		expect(await knownDevice(db, 'forged', 'ada@example.com', start)).toBeNull();
+		const later = new Date(start.getTime() + 181 * 24 * 60 * 60 * 1000);
+		expect(await knownDevice(db, token, 'ada@example.com', later)).toBeNull();
+	});
+
+	test('a known device still has its own limit', async () => {
+		const db = open();
+		const device = await knownDevice(db, await rememberDevice(db, 'ada@example.com', start), 'ada@example.com', start);
+		for (let i = 0; i < 10; i++) {
+			expect(await reserveLoginAttempt(db, loginKeys(`10.2.${i}.1`, 'ada@example.com', device), start)).toBeNull();
+		}
+		expect(await reserveLoginAttempt(db, loginKeys('10.2.99.1', 'ada@example.com', device), start)).not.toBeNull();
 	});
 });

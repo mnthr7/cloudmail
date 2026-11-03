@@ -1,7 +1,15 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
 import { login, logout, readSessionToken, sessionCookieOptions, SESSION_COOKIE } from '$lib/server/auth';
 import { SESSION_DAYS } from '$lib/server/constants';
-import { loginKeys, releaseLoginAttempt, reserveLoginAttempt } from '$lib/server/login-limit';
+import {
+	DEVICE_COOKIE,
+	DEVICE_DAYS,
+	knownDevice,
+	loginKeys,
+	releaseLoginAttempt,
+	rememberDevice,
+	reserveLoginAttempt
+} from '$lib/server/login-limit';
 
 export const POST: RequestHandler = async ({ request, cookies, platform, getClientAddress }) => {
 	const db = platform?.env.DB;
@@ -13,7 +21,8 @@ export const POST: RequestHandler = async ({ request, cookies, platform, getClie
 	}
 
 	const now = new Date();
-	const keys = loginKeys(clientAddress(getClientAddress), body.email);
+	const device = await knownDevice(db, cookies.get(DEVICE_COOKIE), body.email, now);
+	const keys = loginKeys(clientAddress(getClientAddress), body.email, device);
 	const wait = await reserveLoginAttempt(db, keys, now);
 	if (wait !== null) {
 		return json(
@@ -27,6 +36,10 @@ export const POST: RequestHandler = async ({ request, cookies, platform, getClie
 		return json({ error: 'Invalid email or password' }, { status: 401 });
 	}
 	await releaseLoginAttempt(db, keys);
+	if (!device) {
+		const token = await rememberDevice(db, body.email, now);
+		cookies.set(DEVICE_COOKIE, token, sessionCookieOptions(DEVICE_DAYS * 24 * 60 * 60));
+	}
 
 	cookies.set(SESSION_COOKIE, result.token, sessionCookieOptions(SESSION_DAYS * 24 * 60 * 60));
 

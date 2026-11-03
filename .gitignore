@@ -1,0 +1,41 @@
+node_modules
+
+# Output
+.output
+.vercel
+.netlify
+.wrangler
+worker-wrapper.js
+wrangler.deploy.jsonc
+/.svelte-kit
+/build
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.*
+!.env.example
+!.env.test
+
+# Vite
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+
+# Local secrets for wrangler dev
+.dev.vars
+
+# Isolated worktrees and subagent scratch
+.worktrees/
+.superpowers/
+
+# Live deploy configs (real D1 ids, routes) and local planning notes
+wrangler.*.jsonc
+docs/superpowers/
+
+# Local tool state
+.claude/
+.playwright-mcp/
+.remember/

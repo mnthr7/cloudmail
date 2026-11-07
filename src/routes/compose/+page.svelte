@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onDestroy, untrack } from 'svelte';
-	import { goto, replaceState } from '$app/navigation';
+	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
 	import Icon from '$lib/components/Icon.svelte';
 	import RichTextEditor from '$lib/components/RichTextEditor.svelte';
@@ -28,9 +28,9 @@
 
 	/** No signature is stored for an address until Settings saves one. */
 	function signatureFor(nextFrom: string | null | undefined): string | null {
-		const match = addresses.find((item) => item.address === nextFrom) as
-			| (MailAddress & { signature_html?: string | null })
-			| undefined;
+		const match = addresses.find((item) => item.address === nextFrom) as 
+			(MailAddress & { signature_html?: string | null }) |
+			undefined;
 		const value = match?.signature_html?.trim();
 		return value ? value : null;
 	}
@@ -77,7 +77,7 @@
 		const url = new URL($page.url);
 		if (url.searchParams.get('draft') === id) return;
 		url.searchParams.set('draft', id);
-		replaceState(url, $page.state);
+		goto(url, { shallow: true, replace: true, state: $page.state });
 	}
 
 	function markEdited() {
@@ -102,7 +102,7 @@
 					subject,
 					html,
 					text: isHtmlEmpty(html) ? '' : htmlToPlainText(html),
-					...(attachments.length > 0 ? { attachments } : {})
+					...attachments.length > 0 ? { attachments } : {}
 				})
 			});
 			const body = await res.json();
@@ -233,12 +233,16 @@
 			<button
 				type="button"
 				class="btn-ghost"
-				onclick={() => (showCopies = !showCopies)}
+				onclick={() => showCopies = !showCopies}
 				aria-expanded={showCopies}
+			>Cc/Bcc</button>
+
+			<button
+				type="button"
+				class="btn-ghost"
+				disabled={savingDraft || isEmpty || sending}
+				onclick={saveDraft}
 			>
-				Cc/Bcc
-			</button>
-			<button type="button" class="btn-ghost" disabled={savingDraft || isEmpty || sending} onclick={saveDraft}>
 				<Icon name="save-line" size={15} />
 				{savingDraft ? 'Saving…' : 'Save draft'}
 			</button>
@@ -325,13 +329,8 @@
 	</div>
 
 	<!-- Assigning HTML does not fire input. Only typing does. -->
-	<div class="mt-4" oninput={markEdited}>
-		<RichTextEditor bind:html minHeight={320} />
-	</div>
-
-	<div class="mt-4 px-1">
-		<AttachmentPicker bind:attachments />
-	</div>
+	<div class="mt-4" oninput={markEdited}><RichTextEditor bind:html minHeight={320} /></div>
+	<div class="mt-4 px-1"><AttachmentPicker bind:attachments /></div>
 
 	{#if error}
 		<p class="mt-3 text-sm text-[var(--color-danger)]">{error}</p>

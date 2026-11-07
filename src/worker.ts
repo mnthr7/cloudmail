@@ -9,6 +9,7 @@ import { scanPending } from './lib/server/attachment-scan';
 import { getEmailProvider } from './lib/server/context';
 import type { EmailProvider } from './lib/server/email-provider';
 import { expireActions } from './lib/server/agents-store';
+import { anthropicClient, runDueAgents } from './lib/server/agent-runner';
 import { deliverDue } from './lib/server/outbox-schedule';
 import { createVirusTotal } from './lib/server/virus-total';
 // Renamed from `_worker.js` by `scripts/wrap-cloudflare-worker.mjs` after `vite build`.
@@ -95,6 +96,12 @@ export default {
 			)
 		);
 		ctx.waitUntil(
+			runAgents(env).then(
+				() => undefined,
+				(error) => console.error('Failed to run agents', error)
+			)
+		);
+		ctx.waitUntil(
 			scanDueAttachments(env).then(
 				() => undefined,
 				(error) => console.error('Failed to scan attachments', error)
@@ -102,6 +109,12 @@ export default {
 		);
 	}
 };
+
+/** Agents only run once an Anthropic API key is set. Until then, their runs wait. */
+async function runAgents(env: Env): Promise<void> {
+	if (!env.ANTHROPIC_API_KEY || env.DEMO_MODE === 'true') return;
+	await runDueAgents(env.DB, anthropicClient(env.ANTHROPIC_API_KEY));
+}
 
 async function scanDueAttachments(env: Env): Promise<void> {
 	if (!env.VIRUSTOTAL_API_KEY || env.DEMO_MODE === 'true') return;

@@ -6,6 +6,7 @@ import {
 	type CategoryHeaders,
 	type MailCategory
 } from '#lib/organizing/categories.ts';
+import { enqueueMailRuns } from './agent-runs-store.ts';
 import { filterMatches, type FilterMail, type FilterRule } from '#lib/organizing/filters.ts';
 import { getUserById } from './auth';
 import { getDefaultAddress } from './domains';
@@ -119,6 +120,14 @@ export async function organizeInbound(
 
 	const forwards = await runFilters(db, userId, emailId, row, headers.hasAttachment);
 	await forwardFiledMail(db, userId, emailId, row, forwards, provider);
+
+	// Wake an agent watching this address (A5). Mail that was blocked or marked
+	// spam returned above. A failure here must not undo the filing.
+	try {
+		await enqueueMailRuns(db, userId, emailId, headers);
+	} catch (error) {
+		console.error('Failed to queue agent run', emailId, error);
+	}
 }
 
 /**

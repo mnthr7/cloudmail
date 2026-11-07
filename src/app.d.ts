@@ -20,6 +20,7 @@ declare global {
 				RESEND_WEBHOOK_SECRET: string;
 				/** VirusTotal public API key. Presence only is sent to the page. */
 				VIRUSTOTAL_API_KEY?: string;
+				ANTHROPIC_API_KEY?: string;
 				/** When set, first-run setup asks for this value. */
 				SETUP_TOKEN?: string;
 			};

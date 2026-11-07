@@ -8,6 +8,7 @@ import {
 	markThreadRead
 } from '#lib/server/mail-store.ts';
 import { displaySubject } from '#lib/server/threads.ts';
+import { askableAgents } from '#lib/server/agent-runs-store.ts';
 import { DEMO_MODE, DEMO_USER, generateDemoMessages, demoStore } from '#lib/server/demo.ts';
 
 export const load: PageServerLoad = async ({ params, locals, platform, url }) => {
@@ -43,7 +44,8 @@ export const load: PageServerLoad = async ({ params, locals, platform, url }) =>
 			isImportant: stored?.is_important ?? false,
 			category: stored?.category ?? 'primary',
 			labels: stored?.labels ?? [],
-			messages: messages.map((message) => ({ ...message, is_read: true }))
+			messages: messages.map((message) => ({ ...message, is_read: true })),
+			agents: [] as Array<{ id: string; name: string }>
 		};
 	}
 
@@ -62,6 +64,8 @@ export const load: PageServerLoad = async ({ params, locals, platform, url }) =>
 
 	const threadId = email.thread_id ?? email.id;
 	const labels = await listThreadLabels(platform.env.DB, locals.user.id, threadId);
+	// Agents this user may ask for help here. A lookup failure only hides the button.
+	const agents = await askableAgents(platform.env.DB, locals.user.id).catch(() => []);
 
 	return {
 		threadId,
@@ -75,6 +79,7 @@ export const load: PageServerLoad = async ({ params, locals, platform, url }) =>
 		isImportant: email.is_important === 1,
 		category: isMailCategory(email.category) ? email.category : 'primary',
 		labels,
-		messages: messages.map((message) => ({ ...message, is_read: true }))
+		messages: messages.map((message) => ({ ...message, is_read: true })),
+		agents: agents.map((agent) => ({ id: agent.id, name: agent.name }))
 	};
 };

@@ -9,7 +9,13 @@
 		type AutonomyLevel,
 		type Capability
 	} from '#lib/agents/capabilities.ts';
-	import type { AgentDefinition } from '#lib/agents/definition.ts';
+	import {
+		AGENT_MODEL_LABELS,
+		AGENT_MODELS,
+		DEFAULT_MONTHLY_BUDGET_CENTS,
+		type AgentDefinition,
+		type AgentModel
+	} from '#lib/agents/definition.ts';
 	import type { AgentStatus } from '#lib/agents/policy.ts';
 	import type { PageData } from './$types';
 
@@ -23,6 +29,10 @@
 		sendAs: string[];
 		recipientKind: 'thread' | 'domains';
 		domains: string;
+		watch: string[];
+		model: AgentModel;
+		/** Dollars, as typed. */
+		budget: string;
 	};
 
 	function blankDraft(): Draft {
@@ -32,7 +42,18 @@
 			levels[capability] = CAPABILITY_TRAITS[capability].defaultLevel;
 			limits[capability] = '';
 		}
-		return { name: '', job: '', levels, limits, sendAs: [], recipientKind: 'thread', domains: '' };
+		return {
+			name: '',
+			job: '',
+			levels,
+			limits,
+			sendAs: [],
+			recipientKind: 'thread',
+			domains: '',
+			watch: [],
+			model: AGENT_MODELS[0],
+			budget: String(DEFAULT_MONTHLY_BUDGET_CENTS / 100)
+		};
 	}
 
 	function draftFrom(name: string, definition: AgentDefinition): Draft {
@@ -45,6 +66,9 @@
 			draft.limits[capability] = setting?.dailyLimit === undefined ? '' : String(setting.dailyLimit);
 		}
 		draft.sendAs = [...definition.scope.sendAs];
+		draft.watch = [...definition.triggers.watch];
+		draft.model = definition.model;
+		draft.budget = String(definition.monthlyBudgetCents / 100);
 		if (definition.scope.recipients.kind === 'domains') {
 			draft.recipientKind = 'domains';
 			draft.domains = definition.scope.recipients.domains.join(', ');
@@ -57,6 +81,9 @@
 	/** Send-as addresses the agent had when the form opened, so ones the editor can't grant stay visible and untickable. */
 	let grantedSendAs = $state<string[]>([]);
 	const sendAsOptions = $derived([...new Set([...data.sendAs, ...grantedSendAs])].sort());
+	/** Same rule for watched addresses. */
+	let grantedWatch = $state<string[]>([]);
+	const watchOptions = $derived([...new Set([...data.sendAs, ...grantedWatch])].sort());
 	let formOpen = $state(false);
 	let saving = $state(false);
 	let formError = $state('');
@@ -71,13 +98,18 @@
 		level: 'Pick a setting for every capability.',
 		limit: 'Daily limits must be whole numbers from 0 to 10,000.',
 		scope: 'Check the send-as addresses and domains.',
-		send_as: 'You can only let it send from addresses you could send from yourself.'
+		send_as: 'You can only let it send from addresses you could send from yourself.',
+		watch: 'You can only let it watch addresses you could send from yourself.',
+		trigger: 'Check the addresses it watches.',
+		model: 'Pick a model.',
+		budget: 'The monthly budget must be from $0 to $1,000.'
 	};
 
 	function openHire() {
 		draft = blankDraft();
 		editingId = null;
 		grantedSendAs = [];
+		grantedWatch = [];
 		formError = '';
 		formOpen = true;
 	}
@@ -88,6 +120,7 @@
 		draft = draftFrom(agent.displayName, agent.definition);
 		editingId = id;
 		grantedSendAs = [...agent.definition.scope.sendAs];
+		grantedWatch = [...agent.definition.triggers.watch];
 		formError = '';
 		formOpen = true;
 	}
@@ -111,13 +144,21 @@
 			formError = 'Add at least one domain, or keep replies to the thread.';
 			return null;
 		}
+		const dollars = Number(draft.budget.trim().replace(/^\$/, ''));
+		if (!draft.budget.trim() || !Number.isFinite(dollars) || dollars < 0 || dollars > 1000) {
+			formError = FORM_ERRORS.budget;
+			return null;
+		}
 		return {
 			job: draft.job,
 			capabilities,
 			scope: {
 				sendAs: draft.sendAs,
 				recipients: draft.recipientKind === 'domains' ? { kind: 'domains', domains } : { kind: 'thread' }
-			}
+			},
+			triggers: { watch: draft.watch },
+			model: draft.model,
+			monthlyBudgetCents: Math.round(dollars * 100)
 		};
 	}
 
@@ -244,6 +285,69 @@
 		return text.length > 1500 ? `${text.slice(0, 1500)}…` : text;
 	}
 
+	async function rate(id: string, current: 'up' | 'down' | null, feedback: 'up' | 'down') {
+		listError = '';
+		busy = id;
+		try {
+			const res = await fetch(`/api/agents/actions/${id}/feedback`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				// Clicking the same thumb again takes it back.
+				body: JSON.stringify({ feedback: current === feedback ? null : feedback })
+			});
+			if (!res.ok) {
+				listError = 'Could not save that.';
+				return;
+			}
+			window.location.reload();
+		} catch {
+			listError = 'Network error';
+		} finally {
+			busy = null;
+		}
+	}
+
+	function dollars(micros: number): string {
+		return `$${(micros / 1_000_000).toFixed(2)}`;
+	}
+
+	const RUN_OUTCOMES: Record<string, string> = {
+		proposed: 'Made proposals',
+		nothing_to_do: 'Nothing to do',
+		already_proposed: 'Made proposals',
+		turn_limit: 'Stopped after 4 steps',
+		max_tokens: 'Answer was cut off',
+		refused: 'The model declined',
+		paused: 'Skipped: paused',
+		budget_reached: 'Skipped: monthly budget reached, so it was paused',
+		no_tools: 'Skipped: no actions switched on',
+		email_gone: 'Skipped: the message was deleted',
+		agent_gone: 'Skipped: agent removed',
+		api_key_invalid: 'Failed: the API key was rejected',
+		gave_up: 'Failed after 3 tries'
+	};
+
+	function runLabel(run: (typeof data.runs)[number]): string {
+		if (run.status === 'pending') return 'Waiting to run';
+		if (run.status === 'running') return 'Running';
+		if (run.outcome && RUN_OUTCOMES[run.outcome]) return RUN_OUTCOMES[run.outcome];
+		return run.status === 'failed' ? `Failed (${run.outcome ?? 'error'})` : (run.outcome ?? run.status);
+	}
+
+	function payloadText(payload: unknown): string {
+		if (!payload || typeof payload !== 'object') return preview(payload);
+		const raw = payload as Record<string, unknown>;
+		if (typeof raw.body === 'string') {
+			const to = Array.isArray(raw.to) && raw.to.length ? `To: ${raw.to.join(', ')}\n` : '';
+			return preview(`${to}${raw.body}`);
+		}
+		if (typeof raw.note === 'string') return preview(raw.note);
+		if (typeof raw.action === 'string') {
+			return raw.action === 'add_label' ? `Add the label "${raw.label}"` : raw.action.replace('_', ' ');
+		}
+		return preview(payload);
+	}
+
 	function when(iso: string | null): string {
 		return iso ? new Date(iso).toLocaleString() : '';
 	}
@@ -278,6 +382,16 @@
 		<div class="surface-lg banner">
 			<Icon name="information-line" size={16} />
 			<span>Agents aren't part of the demo.</span>
+		</div>
+	{/if}
+
+	{#if !data.demo && !data.agentsEnabled}
+		<div class="surface-lg banner">
+			<Icon name="information-line" size={16} />
+			<span>
+				Agents aren't connected to an AI model yet, so they don't run. Add an Anthropic API key to turn
+				them on. Anything they're asked to do waits until then.
+			</span>
 		</div>
 	{/if}
 
@@ -370,6 +484,45 @@
 			</fieldset>
 
 			<fieldset class="group">
+				<legend>Wakes up for</legend>
+				{#if watchOptions.length === 0}
+					<p class="card-hint">You have no addresses it could watch. You can still ask it on any thread.</p>
+				{:else}
+					<div class="checks">
+						{#each watchOptions as address (address)}
+							<label class="check">
+								<input type="checkbox" value={address} bind:group={draft.watch} />
+								<span>New mail to {address}</span>
+								{#if !data.sendAs.includes(address)}
+									<span class="item-sub">You can't grant this one any more. Untick it to save.</span>
+								{/if}
+							</label>
+						{/each}
+					</div>
+					<p class="card-hint">You can also ask it for help on any thread with "Ask an agent".</p>
+				{/if}
+			</fieldset>
+
+			<fieldset class="group">
+				<legend>Model and budget</legend>
+				<div class="model-row">
+					<label class="field">
+						<span>Model</span>
+						<select class="text-input" bind:value={draft.model}>
+							{#each AGENT_MODELS as model (model)}
+								<option value={model}>{AGENT_MODEL_LABELS[model]}</option>
+							{/each}
+						</select>
+					</label>
+					<label class="field">
+						<span>Monthly budget (USD)</span>
+						<input class="text-input" inputmode="decimal" bind:value={draft.budget} aria-label="Monthly budget in dollars" />
+					</label>
+				</div>
+				<p class="card-hint">Reaching the budget pauses the agent until next month or until you raise it.</p>
+			</fieldset>
+
+			<fieldset class="group">
 				<legend>Who it may email</legend>
 				<label class="check">
 					<input type="radio" value="thread" bind:group={draft.recipientKind} />
@@ -450,6 +603,82 @@
 	</section>
 
 	<section class="surface-lg card">
+		<h2><Icon name="eye-line" size={18} /> Would have done</h2>
+		{#if data.shadow.length === 0}
+			<p class="card-hint">
+				Nothing yet. When an agent in shadow mode proposes something, it shows here instead of happening.
+			</p>
+		{:else}
+			<p class="card-hint">Nothing here was carried out. Thumbs up or down tells you, over time, whether to trust it more.</p>
+			<ul class="list">
+				{#each data.shadow as action (action.id)}
+					<li class="item">
+						<div class="item-head">
+							<p class="item-title">{action.agentName} · {capabilityName(action.capability)}</p>
+							<span class="chip">{action.status === 'shadowed' ? 'Shadow' : 'Allowed, not run yet'}</span>
+						</div>
+						{#if action.reason}
+							<p class="item-sub">{action.reason}</p>
+						{/if}
+						<pre class="payload">{payloadText(action.payload)}</pre>
+						<div class="item-actions">
+							<span class="item-sub">{when(action.createdAt)}</span>
+							<button
+								type="button"
+								class="btn-ghost text-xs"
+								class:chosen={action.feedback === 'up'}
+								aria-pressed={action.feedback === 'up'}
+								aria-label="Good call"
+								disabled={busy === action.id}
+								onclick={() => rate(action.id, action.feedback, 'up')}
+							>
+								<Icon name="thumb-up-line" size={14} />
+							</button>
+							<button
+								type="button"
+								class="btn-ghost text-xs"
+								class:chosen={action.feedback === 'down'}
+								aria-pressed={action.feedback === 'down'}
+								aria-label="Wrong call"
+								disabled={busy === action.id}
+								onclick={() => rate(action.id, action.feedback, 'down')}
+							>
+								<Icon name="thumb-down-line" size={14} />
+							</button>
+						</div>
+					</li>
+				{/each}
+			</ul>
+		{/if}
+	</section>
+
+	{#if data.runs.length > 0}
+		<section class="surface-lg card">
+			<h2><Icon name="history-line" size={18} /> Activity</h2>
+			<ul class="list">
+				{#each data.runs as run (run.id)}
+					<li class="item">
+						<div class="item-head">
+							<div class="min-w-0">
+								<p class="item-title">
+									{run.agentName} · {run.triggerKind === 'ask' ? 'Asked on' : 'New mail'}
+									{#if run.subject}
+										<a href="/mail/{run.emailId}">{run.subject}</a>
+									{/if}
+								</p>
+								<p class="item-sub">{runLabel(run)} · {when(run.createdAt)}{run.costMicros ? ` · ${dollars(run.costMicros)}` : ''}</p>
+							</div>
+						</div>
+						{#if run.summary}
+							<p class="item-sub">{run.summary}</p>
+						{/if}
+					</li>
+				{/each}
+			</ul>
+		</section>
+	{/if}
+
+	<section class="surface-lg card">
 		<h2><Icon name="team-line" size={18} /> Agents</h2>
 		{#if data.agents.length === 0}
 			<p class="card-hint">No agents yet. Hire one to give it a job.</p>
@@ -476,6 +705,13 @@
 						</div>
 						<p class="job">{agent.definition.job}</p>
 						<p class="item-sub">{enabled(agent.definition)}</p>
+						<p class="item-sub">
+							{agent.definition.triggers.watch.length
+								? `Wakes up for mail to ${agent.definition.triggers.watch.join(', ')}`
+								: 'Wakes up only when asked'} · {AGENT_MODEL_LABELS[agent.definition.model]} · {dollars(
+								data.spend[agent.id] ?? 0
+							)} of {dollars(agent.definition.monthlyBudgetCents * 10_000)} this month
+						</p>
 						<div class="item-actions">
 							{#if agent.canManage}
 								<button type="button" class="btn-ghost text-xs" onclick={() => openEdit(agent.id)}>
@@ -528,6 +764,17 @@
 </div>
 
 <style>
+	.model-row {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+		gap: 0.75rem;
+	}
+
+	.chosen {
+		color: var(--tone-good-fg);
+		background: var(--tone-good-bg);
+	}
+
 	.page-head {
 		display: flex;
 		align-items: center;

@@ -78,9 +78,9 @@ const STATUS_FOR_OUTCOME: Record<PolicyDecision['outcome'], ActionStatus> = {
 	reject: 'rejected'
 };
 
-type HumanPrincipal = { id: string; workspace_id: string; user_id: string; is_admin: number };
+export type HumanPrincipal = { id: string; workspace_id: string; user_id: string; is_admin: number };
 
-async function humanPrincipalForUser(db: D1Database, userId: string): Promise<HumanPrincipal> {
+export async function humanPrincipalForUser(db: D1Database, userId: string): Promise<HumanPrincipal> {
 	const row = await db
 		.prepare(
 			`SELECT p.id, p.workspace_id, p.user_id, u.is_admin
@@ -94,7 +94,7 @@ async function humanPrincipalForUser(db: D1Database, userId: string): Promise<Hu
 }
 
 /** Addresses still owned by a human in the workspace. An agent can only send as one of these. */
-async function liveWorkspaceAddresses(db: D1Database, workspaceId: string): Promise<Map<string, string>> {
+export async function liveWorkspaceAddresses(db: D1Database, workspaceId: string): Promise<Map<string, string>> {
 	const { results } = await db
 		.prepare(
 			`SELECT LOWER(ad.address) AS address, ad.user_id FROM addresses ad
@@ -112,7 +112,7 @@ async function liveWorkspaceAddresses(db: D1Database, workspaceId: string): Prom
  * Checked on every proposal, so reassigning an address, demoting the author,
  * or deleting their account takes effect at once. Empty if the author is gone.
  */
-async function sendableForAuthor(
+export async function sendableForAuthor(
 	db: D1Database,
 	workspaceId: string,
 	workspaceAddresses: Map<string, string>,
@@ -133,20 +133,21 @@ async function sendableForAuthor(
 }
 
 /**
- * Whoever hires or edits an agent can only let it send as addresses they could
- * send as themselves: their own, or, for an admin, any human's address in the
- * workspace. Addresses already went through the claiming rules (reserved role
- * addresses are admin-only) when they were created.
+ * Whoever hires or edits an agent can only let it send as, or watch, addresses
+ * they could send as themselves: their own, or, for an admin, any human's
+ * address in the workspace. Addresses already went through the claiming rules
+ * (reserved role addresses are admin-only) when they were created. Watching
+ * means reading that mail, so it takes the same standing as sending from it.
  */
 async function assertSendAsAllowed(db: D1Database, human: HumanPrincipal, definition: AgentDefinition) {
-	if (definition.scope.sendAs.length === 0) return;
+	if (definition.scope.sendAs.length === 0 && definition.triggers.watch.length === 0) return;
 	const owned = await liveWorkspaceAddresses(db, human.workspace_id);
-	for (const address of definition.scope.sendAs) {
+	const allowed = (address: string) => {
 		const owner = owned.get(address);
-		if (!owner || (owner !== human.user_id && human.is_admin !== 1)) {
-			throw new AgentDefinitionError('send_as');
-		}
-	}
+		return !!owner && (owner === human.user_id || human.is_admin === 1);
+	};
+	if (!definition.scope.sendAs.every(allowed)) throw new AgentDefinitionError('send_as');
+	if (!definition.triggers.watch.every(allowed)) throw new AgentDefinitionError('watch');
 }
 
 export async function createAgent(
@@ -243,7 +244,7 @@ async function requireAgentForUser(db: D1Database, agentId: string, userId: stri
 }
 
 /** The agent's owner or a workspace admin. Everyone else can only stop it (pause) or say no (decline). */
-function canManage(agent: { ownerPrincipalId: string | null }, human: HumanPrincipal): boolean {
+export function canManage(agent: { ownerPrincipalId: string | null }, human: HumanPrincipal): boolean {
 	return human.is_admin === 1 || agent.ownerPrincipalId === human.id;
 }
 
@@ -303,6 +304,8 @@ export type ProposeInput = {
 	threadParticipants?: string[];
 	threadTakenOver?: boolean;
 	expiresAt?: Date;
+	/** The agent run that made the proposal, if any. */
+	runId?: string;
 };
 
 export type ProposeResult = { actionId: string; decision: PolicyDecision };
@@ -367,13 +370,13 @@ export async function proposeAction(db: D1Database, input: ProposeInput, now = n
 			.prepare(
 				`INSERT INTO agent_actions
 				 (id, workspace_id, agent_principal_id, version_id, capability, thread_id, payload_json, authorized_json,
-				  reason, status, policy_reason, expires_at, created_at)
+				  reason, status, policy_reason, expires_at, created_at, run_id)
 				 SELECT ?, ?, ?, ?, ?, ?, ?,
 				        CASE WHEN within_limit THEN ? ELSE NULL END,
 				        ?,
 				        CASE WHEN within_limit THEN ? ELSE 'rejected' END,
 				        CASE WHEN within_limit THEN ? ELSE 'daily_limit_reached' END,
-				        ?, ?
+				        ?, ?, ?
 				 FROM (SELECT (? IS NULL OR (
 				         SELECT COUNT(*) FROM agent_actions
 				         WHERE agent_principal_id = ? AND capability = ? AND status IN ${COUNTED_STATUSES} AND created_at >= ?
@@ -393,6 +396,7 @@ export async function proposeAction(db: D1Database, input: ProposeInput, now = n
 				decision.reason,
 				input.expiresAt?.toISOString() ?? null,
 				now.toISOString(),
+				input.runId ?? null,
 				limit ?? null,
 				agent.id,
 				capability,

@@ -597,4 +597,28 @@ describe('what a run may see and spend', () => {
 		).rejects.toBeInstanceOf(NotAllowedError);
 		expect(await decideAction(db, { actionId: mine[0].id, byUserId: 'u1', decision: 'approve' }, NOW)).toBe('approved');
 	});
+
+	test('a proposal stays private after its run row is gone', async () => {
+		const { sqlite, db } = open();
+		addUser(sqlite, 'u2', 'Kim', ['kim@acme.com'], true);
+		const agent = await hireSupport(db);
+		await setAgentStatus(db, { agentId: agent.id, byUserId: 'u1', status: 'active' });
+		const id = addMail(sqlite, {});
+		await enqueueMailRuns(db, 'u1', id, {}, NOW);
+		const { client } = fakeClient([
+			{ content: [toolUse('organize', { action: 'archive', label: '', reason: 'Done.' })] },
+			{ content: [text('Archived.')] }
+		]);
+		await runDueAgents(db, client, { now: () => NOW });
+		// Deleting the email removes its run, which clears run_id on the action.
+		sqlite.run(`DELETE FROM emails WHERE id = ?`, [id]);
+		expect(sqlite.query(`SELECT run_id FROM agent_actions`).get()).toEqual({ run_id: null });
+
+		const theirs = await listQueuedActions(db, 'u2', NOW);
+		expect(theirs[0]).toMatchObject({ hidden: true, canApprove: false });
+		await expect(
+			decideAction(db, { actionId: theirs[0].id, byUserId: 'u2', decision: 'approve' }, NOW)
+		).rejects.toBeInstanceOf(NotAllowedError);
+		expect((await listShadowActions(db, 'u2')).every((action) => action.hidden)).toBe(true);
+	});
 });

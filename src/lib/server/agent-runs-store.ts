@@ -372,11 +372,10 @@ export async function listShadowActions(db: D1Database, userId: string, limit = 
 	const { results } = await db
 		.prepare(
 			`SELECT x.id, x.agent_principal_id, p.display_name, x.capability, x.status, x.feedback, x.created_at,
-			        CASE WHEN r.id IS NULL OR r.mailbox_user_id = ? THEN x.payload_json ELSE NULL END AS payload_json,
-			        CASE WHEN r.id IS NULL OR r.mailbox_user_id = ? THEN x.reason ELSE '' END AS reason
+			        CASE WHEN x.mailbox_user_id IS NULL OR x.mailbox_user_id = ? THEN x.payload_json ELSE NULL END AS payload_json,
+			        CASE WHEN x.mailbox_user_id IS NULL OR x.mailbox_user_id = ? THEN x.reason ELSE '' END AS reason
 			 FROM agent_actions x
 			 JOIN principals p ON p.id = x.agent_principal_id
-			 LEFT JOIN agent_runs r ON r.id = x.run_id
 			 WHERE x.workspace_id = ? AND x.status IN ('shadowed', 'auto_approved')
 			 ORDER BY x.created_at DESC
 			 LIMIT ?`

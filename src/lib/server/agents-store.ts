@@ -306,6 +306,8 @@ export type ProposeInput = {
 	expiresAt?: Date;
 	/** The agent run that made the proposal, if any. */
 	runId?: string;
+	/** Whose mailbox the thread is in. Only they see the proposal's content and can approve it. */
+	mailboxUserId?: string;
 };
 
 export type ProposeResult = { actionId: string; decision: PolicyDecision };
@@ -370,13 +372,13 @@ export async function proposeAction(db: D1Database, input: ProposeInput, now = n
 			.prepare(
 				`INSERT INTO agent_actions
 				 (id, workspace_id, agent_principal_id, version_id, capability, thread_id, payload_json, authorized_json,
-				  reason, status, policy_reason, expires_at, created_at, run_id)
+				  reason, status, policy_reason, expires_at, created_at, run_id, mailbox_user_id)
 				 SELECT ?, ?, ?, ?, ?, ?, ?,
 				        CASE WHEN within_limit THEN ? ELSE NULL END,
 				        ?,
 				        CASE WHEN within_limit THEN ? ELSE 'rejected' END,
 				        CASE WHEN within_limit THEN ? ELSE 'daily_limit_reached' END,
-				        ?, ?, ?
+				        ?, ?, ?, ?
 				 FROM (SELECT (? IS NULL OR (
 				         SELECT COUNT(*) FROM agent_actions
 				         WHERE agent_principal_id = ? AND capability = ? AND status IN ${COUNTED_STATUSES} AND created_at >= ?
@@ -397,6 +399,7 @@ export async function proposeAction(db: D1Database, input: ProposeInput, now = n
 				input.expiresAt?.toISOString() ?? null,
 				now.toISOString(),
 				input.runId ?? null,
+				input.mailboxUserId ?? null,
 				limit ?? null,
 				agent.id,
 				capability,
@@ -467,10 +470,9 @@ export async function decideAction(
 	const action = await db
 		.prepare(
 			`SELECT x.id, x.workspace_id, x.status, x.expires_at, x.authorized_json, p.owner_principal_id,
-			        r.mailbox_user_id
+			        x.mailbox_user_id
 			 FROM agent_actions x
 			 JOIN principals p ON p.id = x.agent_principal_id
-			 LEFT JOIN agent_runs r ON r.id = x.run_id
 			 WHERE x.id = ?`
 		)
 		.bind(input.actionId)
@@ -567,11 +569,10 @@ export async function listQueuedActions(db: D1Database, userId: string, now = ne
 		.prepare(
 			`SELECT x.id, x.agent_principal_id, p.display_name, p.owner_principal_id, x.capability, x.thread_id,
 			        x.created_at, x.expires_at,
-			        CASE WHEN r.id IS NULL OR r.mailbox_user_id = ? THEN x.payload_json ELSE NULL END AS payload_json,
-			        CASE WHEN r.id IS NULL OR r.mailbox_user_id = ? THEN x.reason ELSE '' END AS reason
+			        CASE WHEN x.mailbox_user_id IS NULL OR x.mailbox_user_id = ? THEN x.payload_json ELSE NULL END AS payload_json,
+			        CASE WHEN x.mailbox_user_id IS NULL OR x.mailbox_user_id = ? THEN x.reason ELSE '' END AS reason
 			 FROM agent_actions x
 			 JOIN principals p ON p.id = x.agent_principal_id
-			 LEFT JOIN agent_runs r ON r.id = x.run_id
 			 WHERE x.workspace_id = ? AND x.status = 'queued'
 			 ORDER BY x.created_at ASC`
 		)

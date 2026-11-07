@@ -43,5 +43,8 @@ CREATE INDEX IF NOT EXISTS idx_agent_runs_agent ON agent_runs(agent_principal_id
 
 -- Which run proposed an action, and the founder's thumbs up or down on it (A8).
 ALTER TABLE agent_actions ADD COLUMN run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL;
+-- Whose mailbox the action's thread is in. Kept on the action itself, so it
+-- stays private to that person even after the run row is gone.
+ALTER TABLE agent_actions ADD COLUMN mailbox_user_id TEXT REFERENCES users(id) ON DELETE CASCADE;
 ALTER TABLE agent_actions ADD COLUMN feedback TEXT CHECK (feedback IN ('up', 'down'));
 CREATE INDEX IF NOT EXISTS idx_agent_actions_run ON agent_actions(run_id);

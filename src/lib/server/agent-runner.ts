@@ -237,7 +237,8 @@ async function runOne(db: D1Database, client: MessagesClient, run: AgentRun, now
 					payload: proposal.payload,
 					reason: proposal.reason,
 					threadParticipants: participants,
-					runId: run.id
+					runId: run.id,
+					mailboxUserId: run.mailbox_user_id
 				},
 				now()
 			);

@@ -23,7 +23,7 @@ export type AgentRecord = {
 	status: AgentStatus;
 	runtime: AgentRuntime;
 	shadowRemaining: number;
-	version: { id: string; number: number; definition: AgentDefinition };
+	version: { id: string; number: number; definition: AgentDefinition; createdByPrincipalId: string | null };
 };
 
 export type ActionStatus =
@@ -107,6 +107,32 @@ async function liveWorkspaceAddresses(db: D1Database, workspaceId: string): Prom
 }
 
 /**
+ * Addresses the author of an agent's current definition may still hand to it:
+ * their own addresses as of now, or every human's if they are still an admin.
+ * Checked on every proposal, so reassigning an address, demoting the author,
+ * or deleting their account takes effect at once. Empty if the author is gone.
+ */
+async function sendableForAuthor(
+	db: D1Database,
+	workspaceId: string,
+	workspaceAddresses: Map<string, string>,
+	authorPrincipalId: string | null
+): Promise<string[]> {
+	if (!authorPrincipalId) return [];
+	const author = await db
+		.prepare(
+			`SELECT p.user_id, u.is_admin FROM principals p JOIN users u ON u.id = p.user_id
+			 WHERE p.id = ? AND p.kind = 'human' AND p.workspace_id = ?`
+		)
+		.bind(authorPrincipalId, workspaceId)
+		.first<{ user_id: string; is_admin: number }>();
+	if (!author) return [];
+	return [...workspaceAddresses]
+		.filter(([, owner]) => author.is_admin === 1 || owner === author.user_id)
+		.map(([address]) => address);
+}
+
+/**
  * Whoever hires or edits an agent can only let it send as addresses they could
  * send as themselves: their own, or, for an admin, any human's address in the
  * workspace. Addresses already went through the claiming rules (reserved role
@@ -172,6 +198,7 @@ type AgentRow = {
 	runtime: AgentRuntime;
 	shadow_remaining: number;
 	version_id: string;
+	version_created_by: string | null;
 	version: number;
 	definition_json: string;
 };
@@ -181,7 +208,7 @@ export async function getAgent(db: D1Database, agentId: string): Promise<AgentRe
 		.prepare(
 			`SELECT p.id, p.workspace_id, p.display_name, p.owner_principal_id,
 			        a.status, a.runtime, a.shadow_remaining,
-			        v.id AS version_id, v.version, v.definition_json
+			        v.id AS version_id, v.created_by_principal_id AS version_created_by, v.version, v.definition_json
 			 FROM principals p
 			 JOIN agents a ON a.principal_id = p.id
 			 JOIN agent_versions v ON v.id = a.current_version_id
@@ -199,7 +226,12 @@ export async function getAgent(db: D1Database, agentId: string): Promise<AgentRe
 		status: row.status,
 		runtime: row.runtime,
 		shadowRemaining: row.shadow_remaining,
-		version: { id: row.version_id, number: row.version, definition: parseDefinition(JSON.parse(row.definition_json)) }
+		version: {
+			id: row.version_id,
+			number: row.version,
+			definition: parseDefinition(JSON.parse(row.definition_json)),
+			createdByPrincipalId: row.version_created_by
+		}
 	};
 }
 
@@ -296,6 +328,7 @@ export async function proposeAction(db: D1Database, input: ProposeInput, now = n
 			.first<{ used_today: number | null; approvals: number | null }>()
 	]);
 	const humanAddresses = [...workspaceAddresses.keys()];
+	const sendable = await sendableForAuthor(db, agent.workspaceId, workspaceAddresses, agent.version.createdByPrincipalId);
 
 	let decision = authorize(input.proposal, {
 		status: agent.status,
@@ -303,7 +336,7 @@ export async function proposeAction(db: D1Database, input: ProposeInput, now = n
 		definition: agent.version.definition,
 		threadParticipants: input.threadParticipants ?? [],
 		founderAddresses: humanAddresses,
-		sendableAddresses: humanAddresses,
+		sendableAddresses: sendable,
 		usedToday: usage?.used_today ?? 0,
 		humanApprovals: usage?.approvals ?? 0,
 		threadTakenOver: input.threadTakenOver

@@ -232,6 +232,37 @@ describe('who an agent may send as', () => {
 		});
 	});
 
+	test('moving the address to another user stops the agent sending as it', async () => {
+		const { sqlite, db } = open();
+		addUser(sqlite, 'u2', 'Priya', ['priya@acme.com']);
+		const agent = await activeAgent(db);
+		sqlite.run(`UPDATE addresses SET user_id = 'u2' WHERE address = 'billing@acme.com'`);
+		const result = await proposeAction(db, { agentId: agent.id, proposal: reply, payload: {}, threadParticipants: ['client@globex.com'] });
+		expect(result.decision).toEqual({ outcome: 'reject', reason: 'send_as_out_of_scope' });
+	});
+
+	test("an admin's grant of someone else's address ends when they stop being an admin", async () => {
+		const { sqlite, db } = open();
+		addUser(sqlite, 'u2', 'Priya', ['priya@acme.com'], true);
+		const agent = await createAgent(db, { ownerUserId: 'u2', displayName: 'Billing', definition: billing });
+		await setAgentStatus(db, { agentId: agent.id, byUserId: 'u2', status: 'active' });
+		const base = { agentId: agent.id, proposal: reply, payload: {}, threadParticipants: ['client@globex.com'] };
+		expect((await proposeAction(db, base)).decision.outcome).toBe('execute');
+
+		sqlite.run(`UPDATE users SET is_admin = 0 WHERE id = 'u2'`);
+		expect((await proposeAction(db, base)).decision).toEqual({ outcome: 'reject', reason: 'send_as_out_of_scope' });
+	});
+
+	test('if the author of the definition is deleted, the agent can no longer send', async () => {
+		const { sqlite, db } = open();
+		addUser(sqlite, 'u2', 'Priya', ['priya@acme.com'], true);
+		const agent = await createAgent(db, { ownerUserId: 'u2', displayName: 'Billing', definition: billing });
+		await setAgentStatus(db, { agentId: agent.id, byUserId: 'u1', status: 'active' });
+		sqlite.run(`DELETE FROM users WHERE id = 'u2'`);
+		const result = await proposeAction(db, { agentId: agent.id, proposal: reply, payload: {}, threadParticipants: ['client@globex.com'] });
+		expect(result.decision).toEqual({ outcome: 'reject', reason: 'send_as_out_of_scope' });
+	});
+
 	test('deleting the address stops the agent sending as it straight away', async () => {
 		const { sqlite, db } = open();
 		const agent = await activeAgent(db);

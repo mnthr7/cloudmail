@@ -37,9 +37,10 @@ export type PolicyContext = {
 	/** The workspace's human addresses. Agents may always write to them. */
 	founderAddresses: string[];
 	/**
-	 * Addresses that still exist and belong to a human in the workspace. A
-	 * send-as address in the definition that has since been deleted or moved
-	 * stops working at once.
+	 * Addresses the author of the current definition may still hand out right
+	 * now (their own, or any human's if they are still an admin). A send-as
+	 * address that has since been deleted, moved to someone else, or put out of
+	 * the author's reach stops working at once.
 	 */
 	sendableAddresses: string[];
 	/** Times this capability was allowed to run today (UTC). */

@@ -59,6 +59,17 @@ bun run build
   squash-merged, so the title becomes the commit message and the changelog entry.
 - CI must pass. An automated reviewer may comment. Treat its comments as
   suggestions; a maintainer makes the final call.
+- Every PR gets a risk label from the files it changes
+  ([`scripts/risk-tier.mjs`](scripts/risk-tier.mjs)):
+  - `risk:low`: only docs, tests, styles, and raster images.
+  - `risk:high`: anything else, including every `.svelte` file, sign-in,
+    sessions, sending mail, migrations, agents, dependencies, and CI.
+
+  The maintainer's own `risk:low` PRs (every commit theirs), and Dependabot's
+  patch and minor updates that change only `package.json` and lockfiles, merge
+  on their own once CI passes. A `risk:high` PR, or any PR from
+  anyone else, waits for a maintainer. Add the `hold` label to stop a PR from
+  merging on its own.
 - Expect a first response within about a week.
 
 ## License

@@ -5,8 +5,11 @@ name: Risk tier
 #
 # Auto-merge only waits for the required checks in the "Main Protection"
 # ruleset, so a low-risk pull request merges once CI passes. It applies to:
-#   - pull requests the repo owner opens (including ones an agent opens for them)
-#   - Dependabot patch and minor updates
+#   - pull requests the repo owner opens (including ones an agent opens for
+#     them), when every commit is authored by the owner and the owner triggered
+#     this run (a push by anyone else turns auto-merge off)
+#   - Dependabot patch and minor updates that change only package.json and
+#     lockfiles, when every commit is Dependabot's
 # Anyone else's pull request is labeled but never merged automatically.
 # Add the "hold" label to keep any pull request from merging on its own.
 #
@@ -72,11 +75,21 @@ jobs:
           tier=$(jq -r .tier "$RUNNER_TEMP/tier.json")
           why="files"
 
-          # Dependabot patch and minor bumps only touch the lockfile and manifests.
+          # Who wrote each commit. The API lists at most 250, so a longer pull
+          # request counts as having an unknown author.
+          gh api --paginate "repos/$REPO/pulls/$PR/commits" \
+            --jq '.[] | (.author.login // "!unknown")' > "$RUNNER_TEMP/authors.txt"
+          commits=$(grep -c '' "$RUNNER_TEMP/authors.txt" || true)
+          only_by() { [ "$commits" -gt 0 ] && [ "$commits" -lt 250 ] && ! grep -qvxF "$1" "$RUNNER_TEMP/authors.txt"; }
+
+          # Dependabot patch and minor bumps that only touch manifests and lockfiles.
           # Majors stay high: they can change behaviour.
           if [ "$AUTHOR" = "dependabot[bot]" ]; then
+            deps_only=$(jq -r .dependenciesOnly "$RUNNER_TEMP/tier.json")
             case "$UPDATE_TYPE" in
-              version-update:semver-patch|version-update:semver-minor) tier=low; why="dependabot $UPDATE_TYPE" ;;
+              version-update:semver-patch|version-update:semver-minor)
+                if [ "$deps_only" = true ]; then tier=low; else tier=high; fi
+                why="dependabot $UPDATE_TYPE, dependency files only: $deps_only" ;;
               *) tier=high; why="dependabot ${UPDATE_TYPE:-unknown update}" ;;
             esac
           fi
@@ -87,11 +100,13 @@ jobs:
           other=$([ "$tier" = low ] && echo high || echo low)
           gh pr edit "$PR" --repo "$REPO" --add-label "risk:$tier" --remove-label "risk:$other" >/dev/null
 
-          # Who may skip a human: the owner's own pull requests, and Dependabot's
-          # when Dependabot or the owner triggered this run.
+          # Who may skip a human: the owner's own pull requests, when the owner
+          # wrote every commit and triggered this run; and Dependabot's, when
+          # Dependabot wrote every commit and it or the owner triggered this run.
           trusted=false
-          if [ "$ASSOCIATION" = "OWNER" ]; then trusted=true; fi
-          if [ "$AUTHOR" = "dependabot[bot]" ] && { [ "$ACTOR" = "dependabot[bot]" ] || [ "$ACTOR" = "$OWNER" ]; }; then
+          if [ "$ASSOCIATION" = "OWNER" ] && [ "$ACTOR" = "$OWNER" ] && only_by "$OWNER"; then trusted=true; fi
+          if [ "$AUTHOR" = "dependabot[bot]" ] && { [ "$ACTOR" = "dependabot[bot]" ] || [ "$ACTOR" = "$OWNER" ]; } \
+            && only_by "dependabot[bot]"; then
             trusted=true
           fi
           held=false

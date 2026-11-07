@@ -1,4 +1,5 @@
-import { redirect, type Handle } from '@sveltejs/kit';
+import { redirect } from '@sveltejs/kit';
+import type { Handle } from '@sveltejs/kit/hooks';
 import { countUsers, getUserFromSession, readSessionToken } from '$lib/server/auth';
 import { DOMAIN_COOKIE } from '$lib/server/constants';
 import { listAddressesForUser, listDomains } from '$lib/server/domains';
@@ -97,7 +98,7 @@ export const handle: Handle = async ({ event, resolve: resolvePage }) => {
 		return resolve(event);
 	}
 
-	const needsSetup = db ? (await countUsers(db)) === 0 : false;
+	const needsSetup = db ? await countUsers(db) === 0 : false;
 
 	if (needsSetup && pathname !== '/setup') {
 		throw redirect(303, '/setup');

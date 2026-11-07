@@ -1,13 +1,10 @@
 <script lang="ts">
-	import { page } from '$app/stores';
+	import { page } from '$app/state';
 	import MailboxSplitView from '#lib/components/MailboxSplitView.svelte';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
-
-	const title = $derived(
-		data.labels.find((label) => label.id === $page.params.id)?.name ?? 'Label'
-	);
+	const title = $derived(data.labels.find((label) => label.id === page.params.id)?.name ?? 'Label');
 </script>
 
 <svelte:head>

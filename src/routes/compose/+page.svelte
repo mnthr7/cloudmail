@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onDestroy, untrack } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { page } from '$app/stores';
+	import { page } from '$app/state';
 	import Icon from '#lib/components/Icon.svelte';
 	import RichTextEditor from '#lib/components/RichTextEditor.svelte';
 	import AttachmentPicker from '#lib/components/AttachmentPicker.svelte';
@@ -74,10 +74,10 @@
 	}
 
 	function rememberDraft(id: string) {
-		const url = new URL($page.url);
+		const url = new URL(page.url);
 		if (url.searchParams.get('draft') === id) return;
 		url.searchParams.set('draft', id);
-		goto(url, { shallow: true, replace: true, state: $page.state });
+		goto(url, { shallow: true, replace: true, state: page.state });
 	}
 
 	function markEdited() {

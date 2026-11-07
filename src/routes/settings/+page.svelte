@@ -17,7 +17,7 @@
 	import type { MailAddress } from '#lib/types.ts';
 	import type { PageData } from './$types';
 	import { invalidateAll } from '$app/navigation';
-	import { page } from '$app/stores';
+	import { page } from '$app/state';
 	import { untrack } from 'svelte';
 	import { CATEGORIES, type MailCategory } from '#lib/organizing/categories.ts';
 	import { currentSkin, saveSkin, SKIN_OPTIONS, type MailSkin } from '#lib/skin.ts';
@@ -36,7 +36,7 @@
 	}
 
 	// Mail skin: saved on the account, applied the moment it is picked.
-	const skin = $derived<MailSkin>($currentSkin ?? ($page.data.skin as MailSkin) ?? 'ledger');
+	const skin = $derived<MailSkin>($currentSkin ?? page.data.skin as MailSkin ?? 'ledger');
 	let skinSaving = $state(false);
 	let skinError = $state('');
 
@@ -453,7 +453,7 @@
 	function upsertFilter(filter: SavedFilter) {
 		const list = filterOverride ?? data.filters;
 		const next = list.some((item) => item.id === filter.id)
-			? list.map((item) => (item.id === filter.id ? filter : item))
+			? list.map((item) => item.id === filter.id ? filter : item)
 			: [...list, filter];
 		filterOverride = next
 			.slice()
@@ -761,36 +761,36 @@
 	</section>
 
 	{#if skin === 'classic'}
-	<section class="surface-lg card">
+		<section class="surface-lg card">
 		<h2><Icon name="contrast-2-line" size={18} /> Appearance</h2>
-		<p class="card-hint">Choose how Mail looks. System follows your device setting.</p>
+			<p class="card-hint">Choose how Mail looks. System follows your device setting.</p>
 
 		<div class="theme-options" role="radiogroup" aria-label="Theme">
-			{#each THEME_OPTIONS as option (option.value)}
-				<button
-					type="button"
-					role="radio"
-					aria-checked={theme === option.value}
-					class="theme-option"
-					class:selected={theme === option.value}
-					onclick={() => chooseTheme(option.value)}
-				>
-					<span class="theme-preview theme-preview-{option.value}">
-						<span class="preview-bar"></span>
-						<span class="preview-line"></span>
-						<span class="preview-line short"></span>
-					</span>
-					<span class="theme-label">
-						<Icon name={option.icon} size={15} />
-						{option.label}
-					</span>
-					{#if theme === option.value}
-						<span class="theme-check"><Icon name="check-line" size={14} /></span>
-					{/if}
-				</button>
-			{/each}
-		</div>
-	</section>
+				{#each THEME_OPTIONS as option (option.value)}
+					<button
+						type="button"
+						role="radio"
+						aria-checked={theme === option.value}
+						class="theme-option"
+						class:selected={theme === option.value}
+						onclick={() => chooseTheme(option.value)}
+					>
+						<span class="theme-preview theme-preview-{option.value}">
+							<span class="preview-bar"></span>
+							<span class="preview-line"></span>
+							<span class="preview-line short"></span>
+						</span>
+						<span class="theme-label">
+							<Icon name={option.icon} size={15} />
+							{option.label}
+						</span>
+						{#if theme === option.value}
+							<span class="theme-check"><Icon name="check-line" size={14} /></span>
+						{/if}
+					</button>
+				{/each}
+			</div>
+		</section>
 	{/if}
 
 	<section class="surface-lg card">
@@ -981,8 +981,13 @@
 			Running that again sends another forward copy.
 		</p>
 
-		{#if filterError}<p class="error" role="alert">{filterError}</p>{/if}
-		{#if filterNotice}<p class="card-hint" role="status">{filterNotice}</p>{/if}
+		{#if filterError}
+			<p class="error" role="alert">{filterError}</p>
+		{/if}
+
+		{#if filterNotice}
+			<p class="card-hint" role="status">{filterNotice}</p>
+		{/if}
 
 		<button
 			type="button"
@@ -1031,7 +1036,7 @@
 							<select class="filter-input" bind:value={form.actionLabelId}>
 								<option value="">None</option>
 								{#each labelOptions as label (label.id)}
-									<option value={label.id}>{'— '.repeat(label.depth)}{label.name}</option>
+									<option value={label.id}>{('— ').repeat(label.depth)}{label.name}</option>
 								{/each}
 								{#if form.actionLabelId && !labelOptions.some((label) => label.id === form.actionLabelId)}
 									<option value={form.actionLabelId}>Current label</option>
@@ -1825,14 +1830,37 @@
 		border-radius: 50%;
 	}
 
-	.filter-dot[data-color='slate'] { background: #5f6368; }
-	.filter-dot[data-color='red'] { background: #d93025; }
-	.filter-dot[data-color='orange'] { background: #e37400; }
-	.filter-dot[data-color='amber'] { background: #f9ab00; }
-	.filter-dot[data-color='green'] { background: #188038; }
-	.filter-dot[data-color='blue'] { background: #1a73e8; }
-	.filter-dot[data-color='violet'] { background: #9334e6; }
-	.filter-dot[data-color='pink'] { background: #d01884; }
+	.filter-dot[data-color="slate"] {
+		background: #5f6368;
+	}
+
+	.filter-dot[data-color="red"] {
+		background: #d93025;
+	}
+
+	.filter-dot[data-color="orange"] {
+		background: #e37400;
+	}
+
+	.filter-dot[data-color="amber"] {
+		background: #f9ab00;
+	}
+
+	.filter-dot[data-color="green"] {
+		background: #188038;
+	}
+
+	.filter-dot[data-color="blue"] {
+		background: #1a73e8;
+	}
+
+	.filter-dot[data-color="violet"] {
+		background: #9334e6;
+	}
+
+	.filter-dot[data-color="pink"] {
+		background: #d01884;
+	}
 
 	.check-row {
 		display: flex;

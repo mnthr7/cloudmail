@@ -12,7 +12,7 @@
 		isMacPlatform,
 		readSystemClipboard,
 		selectedPlainText
-	} from '$lib/utils/editor-paste';
+	} from '#lib/utils/editor-paste.ts';
 
 	function onKeydown(event: KeyboardEvent) {
 		if (!isMacPlatform()) return;

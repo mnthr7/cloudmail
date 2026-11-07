@@ -1,9 +1,9 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { page } from '$app/stores';
+	import { page } from '$app/state';
 	import Icon from './Icon.svelte';
 	import Logo from './Logo.svelte';
-	import type { Domain, MailAddress } from '$lib/types';
+	import type { Domain, MailAddress } from '#lib/types.ts';
 
 	let {
 		userName,
@@ -23,11 +23,11 @@
 
 	// "example.com / inbox" breadcrumb for the Notes skin's top band.
 	const crumbDomain = $derived.by(() => {
-		const domains = ($page.data.domains ?? []) as Domain[];
-		const active = domains.find((domain) => domain.id === $page.data.activeDomainId);
+		const domains = (page.data.domains ?? []) as Domain[];
+		const active = domains.find((domain) => domain.id === page.data.activeDomainId);
 		return active?.name ?? (domains.length === 1 ? domains[0].name : 'all domains');
 	});
-	const crumbPage = $derived($page.url.pathname.split('/').filter(Boolean)[0] ?? 'inbox');
+	const crumbPage = $derived(page.url.pathname.split('/').filter(Boolean)[0] ?? 'inbox');
 
 	// Search applies to whichever mailbox is open; anywhere else it lands in Inbox.
 	const MAILBOXES = [
@@ -41,16 +41,14 @@
 		'/snoozed',
 		'/scheduled'
 	];
-	const searchTarget = $derived(
-		MAILBOXES.find((path) => $page.url.pathname === path) ?? '/inbox'
-	);
 
+	const searchTarget = $derived(MAILBOXES.find((path) => page.url.pathname === path) ?? '/inbox');
 	let query = $state('');
 	let menuOpen = $state(false);
 
 	// Keep the field in step with the URL (back button, cleared search, …).
 	$effect(() => {
-		query = $page.url.searchParams.get('q') ?? '';
+		query = page.url.searchParams.get('q') ?? '';
 	});
 
 	// Recipients see the sending identity, not the login email.
@@ -58,25 +56,18 @@
 		addresses.find((address) => address.is_default)?.address ?? addresses[0]?.address ?? userEmail
 	);
 
-	const initials = $derived(
-		userName
-			.split(/\s+/)
-			.filter(Boolean)
-			.slice(0, 2)
-			.map((part) => part[0]!.toUpperCase())
-			.join('') || '?'
-	);
+	const initials = $derived(userName.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => (part[0]!).toUpperCase()).join('') || '?');
 
 	function submitSearch(event: SubmitEvent) {
 		event.preventDefault();
 		const params = new URLSearchParams();
 		if (query.trim()) params.set('q', query.trim());
-		goto(`${searchTarget}${params.size ? `?${params}` : ''}`, { keepFocus: true });
+		goto(`${searchTarget}${params.size ? `?${params}` : ''}`, { reset: false });
 	}
 
 	function clearSearch() {
 		query = '';
-		goto(searchTarget, { keepFocus: true });
+		goto(searchTarget, { reset: false });
 	}
 </script>
 
@@ -118,10 +109,8 @@
 			href="/settings"
 			class="icon-btn"
 			aria-label="Settings"
-			class:active={$page.url.pathname === '/settings'}
-		>
-			<Icon name="settings-3-line" size={17} />
-		</a>
+			class:active={page.url.pathname === '/settings'}
+		><Icon name="settings-3-line" size={17} /></a>
 
 		<div class="account">
 			<button
@@ -129,7 +118,7 @@
 				class="account-trigger"
 				aria-haspopup="menu"
 				aria-expanded={menuOpen}
-				onclick={() => (menuOpen = !menuOpen)}
+				onclick={() => menuOpen = !menuOpen}
 			>
 				<span class="account-text">
 					<span class="account-name">{userName}</span>
@@ -143,15 +132,22 @@
 					type="button"
 					class="menu-backdrop"
 					aria-label="Close account menu"
-					onclick={() => (menuOpen = false)}
+					onclick={() => menuOpen = false}
 				></button>
 				<div class="menu" role="menu">
 					<p class="menu-head">
 						<span class="menu-name">{userName}</span>
 						<span class="menu-address">{primaryAddress}</span>
 					</p>
-					<a href="/settings" class="menu-item" role="menuitem" onclick={() => (menuOpen = false)}>
-						<Icon name="user-settings-line" size={15} /> Settings
+
+					<a
+						href="/settings"
+						class="menu-item"
+						role="menuitem"
+						onclick={() => menuOpen = false}
+					>
+						<Icon name="user-settings-line" size={15} />
+						Settings
 					</a>
 					<button type="button" class="menu-item" role="menuitem" onclick={onLogout}>
 						<Icon name="logout-box-r-line" size={15} /> Log out

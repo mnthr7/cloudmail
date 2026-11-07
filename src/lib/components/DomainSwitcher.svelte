@@ -1,6 +1,6 @@
 <script lang="ts">
 	import Icon from './Icon.svelte';
-	import type { Domain } from '$lib/types';
+	import type { Domain } from '#lib/types.ts';
 
 	let {
 		domains,

@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import type { D1Database } from '@cloudflare/workers-types';
-import { AgentDefinitionError } from '$lib/agents/definition';
+import { AgentDefinitionError } from '#lib/agents/definition.ts';
 import { DEMO_MODE, DEMO_USER } from './demo';
 import { ActionStateError, AgentNotFoundError, NotAllowedError } from './agents-store';
 

@@ -1,4 +1,4 @@
-import type { AvailableDomain, EmailProviderKind, MailStatus } from '$lib/types';
+import type { AvailableDomain, EmailProviderKind, MailStatus } from '#lib/types.ts';
 import type { OutboundMailInput, OutboundMailResult } from './send-mail';
 
 export type { EmailProviderKind };

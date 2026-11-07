@@ -1,7 +1,7 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
-import type { AgentStatus } from '$lib/agents/policy';
-import { caller, failure, readBody } from '$lib/server/agents-http';
-import { getAgentForUser, setAgentStatus, updateAgentDefinition } from '$lib/server/agents-store';
+import type { AgentStatus } from '#lib/agents/policy.ts';
+import { caller, failure, readBody } from '#lib/server/agents-http.ts';
+import { getAgentForUser, setAgentStatus, updateAgentDefinition } from '#lib/server/agents-store.ts';
 
 const STATUSES: readonly AgentStatus[] = ['shadow', 'active', 'paused'];
 

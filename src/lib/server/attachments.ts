@@ -1,5 +1,5 @@
 import type { D1Database, R2Bucket } from '@cloudflare/workers-types';
-import type { EmailAttachmentMeta, OutboundAttachmentInput } from '$lib/types';
+import type { EmailAttachmentMeta, OutboundAttachmentInput } from '#lib/types.ts';
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS_PER_EMAIL } from './constants';
 
 type StoredAttachmentRow = EmailAttachmentMeta & {

@@ -1,6 +1,6 @@
 <script lang="ts">
-	import Icon from '$lib/components/Icon.svelte';
-	import AddressField from '$lib/components/AddressField.svelte';
+	import Icon from '#lib/components/Icon.svelte';
+	import AddressField from '#lib/components/AddressField.svelte';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();

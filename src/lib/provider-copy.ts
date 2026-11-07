@@ -1,4 +1,4 @@
-import type { EmailProviderKind } from '$lib/types';
+import type { EmailProviderKind } from '#lib/types.ts';
 
 export function providerName(kind: EmailProviderKind): string {
 	switch (kind) {

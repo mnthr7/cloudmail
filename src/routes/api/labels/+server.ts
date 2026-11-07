@@ -1,11 +1,11 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
-import { DEMO_LABELS, DEMO_MODE, DEMO_USER } from '$lib/server/demo';
+import { DEMO_LABELS, DEMO_MODE, DEMO_USER } from '#lib/server/demo.ts';
 import {
 	LabelNotFoundError,
 	LabelWriteError,
 	createLabel,
 	listLabels
-} from '$lib/server/labels-store';
+} from '#lib/server/labels-store.ts';
 
 /** The signed-in user's labels, including nested ones and unread counts. */
 export const GET: RequestHandler = async ({ locals, platform }) => {

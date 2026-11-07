@@ -1,5 +1,5 @@
 <script lang="ts">
-	import Icon from '$lib/components/Icon.svelte';
+	import Icon from '#lib/components/Icon.svelte';
 	import {
 		AUTONOMY_LABELS,
 		AUTONOMY_LEVELS,
@@ -8,9 +8,9 @@
 		CAPABILITY_TRAITS,
 		type AutonomyLevel,
 		type Capability
-	} from '$lib/agents/capabilities';
-	import type { AgentDefinition } from '$lib/agents/definition';
-	import type { AgentStatus } from '$lib/agents/policy';
+	} from '#lib/agents/capabilities.ts';
+	import type { AgentDefinition } from '#lib/agents/definition.ts';
+	import type { AgentStatus } from '#lib/agents/policy.ts';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();

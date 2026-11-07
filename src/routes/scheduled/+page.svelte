@@ -1,5 +1,5 @@
 <script lang="ts">
-	import MailboxSplitView from '$lib/components/MailboxSplitView.svelte';
+	import MailboxSplitView from '#lib/components/MailboxSplitView.svelte';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();

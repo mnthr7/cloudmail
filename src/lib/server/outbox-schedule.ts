@@ -1,5 +1,5 @@
 import type { D1Database } from '@cloudflare/workers-types';
-import type { MailAddress } from '$lib/types';
+import type { MailAddress } from '#lib/types.ts';
 import { scheduleError } from '../writing/timing';
 import { initialOutboundStatus, type EmailProvider } from './email-provider';
 import { setThreadColumns } from './organizing-store';

@@ -1,6 +1,6 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
-import { caller, failure, readBody } from '$lib/server/agents-http';
-import { createAgent, listAgents } from '$lib/server/agents-store';
+import { caller, failure, readBody } from '#lib/server/agents-http.ts';
+import { createAgent, listAgents } from '#lib/server/agents-store.ts';
 
 /** Every agent in the workspace. */
 export const GET: RequestHandler = async ({ locals, platform }) => {

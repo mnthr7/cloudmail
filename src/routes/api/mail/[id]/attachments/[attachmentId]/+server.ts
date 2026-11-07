@@ -1,7 +1,7 @@
 import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { getAttachmentForUser, readAttachmentBytes } from '$lib/server/attachments';
-import { isMarkdownAttachment, isPreviewableInline, mediaType } from '$lib/utils/attachments';
+import { getAttachmentForUser, readAttachmentBytes } from '#lib/server/attachments.ts';
+import { isMarkdownAttachment, isPreviewableInline, mediaType } from '#lib/utils/attachments.ts';
 
 export const GET: RequestHandler = async ({ params, locals, platform, url }) => {
 	if (!locals.user || !platform?.env.DB || !platform?.env.ATTACHMENTS) {

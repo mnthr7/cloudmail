@@ -569,7 +569,7 @@ test('unsubscribe tests and implementation do not import the mail store', async 
 		const source = await Bun.file(file).text();
 		expect(source.includes(`from '../src/lib/server/${banned}`)).toBe(false);
 		expect(source.includes(`from './${banned}`)).toBe(false);
-		expect(source.includes(`from '$lib/server/${banned}`)).toBe(false);
+		expect(source.includes(`from '#lib/server/${banned}`)).toBe(false);
 	}
 });
 

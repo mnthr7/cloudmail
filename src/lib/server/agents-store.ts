@@ -1,13 +1,13 @@
 import type { D1Database } from '@cloudflare/workers-types';
-import { AgentDefinitionError, parseDefinition, type AgentDefinition } from '$lib/agents/definition';
-import type { Capability } from '$lib/agents/capabilities';
+import { AgentDefinitionError, parseDefinition, type AgentDefinition } from '#lib/agents/definition.ts';
+import type { Capability } from '#lib/agents/capabilities.ts';
 import {
 	authorize,
 	type AgentRuntime,
 	type AgentStatus,
 	type PolicyDecision,
 	type Proposal
-} from '$lib/agents/policy';
+} from '#lib/agents/policy.ts';
 
 /**
  * Agents, their versioned definitions, and the log of everything they propose

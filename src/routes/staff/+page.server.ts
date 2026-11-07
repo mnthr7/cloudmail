@@ -1,12 +1,12 @@
 import type { PageServerLoad } from './$types';
-import { DEMO_MODE, DEMO_USER } from '$lib/server/demo';
+import { DEMO_MODE, DEMO_USER } from '#lib/server/demo.ts';
 import {
 	listAgents,
 	listQueuedActions,
 	sendAsChoices,
 	type AgentSummary,
 	type QueuedAction
-} from '$lib/server/agents-store';
+} from '#lib/server/agents-store.ts';
 
 export const load: PageServerLoad = async ({ locals, platform }) => {
 	const empty: { agents: AgentSummary[]; queue: QueuedAction[]; sendAs: string[]; demo: boolean } = {

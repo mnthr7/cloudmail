@@ -1,6 +1,6 @@
 <script lang="ts">
 	import Icon from './Icon.svelte';
-	import type { DeliveryStatus } from '$lib/types';
+	import type { DeliveryStatus } from '#lib/types.ts';
 
 	let {
 		status,

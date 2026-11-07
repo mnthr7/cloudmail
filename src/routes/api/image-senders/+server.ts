@@ -1,6 +1,6 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
-import { DEMO_USER } from '$lib/server/demo';
-import { forgetImageSender, rememberImageSender } from '$lib/server/image-senders';
+import { DEMO_USER } from '#lib/server/demo.ts';
+import { forgetImageSender, rememberImageSender } from '#lib/server/image-senders.ts';
 
 /** Save a From address whose remote images may load. The body is `{ address }`. */
 export const POST: RequestHandler = async ({ request, locals, platform }) => {

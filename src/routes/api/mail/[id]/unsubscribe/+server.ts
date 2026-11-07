@@ -1,13 +1,13 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
-import { getEmailProvider } from '$lib/server/context';
-import { DEMO_MODE, DEMO_USER } from '$lib/server/demo';
-import type { EmailProvider } from '$lib/server/email-provider';
-import { ConfigError } from '$lib/server/errors';
+import { getEmailProvider } from '#lib/server/context.ts';
+import { DEMO_MODE, DEMO_USER } from '#lib/server/demo.ts';
+import type { EmailProvider } from '#lib/server/email-provider.ts';
+import { ConfigError } from '#lib/server/errors.ts';
 import {
 	UnsubscribeError,
 	UnsubscribeNotFoundError,
 	unsubscribeMessage
-} from '$lib/server/unsubscribe';
+} from '#lib/server/unsubscribe.ts';
 
 /** One unsubscribe for this message. The message row is left as it is. */
 export const POST: RequestHandler = async ({ params, locals, platform }) => {

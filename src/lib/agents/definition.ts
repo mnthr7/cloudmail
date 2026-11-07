@@ -1,4 +1,4 @@
-import { parseEmailAddress } from '$lib/email-address';
+import { parseEmailAddress } from '#lib/email-address.ts';
 import {
 	CAPABILITIES,
 	CAPABILITY_TRAITS,

@@ -1,6 +1,6 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
-import { caller, failure, readBody } from '$lib/server/agents-http';
-import { decideAction } from '$lib/server/agents-store';
+import { caller, failure, readBody } from '#lib/server/agents-http.ts';
+import { decideAction } from '#lib/server/agents-store.ts';
 
 /** Approve or decline a queued proposal. 409 if it was already decided or has expired. */
 export const POST: RequestHandler = async ({ params, request, locals, platform }) => {

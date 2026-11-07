@@ -1,6 +1,6 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
-import { caller, failure } from '$lib/server/agents-http';
-import { listQueuedActions } from '$lib/server/agents-store';
+import { caller, failure } from '#lib/server/agents-http.ts';
+import { listQueuedActions } from '#lib/server/agents-store.ts';
 
 /** The Needs your OK queue (A7), oldest first. */
 export const GET: RequestHandler = async ({ locals, platform }) => {

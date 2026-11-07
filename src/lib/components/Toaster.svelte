@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { toasts } from '$lib/toast';
+	import { toasts } from '#lib/toast.ts';
 
 	async function act(id: number, run?: () => void | Promise<void>) {
 		toasts.update((list) => list.filter((entry) => entry.id !== id));

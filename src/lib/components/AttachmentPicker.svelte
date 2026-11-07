@@ -1,7 +1,7 @@
 <script lang="ts">
 	import Icon from './Icon.svelte';
-	import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS_PER_EMAIL } from '$lib/constants';
-	import type { OutboundAttachmentInput } from '$lib/types';
+	import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS_PER_EMAIL } from '#lib/constants.ts';
+	import type { OutboundAttachmentInput } from '#lib/types.ts';
 
 	let {
 		attachments = $bindable([])

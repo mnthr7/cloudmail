@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { EmailProviderKind } from '$lib/types';
+	import type { EmailProviderKind } from '#lib/types.ts';
 	import Logo from './Logo.svelte';
 	import PartnerLink from './PartnerLink.svelte';
 

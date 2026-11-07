@@ -7,8 +7,8 @@ import {
 	listAvailableDomains,
 	ProviderError,
 	providerLoadError
-} from '$lib/server/context';
-import { listDomains, syncDomains, upsertDomain } from '$lib/server/domains';
+} from '#lib/server/context.ts';
+import { listDomains, syncDomains, upsertDomain } from '#lib/server/domains.ts';
 
 /**
  * GET  — every domain the configured provider can reach, flagged with

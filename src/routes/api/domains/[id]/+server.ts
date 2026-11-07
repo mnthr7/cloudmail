@@ -1,6 +1,6 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
-import { getEmailProvider, ProviderError } from '$lib/server/context';
-import { disconnectDomain, getDomain, setCatchallUser, upsertDomain } from '$lib/server/domains';
+import { getEmailProvider, ProviderError } from '#lib/server/context.ts';
+import { disconnectDomain, getDomain, setCatchallUser, upsertDomain } from '#lib/server/domains.ts';
 
 /** PATCH — set the catch-all owner or re-sync status from the active provider. */
 export const PATCH: RequestHandler = async ({ params, request, locals, platform }) => {

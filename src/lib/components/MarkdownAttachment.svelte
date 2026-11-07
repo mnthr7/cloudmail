@@ -1,9 +1,9 @@
 <script lang="ts">
 	import EmailBody from './EmailBody.svelte';
-	import { MAX_MARKDOWN_PREVIEW_BYTES } from '$lib/constants';
-	import { attachmentHref } from '$lib/utils/attachments';
-	import { renderMarkdown } from '$lib/utils/markdown';
-	import type { EmailAttachmentMeta } from '$lib/types';
+	import { MAX_MARKDOWN_PREVIEW_BYTES } from '#lib/constants.ts';
+	import { attachmentHref } from '#lib/utils/attachments.ts';
+	import { renderMarkdown } from '#lib/utils/markdown.ts';
+	import type { EmailAttachmentMeta } from '#lib/types.ts';
 
 	let {
 		emailId,

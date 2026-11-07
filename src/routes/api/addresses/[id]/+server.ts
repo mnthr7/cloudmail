@@ -1,5 +1,5 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
-import { deleteAddress, listAddressesForUser, setDefaultAddress } from '$lib/server/domains';
+import { deleteAddress, listAddressesForUser, setDefaultAddress } from '#lib/server/domains.ts';
 
 export const PATCH: RequestHandler = async ({ params, request, locals, platform }) => {
 	const db = platform?.env.DB;

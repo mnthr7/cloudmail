@@ -1,12 +1,12 @@
 import type { D1Database } from '@cloudflare/workers-types';
-import { parseEmailAddress } from '$lib/email-address';
+import { parseEmailAddress } from '#lib/email-address.ts';
 import {
 	assignCategory,
 	isMailCategory,
 	type CategoryHeaders,
 	type MailCategory
-} from '$lib/organizing/categories';
-import { filterMatches, type FilterMail, type FilterRule } from '$lib/organizing/filters';
+} from '#lib/organizing/categories.ts';
+import { filterMatches, type FilterMail, type FilterRule } from '#lib/organizing/filters.ts';
 import { getUserById } from './auth';
 import { getDefaultAddress } from './domains';
 import type { EmailProvider } from './email-provider';

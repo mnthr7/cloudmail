@@ -1,7 +1,7 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
-import { resolveFromAddress } from '$lib/server/outbox';
-import { saveDraft } from '$lib/server/mail-store';
-import type { OutboundAttachmentInput } from '$lib/types';
+import { resolveFromAddress } from '#lib/server/outbox.ts';
+import { saveDraft } from '#lib/server/mail-store.ts';
+import type { OutboundAttachmentInput } from '#lib/types.ts';
 
 type DraftAction = 'reply' | 'reply-all' | 'forward';
 

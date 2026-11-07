@@ -1,15 +1,15 @@
 <script lang="ts">
 	import Icon from './Icon.svelte';
-	import { formatFileSize } from '$lib/utils/html';
+	import { formatFileSize } from '#lib/utils/html.ts';
 	import {
 		attachmentHref,
 		attachmentIcon,
 		isImageType,
 		isMarkdownAttachment,
 		isPreviewableInline
-	} from '$lib/utils/attachments';
+	} from '#lib/utils/attachments.ts';
 	import MarkdownAttachment from './MarkdownAttachment.svelte';
-	import type { EmailAttachmentMeta } from '$lib/types';
+	import type { EmailAttachmentMeta } from '#lib/types.ts';
 
 	let {
 		emailId,

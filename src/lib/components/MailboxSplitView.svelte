@@ -1,7 +1,7 @@
 <script lang="ts">
-	import { parseEmailAddress } from '$lib/email-address';
+	import { parseEmailAddress } from '#lib/email-address.ts';
 	import { onDestroy, tick } from 'svelte';
-	import { page } from '$app/stores';
+	import { page } from '$app/state';
 	import { goto, invalidateAll } from '$app/navigation';
 	import MailboxView from './MailboxView.svelte';
 	import OrganizeMenu from './OrganizeMenu.svelte';
@@ -10,18 +10,18 @@
 	import RichTextEditor from './RichTextEditor.svelte';
 	import AttachmentPicker from './AttachmentPicker.svelte';
 	import FromAddressSelect from './FromAddressSelect.svelte';
-	import { htmlToPlainText, isHtmlEmpty } from '$lib/utils/html';
-	import { formatFullDate } from '$lib/utils/date';
-	import { showToast } from '$lib/toast';
-	import { AUTOSAVE_MS, shouldAutosave } from '$lib/writing/autosave';
-	import { composerDraft, type ComposerMode } from '$lib/writing/composer';
-	import { holdSend, isFutureSchedule } from '$lib/writing/hold-send';
-	import { applySignature } from '$lib/writing/signature';
+	import { htmlToPlainText, isHtmlEmpty } from '#lib/utils/html.ts';
+	import { formatFullDate } from '#lib/utils/date.ts';
+	import { showToast } from '#lib/toast.ts';
+	import { AUTOSAVE_MS, shouldAutosave } from '#lib/writing/autosave.ts';
+	import { composerDraft, type ComposerMode } from '#lib/writing/composer.ts';
+	import { holdSend, isFutureSchedule } from '#lib/writing/hold-send.ts';
+	import { applySignature } from '#lib/writing/signature.ts';
 	import {
 		defaultReplyFromKey,
 		matchThreadReplyFrom,
 		replyFromOptions
-	} from '$lib/reply-from';
+	} from '#lib/reply-from.ts';
 	import type {
 		Domain,
 		MailAddress,
@@ -30,7 +30,7 @@
 		MailboxView as MailboxViewType,
 		OutboundAttachmentInput,
 		User
-	} from '$lib/types';
+	} from '#lib/types.ts';
 
 	let {
 		view,
@@ -115,7 +115,7 @@
 					subject: composeSubject,
 					html: replyHtml,
 					text: isHtmlEmpty(replyHtml) ? '' : htmlToPlainText(replyHtml),
-					...(replyAttachments.length > 0 ? { attachments: replyAttachments } : {})
+					...replyAttachments.length > 0 ? { attachments: replyAttachments } : {}
 				})
 			});
 			const body = await res.json().catch(() => ({}));
@@ -144,7 +144,7 @@
 
 	// Watch URL for thread parameter
 	$effect(() => {
-		const urlThreadId = $page.url.searchParams.get('thread');
+		const urlThreadId = page.url.searchParams.get('thread');
 		if (urlThreadId !== threadId) {
 			threadId = urlThreadId;
 			if (urlThreadId) {
@@ -240,18 +240,15 @@
 	}
 
 	function handleThreadSelect(id: string) {
-		const params = new URLSearchParams($page.url.searchParams);
+		const params = new URLSearchParams(page.url.search);
 		params.set('thread', id);
-		goto(`${$page.url.pathname}?${params}`, { keepFocus: true, noScroll: true });
+		goto(`${page.url.pathname}?${params}`, { reset: false });
 	}
 
 	function closeThread() {
-		const params = new URLSearchParams($page.url.searchParams);
+		const params = new URLSearchParams(page.url.search);
 		params.delete('thread');
-		goto(`${$page.url.pathname}${params.size ? `?${params}` : ''}`, {
-			keepFocus: true,
-			noScroll: true
-		});
+		goto(`${page.url.pathname}${params.size ? `?${params}` : ''}`, { reset: false });
 	}
 
 	function toggleMessage(id: string) {
@@ -273,19 +270,18 @@
 	const collapsedCount = $derived(messages.filter((m: any) => !opened.has(m.id)).length);
 
 	// Ledger's metadata column (From / To / Date / Thread / Last sent / Attachments).
-	const people = $derived(
-		new Set(messages.map((m: any) => (m.direction === 'outbound' ? 'me' : m.from_addr))).size
-	);
+	const people = $derived(new Set(messages.map((m: any) => m.direction === 'outbound' ? 'me' : m.from_addr)).size);
+
 	const lastSent = $derived([...messages].reverse().find((m: any) => m.direction === 'outbound'));
 	const attachmentCount = $derived(
 		messages.reduce((sum: number, m: any) => sum + (m.attachments?.length ?? 0), 0)
 	);
 	const mailboxLabel = $derived(view.charAt(0).toUpperCase() + view.slice(1));
 
-	const trustedAddresses = $derived(($page.data.trustedAddresses ?? []) as string[]);
-	const addresses = $derived(($page.data.addresses ?? []) as MailAddress[]);
-	const domains = $derived(($page.data.domains ?? []) as Domain[]);
-	const userId = $derived(($page.data.user as User | null)?.id ?? '');
+	const trustedAddresses = $derived((page.data.trustedAddresses ?? []) as string[]);
+	const addresses = $derived((page.data.addresses ?? []) as MailAddress[]);
+	const domains = $derived((page.data.domains ?? []) as Domain[]);
+	const userId = $derived((page.data.user as User | null)?.id ?? '');
 	const replyFrom = $derived(matchThreadReplyFrom(messages, addresses, domains, userId));
 	const fromOptions = $derived(
 		replyFromOptions(addresses, replyFrom.preferred, replyFrom.also)
@@ -303,9 +299,9 @@
 
 	/** No signature is stored for an address until Settings saves one. */
 	function signatureFor(nextFrom: string | null | undefined): string | null {
-		const match = addresses.find((item) => item.address === nextFrom) as
-			| (MailAddress & { signature_html?: string | null })
-			| undefined;
+		const match = addresses.find((item) => item.address === nextFrom) as 
+			(MailAddress & { signature_html?: string | null }) |
+			undefined;
 		const value = match?.signature_html?.trim();
 		return value ? value : null;
 	}
@@ -323,7 +319,7 @@
 			bcc: latest.bcc_addr ?? null,
 			own: [
 				...addresses.map((address) => address.address),
-				...(selected?.address ? [selected.address] : [])
+				...selected?.address ? [selected.address] : []
 			],
 			subject: latest.subject || threadData?.subject || '',
 			createdAt: latest.created_at,
@@ -337,7 +333,7 @@
 		});
 	}
 
-	const showReplyAll = $derived(latest ? (draftFor('reply')?.showReplyAll ?? false) : false);
+	const showReplyAll = $derived(latest ? draftFor('reply')?.showReplyAll ?? false : false);
 
 	/** Scroll the open composer into the reading pane and put the caret in it. */
 	function revealReplyComposer() {
@@ -437,10 +433,9 @@
 				messages: threadData.messages.map((m: any) => ({ ...m, is_starred: next }))
 			};
 		}
-		if (!(await patch({ isStarred: next }))) {
-			showToast("Couldn't update the star. Check your connection and try again.", {
-				kind: 'error'
-			});
+
+		if (!await patch({ isStarred: next })) {
+			showToast("Couldn't update the star. Check your connection and try again.", { kind: 'error' });
 		}
 		await invalidateAll();
 		if (threadId) await loadThread(threadId);
@@ -463,13 +458,13 @@
 			kind === 'trash' ? 'Moved to trash' : kind === 'spam' ? 'Marked as spam' : 'Removed from spam';
 		const fail =
 			kind === 'trash'
-				? "Couldn't move to trash. The message is still in your inbox."
-				: kind === 'spam'
-					? "Couldn't mark as spam. The message is still here."
-					: "Couldn't move it out of spam.";
+			? "Couldn't move to trash. The message is still in your inbox."
+			: kind === 'spam'
+				? "Couldn't mark as spam. The message is still here."
+				: "Couldn't move it out of spam.";
 		const undoFail =
 			kind === 'spam'
-				? "Couldn't undo. Find it in Spam."
+			? "Couldn't undo. Find it in Spam."
 				: kind === 'unspam'
 					? "Couldn't undo."
 					: "Couldn't undo. Find it in Trash.";
@@ -540,7 +535,7 @@
 					subject: composeSubject.trim(),
 					fromAddressId: selected?.addressId ?? undefined,
 					fromAddress: selected?.address,
-					...(archive ? { archive: true } : { archive: false }),
+					...archive ? { archive: true } : { archive: false },
 					attachments: replyAttachments
 				})
 			});
@@ -593,7 +588,14 @@
 
 <div class="split-layout">
 	<div class="list-pane">
-		<MailboxView {view} {mailbox} {filters} {hiddenIds} onThreadSelect={handleThreadSelect} selectedThreadId={threadId} />
+		<MailboxView
+			view={view}
+			mailbox={mailbox}
+			filters={filters}
+			hiddenIds={hiddenIds}
+			onThreadSelect={handleThreadSelect}
+			selectedThreadId={threadId}
+		/>
 	</div>
 
 	<div class="thread-pane" class:has-thread={Boolean(threadId)}>
@@ -741,46 +743,46 @@
 					</dl>
 
 					<div class="thread-sheet">
-					<p class="thread-kicker skin-only">
+						<p class="thread-kicker skin-only">
 						<b>{messages.length} message{messages.length === 1 ? '' : 's'}</b> · {mailboxLabel}{starred
 							? ' · Starred'
 							: ''}
-					</p>
-					<div class="subject-row">
-						<h1>{threadData.subject || '(no subject)'}</h1>
-						{#if messages.length > 1}
-							<span class="thread-count">{messages.length} messages</span>
+						</p>
+						<div class="subject-row">
+							<h1>{threadData.subject || '(no subject)'}</h1>
+							{#if messages.length > 1}
+								<span class="thread-count">{messages.length} messages</span>
+							{/if}
+						</div>
+
+						{#if latest && (threadData.labels ?? []).length > 0}
+							<OrganizeMenu
+								ids={[latest.id]}
+								labels={threadData.labels ?? []}
+								showMenu={false}
+								showChips
+								onChanged={async () => {
+									if (threadId) await loadThread(threadId);
+								}}
+							/>
 						{/if}
-					</div>
 
-					{#if latest && (threadData.labels ?? []).length > 0}
-						<OrganizeMenu
-							ids={[latest.id]}
-							labels={threadData.labels ?? []}
-							showMenu={false}
-							showChips
-							onChanged={async () => {
-								if (threadId) await loadThread(threadId);
-							}}
-						/>
-					{/if}
-
-					{#if collapsedCount > 0}
+						{#if collapsedCount > 0}
 						<button type="button" class="expand-all" onclick={expandAll} data-kb="expand">
 							Expand all {messages.length} messages
 						</button>
-					{/if}
+						{/if}
 
-					<div class="thread-messages">
-						{#each messages as message (message.id)}
-							<ThreadMessage
-								{message}
-								{trustedAddresses}
-								expanded={opened.has(message.id)}
-								onToggle={() => toggleMessage(message.id)}
-							/>
-						{/each}
-					</div>
+						<div class="thread-messages">
+							{#each messages as message (message.id)}
+								<ThreadMessage
+									message={message}
+									trustedAddresses={trustedAddresses}
+									expanded={opened.has(message.id)}
+									onToggle={() => toggleMessage(message.id)}
+								/>
+							{/each}
+						</div>
 					</div>
 
 					{#if composer}
@@ -817,9 +819,12 @@
 							<div class="reply-footer">
 								<AttachmentPicker bind:attachments={replyAttachments} />
 								<div class="reply-actions">
-									<button type="button" class="btn-ghost" onclick={() => (composer = null)}>
-										Cancel
-									</button>
+									<button
+										type="button"
+										class="btn-ghost"
+										onclick={() => composer = null}
+									>Cancel</button>
+
 									{#if composer === 'reply' || composer === 'reply-all' || composer === 'forward'}
 										<button
 											type="button"

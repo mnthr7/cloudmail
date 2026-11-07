@@ -1,10 +1,10 @@
 <script lang="ts">
 	import { invalidateAll } from '$app/navigation';
 	import Icon from './Icon.svelte';
-	import { showToast } from '$lib/toast';
-	import { CATEGORIES, isMailCategory, type MailCategory } from '$lib/organizing/categories';
-	import { inboxUndoTargets } from '$lib/organizing/inbox-undo';
-	import { isFutureInstant, snoozeInstant, type SnoozePreset } from '$lib/organizing/snooze';
+	import { showToast } from '#lib/toast.ts';
+	import { CATEGORIES, isMailCategory, type MailCategory } from '#lib/organizing/categories.ts';
+	import { inboxUndoTargets } from '#lib/organizing/inbox-undo.ts';
+	import { isFutureInstant, snoozeInstant, type SnoozePreset } from '#lib/organizing/snooze.ts';
 
 	type Chip = { id: string; name: string; color: string };
 

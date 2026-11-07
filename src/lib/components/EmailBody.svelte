@@ -1,9 +1,9 @@
 <script lang="ts">
-	import { buildEmailDocument, emailCss, isRichHtml } from '$lib/utils/email-html';
-	import { foldQuotedHtml } from '$lib/utils/quotes';
-	import { SKIN_FONTS, isSkin } from '$lib/skin';
-	import { holdRemoteImages } from '$lib/security/images';
-	import { linkWarning } from '$lib/security/links';
+	import { buildEmailDocument, emailCss, isRichHtml } from '#lib/utils/email-html.ts';
+	import { foldQuotedHtml } from '#lib/utils/quotes.ts';
+	import { SKIN_FONTS, isSkin } from '#lib/skin.ts';
+	import { holdRemoteImages } from '#lib/security/images.ts';
+	import { linkWarning } from '#lib/security/links.ts';
 	import LinkWarning from './LinkWarning.svelte';
 
 	const STYLE_ID = '__mail-frame-style';

@@ -1,15 +1,15 @@
 import type { PageServerLoad } from './$types';
-import { readUndoSendSeconds, readVtThreshold } from '$lib/server/auth';
-import { DEMO_MODE, DEMO_USER } from '$lib/server/demo';
+import { readUndoSendSeconds, readVtThreshold } from '#lib/server/auth.ts';
+import { DEMO_MODE, DEMO_USER } from '#lib/server/demo.ts';
 import {
 	listBlockedSenders,
 	listFilters,
 	type BlockedSender,
 	type FilterRecord
-} from '$lib/server/filters-store';
-import { listImageSenders } from '$lib/server/image-senders';
-import { listLabels, type LabelRecord } from '$lib/server/labels-store';
-import type { UndoSeconds } from '$lib/writing/timing';
+} from '#lib/server/filters-store.ts';
+import { listImageSenders } from '#lib/server/image-senders.ts';
+import { listLabels, type LabelRecord } from '#lib/server/labels-store.ts';
+import type { UndoSeconds } from '#lib/writing/timing.ts';
 
 export const load: PageServerLoad = async ({ locals, platform }) => {
 	const domains = locals.domains;

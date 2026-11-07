@@ -2,7 +2,7 @@ export {
 	MAX_ATTACHMENT_BYTES,
 	MAX_ATTACHMENTS_PER_EMAIL,
 	MAX_TOTAL_ATTACHMENT_BYTES
-} from '$lib/constants';
+} from '#lib/constants.ts';
 export const SESSION_COOKIE = 'mail_session';
 export const SESSION_DAYS = 7;
 export const MAX_BODY_BYTES = 256_000;

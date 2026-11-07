@@ -5,17 +5,17 @@ import {
 	login,
 	sessionCookieOptions,
 	SESSION_COOKIE
-} from '$lib/server/auth';
-import { SESSION_DAYS } from '$lib/server/constants';
-import { secretsMatch } from '$lib/server/crypto';
+} from '#lib/server/auth.ts';
+import { SESSION_DAYS } from '#lib/server/constants.ts';
+import { secretsMatch } from '#lib/server/crypto.ts';
 import {
 	ConfigError,
 	getEmailProvider,
 	safeEmailProviderKind,
 	hasProviderConfigured,
 	ProviderError
-} from '$lib/server/context';
-import { createAddress, setCatchallUser, upsertDomain } from '$lib/server/domains';
+} from '#lib/server/context.ts';
+import { createAddress, setCatchallUser, upsertDomain } from '#lib/server/domains.ts';
 
 export const GET: RequestHandler = async ({ platform }) => {
 	const db = platform?.env.DB;

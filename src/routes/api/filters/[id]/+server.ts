@@ -1,12 +1,12 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
-import { DEMO_MODE, DEMO_USER } from '$lib/server/demo';
+import { DEMO_MODE, DEMO_USER } from '#lib/server/demo.ts';
 import {
 	FilterNotFoundError,
 	FilterWriteError,
 	deleteFilter,
 	parseFilterBody,
 	updateFilter
-} from '$lib/server/filters-store';
+} from '#lib/server/filters-store.ts';
 
 /** Change a filter. Omitted fields stay as they are. The result must still have a condition and an action. */
 export const PATCH: RequestHandler = async ({ params, request, locals, platform }) => {

@@ -1,11 +1,11 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
-import { DEMO_MODE, DEMO_USER } from '$lib/server/demo';
+import { DEMO_MODE, DEMO_USER } from '#lib/server/demo.ts';
 import {
 	FilterWriteError,
 	createFilter,
 	listFilters,
 	parseFilterBody
-} from '$lib/server/filters-store';
+} from '#lib/server/filters-store.ts';
 
 /** The signed-in user's filters, in the order new mail runs them. */
 export const GET: RequestHandler = async ({ locals, platform }) => {

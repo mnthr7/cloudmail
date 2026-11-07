@@ -1,10 +1,10 @@
 import type { LayoutServerLoad } from './$types';
-import { getMailboxCounts } from '$lib/server/mail-store';
-import { listImageSenders } from '$lib/server/image-senders';
-import { listLabels, type LabelRecord } from '$lib/server/labels-store';
-import { demoThreadInView } from '$lib/mailbox-view';
-import { DEMO_LABELS, DEMO_MODE, DEMO_USER, demoStore } from '$lib/server/demo';
-import type { MailboxCounts } from '$lib/types';
+import { getMailboxCounts } from '#lib/server/mail-store.ts';
+import { listImageSenders } from '#lib/server/image-senders.ts';
+import { listLabels, type LabelRecord } from '#lib/server/labels-store.ts';
+import { demoThreadInView } from '#lib/mailbox-view.ts';
+import { DEMO_LABELS, DEMO_MODE, DEMO_USER, demoStore } from '#lib/server/demo.ts';
+import type { MailboxCounts } from '#lib/types.ts';
 
 const EMPTY_COUNTS: MailboxCounts = {
 	inbox: 0,

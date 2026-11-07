@@ -293,7 +293,7 @@ bun run deploy
 | `VIRUSTOTAL_API_KEY` | `wrangler secret put` | Scans incoming attachments. A free key works: the once-a-minute cron stays within the public rate limit. Without a key, attachments are not scanned and stay downloadable. |
 | `PATH_REDIRECT_FROM` / `PATH_REDIRECT_TO` | `vars` | Redirects a path on another host to the mail host. For example, `example.com/mail` → `mail.example.com`. |
 | `SETUP_TOKEN` | `wrangler secret put` | **Recommended for public URLs.** Until the first admin exists, whoever opens `/setup` can create the admin account. With this set, setup also asks for the token. |
-| `DEMO_MODE` | `.dev.vars` | `"true"` runs a read-only demo with sample data. See below. |
+| `DEMO_MODE` | dev server environment | `"true"` runs a read-only demo with sample data. Set it on the command, not in `.dev.vars`. See below. |
 
 The Worker runs a cron every minute (`* * * * *`). It sends any scheduled mail
 that is due and scans pending attachments.
@@ -323,13 +323,15 @@ the `email()` and `scheduled()` handlers from `src/worker.ts`.
 
 ## Demo mode
 
-Set `DEMO_MODE=true` in `.dev.vars` to explore the UI without a provider or
+Set `DEMO_MODE=true` on the dev command to explore the UI without a provider or
 secrets:
 
 ```bash
-echo "DEMO_MODE=true" > .dev.vars
-bun run dev
+DEMO_MODE=true bun run dev
 ```
+
+Demo mode reads `DEMO_MODE` from the dev server's process environment. A value in
+`.dev.vars` only reaches the Worker bindings, so it doesn't turn demo mode on.
 
 You are signed in as `demo@cloudmail.test`, a non-admin user, with a mailbox of
 sample threads. Demo mode is read-only: write requests are refused, and no mail

@@ -1,0 +1,51 @@
+name: Bug report
+description: Something in CloudMail doesn't work as expected.
+labels: [bug, needs-triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. For security issues, use **Security → Report a vulnerability** instead.
+        Don't paste API keys, real addresses, or message contents.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open …
+        2. Click …
+        3. See …
+    validations:
+      required: true
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Mail provider
+      options:
+        - Resend
+        - Cloudflare Email Service
+        - Demo mode / not applicable
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: CloudMail version or commit
+      placeholder: v1.0.0 or c1175a4
+  - type: input
+    id: browser
+    attributes:
+      label: Browser and device
+      placeholder: Safari 19 on iPhone, Chrome 140 on macOS
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Worker logs (`wrangler tail`) or browser console errors, with personal data removed.

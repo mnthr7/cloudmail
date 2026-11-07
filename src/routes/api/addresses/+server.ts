@@ -4,7 +4,7 @@ import {
 	listAddressesForUser,
 	listAllAddresses,
 	ReservedAddressError
-} from '$lib/server/domains';
+} from '#lib/server/domains.ts';
 
 export const GET: RequestHandler = async ({ locals, platform, url }) => {
 	const db = platform?.env.DB;

@@ -1,6 +1,6 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
-import { DEMO_USER } from '$lib/server/demo';
-import { saveSignature } from '$lib/server/signatures';
+import { DEMO_USER } from '#lib/server/demo.ts';
+import { saveSignature } from '#lib/server/signatures.ts';
 
 export const PUT: RequestHandler = async ({ params, request, locals, platform }) => {
 	const db = platform?.env.DB;

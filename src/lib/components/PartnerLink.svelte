@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { EmailProviderKind } from '$lib/types';
+	import type { EmailProviderKind } from '#lib/types.ts';
 	import CloudflareMark from './CloudflareMark.svelte';
 	import Logo from './Logo.svelte';
 	import ResendMark from './ResendMark.svelte';

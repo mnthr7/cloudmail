@@ -1,8 +1,8 @@
 import type { D1Database } from '@cloudflare/workers-types';
-import { parseEmailAddress } from '$lib/email-address';
-import { isMailCategory, type MailCategory } from '$lib/organizing/categories';
-import { isFutureInstant } from '$lib/organizing/snooze';
-import { expandToThreads } from '$lib/server/mail-store';
+import { parseEmailAddress } from '#lib/email-address.ts';
+import { isMailCategory, type MailCategory } from '#lib/organizing/categories.ts';
+import { isFutureInstant } from '#lib/organizing/snooze.ts';
+import { expandToThreads } from '#lib/server/mail-store.ts';
 
 /** Bulk and single-message conversation actions. Both routes call these. */
 export const CONVERSATION_ACTIONS = [

@@ -3,9 +3,9 @@ import {
 	describeProviderError,
 	getEmailProvider,
 	statusForProviderError
-} from '$lib/server/context';
-import { claimScheduled, loadScheduledOutbound } from '$lib/server/outbox-schedule';
-import { sendOutboundEmail } from '$lib/server/send-mail';
+} from '#lib/server/context.ts';
+import { claimScheduled, loadScheduledOutbound } from '#lib/server/outbox-schedule.ts';
+import { sendOutboundEmail } from '#lib/server/send-mail.ts';
 
 /** Sends one due scheduled row. The cron uses the same claim. */
 export const POST: RequestHandler = async ({ params, locals, platform }) => {

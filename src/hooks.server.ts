@@ -1,15 +1,17 @@
-import { redirect, type Handle } from '@sveltejs/kit';
-import { countUsers, getUserFromSession, readSessionToken } from '$lib/server/auth';
-import { DOMAIN_COOKIE } from '$lib/server/constants';
-import { listAddressesForUser, listDomains } from '$lib/server/domains';
+import { env as workerEnv } from 'cloudflare:workers';
+import { redirect } from '@sveltejs/kit';
+import type { Handle } from '@sveltejs/kit/hooks';
+import { countUsers, getUserFromSession, readSessionToken } from '#lib/server/auth.ts';
+import { DOMAIN_COOKIE } from '#lib/server/constants.ts';
+import { listAddressesForUser, listDomains } from '#lib/server/domains.ts';
 import {
 	DEMO_MODE,
 	DEMO_USER,
 	DEMO_DOMAIN,
 	DEMO_ADDRESS,
 	isDemoRequestAllowed
-} from '$lib/server/demo';
-import { SKIN_COOKIE, isSkin, parseSkin } from '$lib/skin';
+} from '#lib/server/demo.ts';
+import { SKIN_COOKIE, isSkin, parseSkin } from '#lib/skin.ts';
 
 const PUBLIC_PREFIXES = ['/login', '/setup', '/api/auth', '/api/setup', '/api/webhooks'];
 
@@ -24,6 +26,13 @@ export const handle: Handle = async ({ event, resolve: resolvePage }) => {
 			...opts,
 			transformPageChunk: ({ html }) => html.replace('%qm.skin%', evt.locals.skin)
 		});
+
+	// adapter-cloudflare 8 (SvelteKit 3) no longer sets `event.platform`; bindings
+	// live on `cloudflare:workers` instead. Put them back on `platform.env` once
+	// here so every load and endpoint keeps reading `platform.env` unchanged.
+	(event as { platform: App.Platform | undefined }).platform ??= {
+		env: workerEnv
+	};
 
 	const db = event.platform?.env.DB;
 	event.locals.user = null;
@@ -97,7 +106,7 @@ export const handle: Handle = async ({ event, resolve: resolvePage }) => {
 		return resolve(event);
 	}
 
-	const needsSetup = db ? (await countUsers(db)) === 0 : false;
+	const needsSetup = db ? await countUsers(db) === 0 : false;
 
 	if (needsSetup && pathname !== '/setup') {
 		throw redirect(303, '/setup');

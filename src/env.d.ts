@@ -1,5 +1,5 @@
 import type { D1Database, R2Bucket } from '@cloudflare/workers-types';
-import type { CloudflareSendEmailBinding } from '$lib/server/providers/cloudflare-provider';
+import type { CloudflareSendEmailBinding } from '#lib/server/providers/cloudflare-provider.ts';
 
 declare global {
 	interface Env {

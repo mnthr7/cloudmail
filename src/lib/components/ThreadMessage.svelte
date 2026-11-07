@@ -4,13 +4,13 @@
 	import DeliveryStatus from './DeliveryStatus.svelte';
 	import EmailBody from './EmailBody.svelte';
 	import { untrack } from 'svelte';
-	import { showToast } from '$lib/toast';
-	import { formatFullDate, formatRelativeDate } from '$lib/utils/date';
-	import { splitQuotedText } from '$lib/utils/quotes';
-	import { isMarkdownAttachment } from '$lib/utils/attachments';
-	import { resolveMessageBody } from '$lib/utils/markdown';
-	import { senderWarning } from '$lib/security/sender';
-	import type { ThreadMessage } from '$lib/types';
+	import { showToast } from '#lib/toast.ts';
+	import { formatFullDate, formatRelativeDate } from '#lib/utils/date.ts';
+	import { splitQuotedText } from '#lib/utils/quotes.ts';
+	import { isMarkdownAttachment } from '#lib/utils/attachments.ts';
+	import { resolveMessageBody } from '#lib/utils/markdown.ts';
+	import { senderWarning } from '#lib/security/sender.ts';
+	import type { ThreadMessage } from '#lib/types.ts';
 
 	let {
 		message,

@@ -1,16 +1,16 @@
 <script lang="ts">
 	import { goto, invalidateAll } from '$app/navigation';
-	import { page as currentPage } from '$app/stores';
+	import { page as currentPage } from '$app/state';
 	import Icon from './Icon.svelte';
 	import EmptyState from './EmptyState.svelte';
 	import DeliveryStatus from './DeliveryStatus.svelte';
 	import OrganizeMenu from './OrganizeMenu.svelte';
-	import { showToast } from '$lib/toast';
-	import { applyThreadReadState } from '$lib/mailbox-read-state';
-	import { CATEGORIES, isMailCategory, type MailCategory } from '$lib/organizing/categories';
-	import { dateGroup, formatRelativeDate } from '$lib/utils/date';
-	import { senderWarning } from '$lib/security/sender';
-	import type { MailboxFilters, MailboxPage, MailboxView, ThreadSummary } from '$lib/types';
+	import { showToast } from '#lib/toast.ts';
+	import { applyThreadReadState } from '#lib/mailbox-read-state.ts';
+	import { CATEGORIES, isMailCategory, type MailCategory } from '#lib/organizing/categories.ts';
+	import { dateGroup, formatRelativeDate } from '#lib/utils/date.ts';
+	import { senderWarning } from '#lib/security/sender.ts';
+	import type { MailboxFilters, MailboxPage, MailboxView, ThreadSummary } from '#lib/types.ts';
 
 	const CATEGORY_LABELS: Record<MailCategory, string> = {
 		primary: 'Primary',
@@ -27,11 +27,12 @@
 		hiddenIds = [],
 		onThreadSelect,
 		selectedThreadId
-	}: {
+
+		/** Threads already removed by the reader, ahead of the server round trip. */
+	}: { 
 		view: MailboxView;
 		mailbox: MailboxPage;
 		filters: MailboxFilters;
-		/** Threads already removed by the reader, ahead of the server round trip. */
 		hiddenIds?: string[];
 		onThreadSelect?: (id: string) => void;
 		selectedThreadId?: string | null;
@@ -52,9 +53,9 @@
 	const meta = $derived(META[view]);
 
 	/** Inbox unread count for the paper skins' "1 unread · 248 conversations" line. */
-	const unreadCount = $derived(
-		view === 'inbox' ? (($currentPage.data.counts?.inbox_unread as number | undefined) ?? 0) : 0
-	);
+	const unreadCount = $derived(view === 'inbox'
+		? currentPage.data.counts?.inbox_unread as number | undefined ?? 0
+		: 0);
 
 	/** Date dividers (Today, Yesterday, …) with how many rows each holds. */
 	const groups = $derived.by(() => {
@@ -98,10 +99,10 @@
 	const mutedMode = $derived(selectionMode((thread) => thread.is_muted));
 	const importantMode = $derived(selectionMode((thread) => thread.is_important));
 	const activeCategory = $derived.by(() => {
-		const value = $currentPage.url.searchParams.get('category');
+		const value = currentPage.url.searchParams.get('category');
 		return isMailCategory(value) ? value : 'primary';
 	});
-	const serverPriority = $derived(Boolean($currentPage.data.priorityInbox));
+	const serverPriority = $derived(Boolean(currentPage.data.priorityInbox));
 	let priorityOverride = $state<boolean | null>(null);
 	let priorityBusy = $state(false);
 	const priorityOn = $derived(priorityOverride ?? serverPriority);
@@ -118,14 +119,8 @@
 	 * they name the recipient; everywhere else names the people in the thread.
 	 */
 	function people(thread: ThreadSummary): string {
-		if (
-			view === 'drafts' ||
-			view === 'scheduled' ||
-			(view === 'sent' && thread.participants.every((p) => p.self))
-		) {
-			return (
-				recipientOf(thread) || (view === 'drafts' || view === 'scheduled' ? 'No recipient' : 'Unknown')
-			);
+		if (view === 'drafts' || view === 'scheduled' || view === 'sent' && thread.participants.every((p) => p.self)) {
+			return recipientOf(thread) || (view === 'drafts' || view === 'scheduled' ? 'No recipient' : 'Unknown');
 		}
 
 		return thread.participants.map((participant) => participant.label).join(', ');
@@ -240,10 +235,9 @@
 		const before = items;
 		items = items.filter((row) => row.thread_id !== thread.thread_id);
 		try {
-			const res = await fetch(`/api/mail/${encodeURIComponent(thread.latest_id)}/cancel`, {
-				method: 'POST'
-			});
-			const body = (await res.json().catch(() => null)) as { status?: string } | null;
+			const res = await fetch(`/api/mail/${encodeURIComponent(thread.latest_id)}/cancel`, { method: 'POST' });
+			const body = await res.json().catch(() => null) as { status?: string } | null;
+
 			if (body?.status === 'sent') {
 				items = before;
 				showToast('Already sent');
@@ -291,7 +285,7 @@
 
 	/** Builds a URL for this mailbox with some query params changed. */
 	function withParams(changes: Record<string, string | number | boolean | null>): string {
-		const params = new URLSearchParams($currentPage.url.searchParams);
+		const params = new URLSearchParams(currentPage.url.search);
 
 		for (const [key, value] of Object.entries(changes)) {
 			if (value === null || value === false || value === '') params.delete(key);
@@ -302,7 +296,7 @@
 		if (!('page' in changes)) params.delete('page');
 
 		const query = params.toString();
-		return `${$currentPage.url.pathname}${query ? `?${query}` : ''}`;
+		return `${currentPage.url.pathname}${query ? `?${query}` : ''}`;
 	}
 
 	function apply(changes: Record<string, string | number | boolean | null>) {
@@ -369,17 +363,15 @@
 					class="caret"
 					aria-label="Selection options"
 					aria-expanded={selectMenuOpen}
-					onclick={() => (selectMenuOpen = !selectMenuOpen)}
-				>
-					<Icon name="arrow-down-s-line" size={14} />
-				</button>
+					onclick={() => selectMenuOpen = !selectMenuOpen}
+				><Icon name="arrow-down-s-line" size={14} /></button>
 
 				{#if selectMenuOpen}
 					<button
 						type="button"
 						class="backdrop"
 						aria-label="Close menu"
-						onclick={() => (selectMenuOpen = false)}
+						onclick={() => selectMenuOpen = false}
 					></button>
 					<div class="menu menu-left" role="menu">
 						<button type="button" class="menu-item" onclick={() => selectWhere(() => true)}>
@@ -528,17 +520,15 @@
 						class="tool-btn"
 						aria-label="Mailbox actions"
 						aria-expanded={moreOpen}
-						onclick={() => (moreOpen = !moreOpen)}
-					>
-						<Icon name="more-line" size={16} />
-					</button>
+						onclick={() => moreOpen = !moreOpen}
+					><Icon name="more-line" size={16} /></button>
 
 					{#if moreOpen}
 						<button
 							type="button"
 							class="backdrop"
 							aria-label="Close menu"
-							onclick={() => (moreOpen = false)}
+							onclick={() => moreOpen = false}
 						></button>
 						<div class="menu menu-left" role="menu">
 							<button type="button" class="menu-item" onclick={() => run('read-all', [])}>
@@ -578,7 +568,7 @@
 					class="pill"
 					class:pill-on={activeFilterCount > 0}
 					aria-expanded={filterOpen}
-					onclick={() => (filterOpen = !filterOpen)}
+					onclick={() => filterOpen = !filterOpen}
 				>
 					<Icon name="equalizer-line" size={14} />
 					Filter
@@ -590,7 +580,7 @@
 						type="button"
 						class="backdrop"
 						aria-label="Close filters"
-						onclick={() => (filterOpen = false)}
+						onclick={() => filterOpen = false}
 					></button>
 					<div class="menu menu-right" role="menu">
 						<button

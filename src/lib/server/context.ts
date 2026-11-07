@@ -1,4 +1,4 @@
-import type { AvailableDomain } from '$lib/types';
+import type { AvailableDomain } from '#lib/types.ts';
 import {
 	parseMailDomains,
 	ProviderError,

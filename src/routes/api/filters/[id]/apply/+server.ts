@@ -1,13 +1,13 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
-import { getEmailProvider } from '$lib/server/context';
-import { DEMO_MODE, DEMO_USER } from '$lib/server/demo';
-import type { EmailProvider } from '$lib/server/email-provider';
-import { ConfigError } from '$lib/server/errors';
+import { getEmailProvider } from '#lib/server/context.ts';
+import { DEMO_MODE, DEMO_USER } from '#lib/server/demo.ts';
+import type { EmailProvider } from '#lib/server/email-provider.ts';
+import { ConfigError } from '#lib/server/errors.ts';
 import {
 	FilterNotFoundError,
 	FilterWriteError,
 	applySavedFilter
-} from '$lib/server/filters-store';
+} from '#lib/server/filters-store.ts';
 
 /**
  * Apply one saved filter to mail already filed.

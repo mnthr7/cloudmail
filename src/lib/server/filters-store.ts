@@ -1,13 +1,13 @@
 import type { D1Database } from '@cloudflare/workers-types';
-import { parseEmailAddress } from '$lib/email-address';
-import { isMailCategory, type MailCategory } from '$lib/organizing/categories';
-import { filterMatches, type FilterRule } from '$lib/organizing/filters';
-import type { EmailProvider } from '$lib/server/email-provider';
+import { parseEmailAddress } from '#lib/email-address.ts';
+import { isMailCategory, type MailCategory } from '#lib/organizing/categories.ts';
+import { filterMatches, type FilterRule } from '#lib/organizing/filters.ts';
+import type { EmailProvider } from '#lib/server/email-provider.ts';
 import {
 	applyFilterActions,
 	forwardFiledMail,
 	type FilterActionRule
-} from '$lib/server/organize-inbound';
+} from '#lib/server/organize-inbound.ts';
 
 /** D1 rejects a statement with more than this many bound parameters. */
 const D1_PARAM_CAP = 100;

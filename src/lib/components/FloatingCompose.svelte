@@ -4,11 +4,11 @@
 	import Icon from './Icon.svelte';
 	import RichTextEditor from './RichTextEditor.svelte';
 	import AttachmentPicker from './AttachmentPicker.svelte';
-	import { htmlToPlainText, isHtmlEmpty } from '$lib/utils/html';
-	import { AUTOSAVE_MS, shouldAutosave } from '$lib/writing/autosave';
-	import { applySignature } from '$lib/writing/signature';
-	import { holdSend, isFutureSchedule } from '$lib/writing/hold-send';
-	import type { MailAddress, OutboundAttachmentInput } from '$lib/types';
+	import { htmlToPlainText, isHtmlEmpty } from '#lib/utils/html.ts';
+	import { AUTOSAVE_MS, shouldAutosave } from '#lib/writing/autosave.ts';
+	import { applySignature } from '#lib/writing/signature.ts';
+	import { holdSend, isFutureSchedule } from '#lib/writing/hold-send.ts';
+	import type { MailAddress, OutboundAttachmentInput } from '#lib/types.ts';
 
 	let {
 		addresses,

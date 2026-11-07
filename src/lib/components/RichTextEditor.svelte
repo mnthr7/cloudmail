@@ -6,10 +6,10 @@
 		insertPlainText,
 		macPasteArmed,
 		textFromDataTransfer
-	} from '$lib/utils/editor-paste';
-	import { clampDragWidth, widthForPreset, type ImageSizePreset } from '$lib/utils/image-size';
-	import { EDITOR_COMMANDS, type EditorCommand } from '$lib/writing/editor-commands';
-	import { sanitizeEmailHtml } from '$lib/security/email-html';
+	} from '#lib/utils/editor-paste.ts';
+	import { clampDragWidth, widthForPreset, type ImageSizePreset } from '#lib/utils/image-size.ts';
+	import { EDITOR_COMMANDS, type EditorCommand } from '#lib/writing/editor-commands.ts';
+	import { sanitizeEmailHtml } from '#lib/security/email-html.ts';
 
 	let {
 		html = $bindable(''),

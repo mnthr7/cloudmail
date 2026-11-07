@@ -1,6 +1,6 @@
 import type { D1Database } from '@cloudflare/workers-types';
-import { isReservedLocalPart, isValidLocalPart } from '$lib/email-address';
-import type { Domain, MailAddress } from '$lib/types';
+import { isReservedLocalPart, isValidLocalPart } from '#lib/email-address.ts';
+import type { Domain, MailAddress } from '#lib/types.ts';
 import type { EmailProvider, ProviderDomain } from './email-provider';
 
 type DomainRow = {

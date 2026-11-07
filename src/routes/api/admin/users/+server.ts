@@ -1,6 +1,6 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
-import { createUser, listUsers } from '$lib/server/auth';
-import { createAddress, getDomain, listAllAddresses } from '$lib/server/domains';
+import { createUser, listUsers } from '#lib/server/auth.ts';
+import { createAddress, getDomain, listAllAddresses } from '#lib/server/domains.ts';
 
 export const GET: RequestHandler = async ({ locals, platform }) => {
 	if (!locals.user?.is_admin) {

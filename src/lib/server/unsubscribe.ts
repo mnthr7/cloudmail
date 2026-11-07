@@ -1,7 +1,7 @@
 import type { D1Database } from '@cloudflare/workers-types';
-import { parseEmailAddresses } from '$lib/email-address';
-import { parseUnsubscribe, publicHttpsError } from '$lib/organizing/unsubscribe';
-import type { MailAddress, User } from '$lib/types';
+import { parseEmailAddresses } from '#lib/email-address.ts';
+import { parseUnsubscribe, publicHttpsError } from '#lib/organizing/unsubscribe.ts';
+import type { MailAddress, User } from '#lib/types.ts';
 import { getAddressByValueForUser, getDefaultAddress } from './domains';
 import type { EmailProvider } from './email-provider';
 import { sendOutboundEmail } from './send-mail';

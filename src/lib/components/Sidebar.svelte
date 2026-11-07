@@ -1,11 +1,11 @@
 <script lang="ts">
 	import { invalidateAll } from '$app/navigation';
-	import { page } from '$app/stores';
+	import { page } from '$app/state';
 	import Icon from './Icon.svelte';
 	import Logo from './Logo.svelte';
 	import DomainSwitcher from './DomainSwitcher.svelte';
-	import { LABEL_COLORS, type LabelColor } from '$lib/organizing/labels';
-	import type { Domain, MailboxCounts } from '$lib/types';
+	import { LABEL_COLORS, type LabelColor } from '#lib/organizing/labels.ts';
+	import type { Domain, MailboxCounts } from '#lib/types.ts';
 
 	type SidebarLabel = {
 		id: string;
@@ -25,13 +25,14 @@
 		collapsed = $bindable(false),
 		mobileOpen = $bindable(false),
 		onCompose
-	}: {
+
+		/** Sending address shown under the brand in the paper skins. */
+	}: { 
 		counts: MailboxCounts;
 		labels?: SidebarLabel[];
 		domains: Domain[];
 		activeDomainId: string | null;
 		isAdmin: boolean;
-		/** Sending address shown under the brand in the paper skins. */
 		account?: string;
 		collapsed?: boolean;
 		mobileOpen?: boolean;
@@ -143,7 +144,7 @@
 					color: draftColor
 				})
 			});
-			const body = (await res.json().catch(() => null)) as { error?: unknown } | null;
+			const body = await res.json().catch(() => null) as { error?: unknown } | null;
 			if (!res.ok) {
 				draftError = labelWriteError(body?.error);
 				return;
@@ -204,7 +205,7 @@
 					color: editColor
 				})
 			});
-			const body = (await res.json().catch(() => null)) as { error?: unknown } | null;
+			const body = await res.json().catch(() => null) as { error?: unknown } | null;
 			if (!res.ok) {
 				if (editingId === id) editError = labelWriteError(body?.error, 'Could not save that label.');
 				return;
@@ -224,7 +225,7 @@
 
 		try {
 			const res = await fetch(`/api/labels/${label.id}`, { method: 'DELETE' });
-			const body = (await res.json().catch(() => null)) as { error?: unknown } | null;
+			const body = await res.json().catch(() => null) as { error?: unknown } | null;
 			if (!res.ok) {
 				deleteError = labelWriteError(body?.error, 'Could not delete that label.');
 				return;
@@ -237,12 +238,19 @@
 	}
 
 	const tools = $derived<NavItem[]>([
-		{ href: '/settings', icon: 'user-settings-line', label: 'Settings' },
-		...(isAdmin ? [{ href: '/admin', icon: 'settings-3-line', label: 'Admin' }] : [])
+		{
+			href: '/settings',
+			icon: 'user-settings-line',
+			label: 'Settings'
+		},
+
+		...isAdmin
+			? [{ href: '/admin', icon: 'settings-3-line', label: 'Admin' }]
+			: []
 	]);
 
 	function isActive(href: string): boolean {
-		return $page.url.pathname === href || $page.url.pathname.startsWith(`${href}/`);
+		return page.url.pathname === href || page.url.pathname.startsWith(`${href}/`);
 	}
 </script>
 
@@ -251,7 +259,7 @@
 		type="button"
 		class="scrim"
 		aria-label="Close navigation"
-		onclick={() => (mobileOpen = false)}
+		onclick={() => mobileOpen = false}
 	></button>
 {/if}
 
@@ -281,7 +289,7 @@
 				class="nav-link"
 				class:active={isActive(item.href)}
 				title={collapsed ? item.label : undefined}
-				onclick={() => (mobileOpen = false)}
+				onclick={() => mobileOpen = false}
 			>
 				<Icon name={item.icon} size={17} />
 				{#if !collapsed}
@@ -321,9 +329,7 @@
 									<option value="">No parent</option>
 									{#each labelRows as option (option.label.id)}
 										{#if option.label.id !== row.label.id}
-											<option value={option.label.id}>
-												{`${'\u2014 '.repeat(option.depth)}${option.label.name}`}
-											</option>
+											<option value={option.label.id}>{`${('\u2014 ').repeat(option.depth)}${option.label.name}`}</option>
 										{/if}
 									{/each}
 								</select>
@@ -338,7 +344,7 @@
 											data-color={color}
 											aria-label={color}
 											aria-pressed={editColor === color}
-											onclick={() => (editColor = color)}
+											onclick={() => editColor = color}
 										></button>
 									{/each}
 								</div>
@@ -354,8 +360,8 @@
 							<a
 								href="/labels/{row.label.id}"
 								class="nav-link"
-								class:active={$page.url.pathname === `/labels/${row.label.id}`}
-								onclick={() => (mobileOpen = false)}
+								class:active={page.url.pathname === `/labels/${row.label.id}`}
+								onclick={() => mobileOpen = false}
 							>
 								<span class="label-indent" style:padding-left="{row.depth * 0.75}rem">
 									<span class="label-dot" data-color={row.label.color}></span>
@@ -404,9 +410,7 @@
 						<select class="label-input" bind:value={draftParentId}>
 							<option value="">No parent</option>
 							{#each labelRows as row (row.label.id)}
-								<option value={row.label.id}>
-									{`${'\u2014 '.repeat(row.depth)}${row.label.name}`}
-								</option>
+								<option value={row.label.id}>{`${('\u2014 ').repeat(row.depth)}${row.label.name}`}</option>
 							{/each}
 						</select>
 					</label>
@@ -420,14 +424,19 @@
 									data-color={color}
 									aria-label={color}
 									aria-pressed={draftColor === color}
-									onclick={() => (draftColor = color)}
+									onclick={() => draftColor = color}
 								></button>
 							{/each}
 						</div>
 					</div>
 					{#if draftError}<p class="label-error">{draftError}</p>{/if}
 					<div class="label-actions">
-						<button type="submit" class="label-submit" disabled={draftBusy}>New label</button>
+						<button
+							type="submit"
+							class="label-submit"
+							disabled={draftBusy}
+						>New label</button>
+
 						<button
 							type="button"
 							class="label-cancel"
@@ -453,7 +462,11 @@
 		<div class="section">
 			<p class="section-title">Domains</p>
 			<div class="section-body">
-				<DomainSwitcher {domains} {activeDomainId} block />
+				<DomainSwitcher
+					domains={domains}
+					activeDomainId={activeDomainId}
+					block
+				/>
 			</div>
 		</div>
 	{/if}
@@ -465,7 +478,7 @@
 				class="nav-link"
 				class:active={isActive(item.href)}
 				title={collapsed ? item.label : undefined}
-				onclick={() => (mobileOpen = false)}
+				onclick={() => mobileOpen = false}
 			>
 				<Icon name={item.icon} size={17} />
 				{#if !collapsed}<span class="nav-label">{item.label}</span>{/if}
@@ -478,7 +491,7 @@
 			type="button"
 			class="collapse-btn"
 			aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-			onclick={() => (collapsed = !collapsed)}
+			onclick={() => collapsed = !collapsed}
 		>
 			<Icon name={collapsed ? 'arrow-right-double-line' : 'arrow-left-double-line'} size={15} />
 		</button>
@@ -709,43 +722,43 @@
 		background: var(--color-muted);
 	}
 
-	.label-dot[data-color='slate'],
-	.color-choice[data-color='slate'] {
+	.label-dot[data-color="slate"],
+	.color-choice[data-color="slate"] {
 		background: #5f6368;
 	}
 
-	.label-dot[data-color='red'],
-	.color-choice[data-color='red'] {
+	.label-dot[data-color="red"],
+	.color-choice[data-color="red"] {
 		background: #d93025;
 	}
 
-	.label-dot[data-color='orange'],
-	.color-choice[data-color='orange'] {
+	.label-dot[data-color="orange"],
+	.color-choice[data-color="orange"] {
 		background: #e37400;
 	}
 
-	.label-dot[data-color='amber'],
-	.color-choice[data-color='amber'] {
+	.label-dot[data-color="amber"],
+	.color-choice[data-color="amber"] {
 		background: #f9ab00;
 	}
 
-	.label-dot[data-color='green'],
-	.color-choice[data-color='green'] {
+	.label-dot[data-color="green"],
+	.color-choice[data-color="green"] {
 		background: #188038;
 	}
 
-	.label-dot[data-color='blue'],
-	.color-choice[data-color='blue'] {
+	.label-dot[data-color="blue"],
+	.color-choice[data-color="blue"] {
 		background: #1a73e8;
 	}
 
-	.label-dot[data-color='violet'],
-	.color-choice[data-color='violet'] {
+	.label-dot[data-color="violet"],
+	.color-choice[data-color="violet"] {
 		background: #9334e6;
 	}
 
-	.label-dot[data-color='pink'],
-	.color-choice[data-color='pink'] {
+	.label-dot[data-color="pink"],
+	.color-choice[data-color="pink"] {
 		background: #d01884;
 	}
 
@@ -818,7 +831,7 @@
 		box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12);
 	}
 
-	.color-choice[aria-pressed='true'] {
+	.color-choice[aria-pressed="true"] {
 		box-shadow: 0 0 0 2px var(--color-surface), 0 0 0 3.5px var(--color-text);
 	}
 

@@ -1,5 +1,5 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
-import { deleteDraft } from '$lib/server/mail-store';
+import { deleteDraft } from '#lib/server/mail-store.ts';
 
 export const DELETE: RequestHandler = async ({ params, locals, platform }) => {
 	const db = platform?.env.DB;

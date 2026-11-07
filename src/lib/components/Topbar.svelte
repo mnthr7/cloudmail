@@ -3,7 +3,7 @@
 	import { page } from '$app/stores';
 	import Icon from './Icon.svelte';
 	import Logo from './Logo.svelte';
-	import type { Domain, MailAddress } from '$lib/types';
+	import type { Domain, MailAddress } from '#lib/types.ts';
 
 	let {
 		userName,

@@ -6,11 +6,11 @@ import {
 	setUserPriorityInbox,
 	setUserUndoSendSeconds,
 	setUserVtThreshold
-} from '$lib/server/auth';
-import { DEMO_USER } from '$lib/server/demo';
-import { parseThreshold } from '$lib/security/verdict';
-import { SKIN_COOKIE, isSkin } from '$lib/skin';
-import { parseUndoSeconds, type UndoSeconds } from '$lib/writing/timing';
+} from '#lib/server/auth.ts';
+import { DEMO_USER } from '#lib/server/demo.ts';
+import { parseThreshold } from '#lib/security/verdict.ts';
+import { SKIN_COOKIE, isSkin } from '#lib/skin.ts';
+import { parseUndoSeconds, type UndoSeconds } from '#lib/writing/timing.ts';
 
 const YEAR_SECONDS = 365 * 24 * 60 * 60;
 

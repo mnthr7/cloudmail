@@ -1,16 +1,16 @@
 import { redirect } from '@sveltejs/kit';
 import type { Handle } from '@sveltejs/kit/hooks';
-import { countUsers, getUserFromSession, readSessionToken } from '$lib/server/auth';
-import { DOMAIN_COOKIE } from '$lib/server/constants';
-import { listAddressesForUser, listDomains } from '$lib/server/domains';
+import { countUsers, getUserFromSession, readSessionToken } from '#lib/server/auth.ts';
+import { DOMAIN_COOKIE } from '#lib/server/constants.ts';
+import { listAddressesForUser, listDomains } from '#lib/server/domains.ts';
 import {
 	DEMO_MODE,
 	DEMO_USER,
 	DEMO_DOMAIN,
 	DEMO_ADDRESS,
 	isDemoRequestAllowed
-} from '$lib/server/demo';
-import { SKIN_COOKIE, isSkin, parseSkin } from '$lib/skin';
+} from '#lib/server/demo.ts';
+import { SKIN_COOKIE, isSkin, parseSkin } from '#lib/skin.ts';
 
 const PUBLIC_PREFIXES = ['/login', '/setup', '/api/auth', '/api/setup', '/api/webhooks'];
 

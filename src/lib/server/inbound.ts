@@ -1,5 +1,5 @@
 import type { D1Database, R2Bucket } from '@cloudflare/workers-types';
-import type { DeliveryStatus } from '$lib/types';
+import type { DeliveryStatus } from '#lib/types.ts';
 import { insertAttachmentBytes } from './attachments';
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS_PER_EMAIL, MAX_BODY_BYTES } from './constants';
 import { collectInboundRecipients, displayNameFromHeader, parseEmailAddress } from './email-address';

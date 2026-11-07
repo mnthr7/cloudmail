@@ -1,6 +1,6 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
-import { DEMO_MODE, DEMO_USER } from '$lib/server/demo';
-import { listBlockedSenders, removeBlockedSender } from '$lib/server/filters-store';
+import { DEMO_MODE, DEMO_USER } from '#lib/server/demo.ts';
+import { listBlockedSenders, removeBlockedSender } from '#lib/server/filters-store.ts';
 
 /** Blocked mailbox addresses for the signed-in user. */
 export const GET: RequestHandler = async ({ locals, platform }) => {

@@ -1,5 +1,5 @@
 import type { PageServerLoad } from './$types';
-import { getDraft } from '$lib/server/mail-store';
+import { getDraft } from '#lib/server/mail-store.ts';
 
 export const load: PageServerLoad = async ({ locals, platform, url }) => {
 	const draftId = url.searchParams.get('draft');

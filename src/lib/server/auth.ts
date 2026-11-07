@@ -1,7 +1,7 @@
 import type { D1Database } from '@cloudflare/workers-types';
 import { SESSION_COOKIE, SESSION_DAYS } from './constants';
 import { createSessionToken, hashPassword, hashToken, verifyPassword } from './crypto';
-import type { User } from '$lib/types';
+import type { User } from '#lib/types.ts';
 import { parseThreshold } from '../security/verdict';
 import { parseUndoSeconds, type UndoSeconds } from '../writing/timing';
 

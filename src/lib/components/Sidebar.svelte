@@ -4,8 +4,8 @@
 	import Icon from './Icon.svelte';
 	import Logo from './Logo.svelte';
 	import DomainSwitcher from './DomainSwitcher.svelte';
-	import { LABEL_COLORS, type LabelColor } from '$lib/organizing/labels';
-	import type { Domain, MailboxCounts } from '$lib/types';
+	import { LABEL_COLORS, type LabelColor } from '#lib/organizing/labels.ts';
+	import type { Domain, MailboxCounts } from '#lib/types.ts';
 
 	type SidebarLabel = {
 		id: string;

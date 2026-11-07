@@ -1,9 +1,9 @@
 import type { D1Database, R2Bucket } from '@cloudflare/workers-types';
-import { MAILBOX_PAGE_SIZE } from '$lib/constants';
+import { MAILBOX_PAGE_SIZE } from '#lib/constants.ts';
 import { MAX_BODY_BYTES } from './constants';
-import { stripQuotedText } from '$lib/utils/quotes';
-import { conversationKey } from '$lib/mailbox-read-state';
-import { isMailCategory, type MailCategory } from '$lib/organizing/categories';
+import { stripQuotedText } from '#lib/utils/quotes.ts';
+import { conversationKey } from '#lib/mailbox-read-state.ts';
+import { isMailCategory, type MailCategory } from '#lib/organizing/categories.ts';
 import { displaySubject, normalizeSubject, resolveThreadId } from './threads';
 import { insertAttachments } from './attachments';
 import type {
@@ -19,7 +19,7 @@ import type {
 	ThreadMessage,
 	ThreadParticipant,
 	ThreadSummary
-} from '$lib/types';
+} from '#lib/types.ts';
 
 export async function getUserIdByEmail(db: D1Database, email: string): Promise<string | null> {
 	const row = await db

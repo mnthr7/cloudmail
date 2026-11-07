@@ -1,5 +1,5 @@
 import type { D1Database } from '@cloudflare/workers-types';
-import { LABEL_COLORS, labelEditError, type LabelColor, type LabelDraft } from '$lib/organizing/labels';
+import { LABEL_COLORS, labelEditError, type LabelColor, type LabelDraft } from '#lib/organizing/labels.ts';
 
 export type LabelRecord = {
 	id: string;

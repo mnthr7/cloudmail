@@ -1,14 +1,14 @@
 import { error } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
-import { isMailCategory } from '$lib/organizing/categories';
+import { isMailCategory } from '#lib/organizing/categories.ts';
 import {
 	getEmailForUser,
 	listThreadLabels,
 	listThreadMessages,
 	markThreadRead
-} from '$lib/server/mail-store';
-import { displaySubject } from '$lib/server/threads';
-import { DEMO_MODE, DEMO_USER, generateDemoMessages, demoStore } from '$lib/server/demo';
+} from '#lib/server/mail-store.ts';
+import { displaySubject } from '#lib/server/threads.ts';
+import { DEMO_MODE, DEMO_USER, generateDemoMessages, demoStore } from '#lib/server/demo.ts';
 
 export const load: PageServerLoad = async ({ params, locals, platform, url }) => {
 	if (!locals.user) {

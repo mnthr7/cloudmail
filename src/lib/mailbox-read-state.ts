@@ -1,4 +1,4 @@
-import type { ThreadSummary } from '$lib/types';
+import type { ThreadSummary } from '#lib/types.ts';
 
 /** Conversation key used by list + mark-read queries: thread_id, else the message id. */
 export function conversationKey(email: { id: string; thread_id?: string | null }): string {

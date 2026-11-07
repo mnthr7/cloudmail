@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { Domain, MailboxCounts } from '$lib/types';
+	import type { Domain, MailboxCounts } from '#lib/types.ts';
 
 	// Ledger's bottom strip: live counts on the left, the keyboard map on the right.
 	let {

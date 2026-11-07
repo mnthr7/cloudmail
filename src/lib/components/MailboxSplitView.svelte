@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { parseEmailAddress } from '$lib/email-address';
+	import { parseEmailAddress } from '#lib/email-address.ts';
 	import { onDestroy, tick } from 'svelte';
 	import { page } from '$app/stores';
 	import { goto, invalidateAll } from '$app/navigation';
@@ -10,18 +10,18 @@
 	import RichTextEditor from './RichTextEditor.svelte';
 	import AttachmentPicker from './AttachmentPicker.svelte';
 	import FromAddressSelect from './FromAddressSelect.svelte';
-	import { htmlToPlainText, isHtmlEmpty } from '$lib/utils/html';
-	import { formatFullDate } from '$lib/utils/date';
-	import { showToast } from '$lib/toast';
-	import { AUTOSAVE_MS, shouldAutosave } from '$lib/writing/autosave';
-	import { composerDraft, type ComposerMode } from '$lib/writing/composer';
-	import { holdSend, isFutureSchedule } from '$lib/writing/hold-send';
-	import { applySignature } from '$lib/writing/signature';
+	import { htmlToPlainText, isHtmlEmpty } from '#lib/utils/html.ts';
+	import { formatFullDate } from '#lib/utils/date.ts';
+	import { showToast } from '#lib/toast.ts';
+	import { AUTOSAVE_MS, shouldAutosave } from '#lib/writing/autosave.ts';
+	import { composerDraft, type ComposerMode } from '#lib/writing/composer.ts';
+	import { holdSend, isFutureSchedule } from '#lib/writing/hold-send.ts';
+	import { applySignature } from '#lib/writing/signature.ts';
 	import {
 		defaultReplyFromKey,
 		matchThreadReplyFrom,
 		replyFromOptions
-	} from '$lib/reply-from';
+	} from '#lib/reply-from.ts';
 	import type {
 		Domain,
 		MailAddress,
@@ -30,7 +30,7 @@
 		MailboxView as MailboxViewType,
 		OutboundAttachmentInput,
 		User
-	} from '$lib/types';
+	} from '#lib/types.ts';
 
 	let {
 		view,

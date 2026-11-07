@@ -7,4 +7,4 @@ export {
 	localPartOf,
 	parseEmailAddress,
 	parseEmailAddresses
-} from '$lib/email-address';
+} from '#lib/email-address.ts';

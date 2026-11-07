@@ -1,6 +1,6 @@
 import type { D1Database, R2Bucket } from '@cloudflare/workers-types';
-import { isValidLocalPart, localPartOf, parseEmailAddress } from '$lib/email-address';
-import type { Domain, MailAddress, OutboundAttachmentInput, User } from '$lib/types';
+import { isValidLocalPart, localPartOf, parseEmailAddress } from '#lib/email-address.ts';
+import type { Domain, MailAddress, OutboundAttachmentInput, User } from '#lib/types.ts';
 import { base64ByteLength, insertAttachments } from './attachments';
 import { MAX_TOTAL_ATTACHMENT_BYTES } from './constants';
 import {

@@ -6,15 +6,15 @@ import {
 	markAllRead,
 	setEmailFlags,
 	getMailboxCounts
-} from '$lib/server/mail-store';
+} from '#lib/server/mail-store.ts';
 import {
 	CONVERSATION_ACTIONS,
 	OrganizingActionError,
 	applyConversationAction,
 	isConversationAction
-} from '$lib/server/organizing-store';
-import { demoThreadInView } from '$lib/mailbox-view';
-import { DEMO_MODE, DEMO_USER, demoStore } from '$lib/server/demo';
+} from '#lib/server/organizing-store.ts';
+import { demoThreadInView } from '#lib/mailbox-view.ts';
+import { DEMO_MODE, DEMO_USER, demoStore } from '#lib/server/demo.ts';
 
 /** Bulk actions from the list toolbar. */
 const ACTIONS = [

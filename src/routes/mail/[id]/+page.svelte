@@ -1,19 +1,19 @@
 <script lang="ts">
 	import { goto, invalidateAll } from '$app/navigation';
-	import Icon from '$lib/components/Icon.svelte';
-	import RichTextEditor from '$lib/components/RichTextEditor.svelte';
-	import AttachmentPicker from '$lib/components/AttachmentPicker.svelte';
-	import FromAddressSelect from '$lib/components/FromAddressSelect.svelte';
-	import ThreadMessage from '$lib/components/ThreadMessage.svelte';
-	import OrganizeMenu from '$lib/components/OrganizeMenu.svelte';
-	import { showToast } from '$lib/toast';
-	import { htmlToPlainText, isHtmlEmpty } from '$lib/utils/html';
+	import Icon from '#lib/components/Icon.svelte';
+	import RichTextEditor from '#lib/components/RichTextEditor.svelte';
+	import AttachmentPicker from '#lib/components/AttachmentPicker.svelte';
+	import FromAddressSelect from '#lib/components/FromAddressSelect.svelte';
+	import ThreadMessage from '#lib/components/ThreadMessage.svelte';
+	import OrganizeMenu from '#lib/components/OrganizeMenu.svelte';
+	import { showToast } from '#lib/toast.ts';
+	import { htmlToPlainText, isHtmlEmpty } from '#lib/utils/html.ts';
 	import {
 		defaultReplyFromKey,
 		matchThreadReplyFrom,
 		replyFromOptions
-	} from '$lib/reply-from';
-	import type { OutboundAttachmentInput } from '$lib/types';
+	} from '#lib/reply-from.ts';
+	import type { OutboundAttachmentInput } from '#lib/types.ts';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();

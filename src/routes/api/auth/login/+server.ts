@@ -1,6 +1,6 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
-import { login, logout, readSessionToken, sessionCookieOptions, SESSION_COOKIE } from '$lib/server/auth';
-import { SESSION_DAYS } from '$lib/server/constants';
+import { login, logout, readSessionToken, sessionCookieOptions, SESSION_COOKIE } from '#lib/server/auth.ts';
+import { SESSION_DAYS } from '#lib/server/constants.ts';
 import {
 	DEVICE_COOKIE,
 	DEVICE_DAYS,
@@ -9,7 +9,7 @@ import {
 	releaseLoginAttempt,
 	rememberDevice,
 	reserveLoginAttempt
-} from '$lib/server/login-limit';
+} from '#lib/server/login-limit.ts';
 
 export const POST: RequestHandler = async ({ request, cookies, platform, getClientAddress }) => {
 	const db = platform?.env.DB;

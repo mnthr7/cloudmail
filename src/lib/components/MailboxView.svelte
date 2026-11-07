@@ -5,12 +5,12 @@
 	import EmptyState from './EmptyState.svelte';
 	import DeliveryStatus from './DeliveryStatus.svelte';
 	import OrganizeMenu from './OrganizeMenu.svelte';
-	import { showToast } from '$lib/toast';
-	import { applyThreadReadState } from '$lib/mailbox-read-state';
-	import { CATEGORIES, isMailCategory, type MailCategory } from '$lib/organizing/categories';
-	import { dateGroup, formatRelativeDate } from '$lib/utils/date';
-	import { senderWarning } from '$lib/security/sender';
-	import type { MailboxFilters, MailboxPage, MailboxView, ThreadSummary } from '$lib/types';
+	import { showToast } from '#lib/toast.ts';
+	import { applyThreadReadState } from '#lib/mailbox-read-state.ts';
+	import { CATEGORIES, isMailCategory, type MailCategory } from '#lib/organizing/categories.ts';
+	import { dateGroup, formatRelativeDate } from '#lib/utils/date.ts';
+	import { senderWarning } from '#lib/security/sender.ts';
+	import type { MailboxFilters, MailboxPage, MailboxView, ThreadSummary } from '#lib/types.ts';
 
 	const CATEGORY_LABELS: Record<MailCategory, string> = {
 		primary: 'Primary',

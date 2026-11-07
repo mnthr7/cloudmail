@@ -7,23 +7,23 @@ import {
 	listThreadMessages,
 	markThreadRead,
 	setEmailFlags
-} from '$lib/server/mail-store';
-import { isMailCategory } from '$lib/organizing/categories';
+} from '#lib/server/mail-store.ts';
+import { isMailCategory } from '#lib/organizing/categories.ts';
 import {
 	OrganizingActionError,
 	applyConversationAction,
 	isConversationAction,
 	setThreadColumns
-} from '$lib/server/organizing-store';
-import { resolveFromAddress } from '$lib/server/outbox';
-import { queueOutbound } from '$lib/server/queue-outbound';
-import { matchThreadReplyFrom, threadReceivedAtAddresses } from '$lib/reply-from';
-import { buildReferences, displaySubject } from '$lib/server/threads';
-import { replyRecipients } from '$lib/writing/recipients';
-import { forwardSubject, replySubject } from '$lib/writing/subject';
-import { holdUntil, scheduleError } from '$lib/writing/timing';
-import type { EmailRow } from '$lib/types';
-import { DEMO_MODE, DEMO_USER, generateDemoMessages, demoStore } from '$lib/server/demo';
+} from '#lib/server/organizing-store.ts';
+import { resolveFromAddress } from '#lib/server/outbox.ts';
+import { queueOutbound } from '#lib/server/queue-outbound.ts';
+import { matchThreadReplyFrom, threadReceivedAtAddresses } from '#lib/reply-from.ts';
+import { buildReferences, displaySubject } from '#lib/server/threads.ts';
+import { replyRecipients } from '#lib/writing/recipients.ts';
+import { forwardSubject, replySubject } from '#lib/writing/subject.ts';
+import { holdUntil, scheduleError } from '#lib/writing/timing.ts';
+import type { EmailRow } from '#lib/types.ts';
+import { DEMO_MODE, DEMO_USER, generateDemoMessages, demoStore } from '#lib/server/demo.ts';
 
 type ComposeMode = 'reply' | 'reply-all' | 'forward' | 'new';
 

@@ -1,11 +1,11 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
-import { DEMO_MODE, DEMO_USER } from '$lib/server/demo';
+import { DEMO_MODE, DEMO_USER } from '#lib/server/demo.ts';
 import {
 	LabelNotFoundError,
 	LabelWriteError,
 	deleteLabel,
 	updateLabel
-} from '$lib/server/labels-store';
+} from '#lib/server/labels-store.ts';
 
 /** Rename, recolor, or move a label. Omitted fields stay as they are. */
 export const PATCH: RequestHandler = async ({ params, request, locals, platform }) => {

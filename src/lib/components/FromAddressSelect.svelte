@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { ReplyFromOption } from '$lib/reply-from';
+	import type { ReplyFromOption } from '#lib/reply-from.ts';
 
 	let {
 		options,

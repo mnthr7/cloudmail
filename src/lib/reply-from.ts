@@ -3,7 +3,7 @@ import {
 	isValidLocalPart,
 	localPartOf,
 	parseEmailAddresses
-} from '$lib/email-address';
+} from '#lib/email-address.ts';
 
 export type ReplyFromAddress = {
 	id: string;

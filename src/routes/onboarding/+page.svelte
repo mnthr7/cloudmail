@@ -1,15 +1,15 @@
 <script lang="ts">
-	import Icon from '$lib/components/Icon.svelte';
-	import WizardShell from '$lib/components/WizardShell.svelte';
-	import DomainPicker from '$lib/components/DomainPicker.svelte';
-	import AddressField from '$lib/components/AddressField.svelte';
+	import Icon from '#lib/components/Icon.svelte';
+	import WizardShell from '#lib/components/WizardShell.svelte';
+	import DomainPicker from '#lib/components/DomainPicker.svelte';
+	import AddressField from '#lib/components/AddressField.svelte';
 	import {
 		missingProviderTitle,
 		noDomainsBody,
 		noDomainsTitle,
 		onboardingSubtitle,
 		providerName
-	} from '$lib/provider-copy';
+	} from '#lib/provider-copy.ts';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();

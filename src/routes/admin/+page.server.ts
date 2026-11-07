@@ -1,12 +1,12 @@
 import { error } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
-import { listUsers } from '$lib/server/auth';
+import { listUsers } from '#lib/server/auth.ts';
 import {
 	safeEmailProviderKind,
 	listAvailableDomains,
 	providerLoadError
-} from '$lib/server/context';
-import { listAllAddresses, listUnroutedEmails } from '$lib/server/domains';
+} from '#lib/server/context.ts';
+import { listAllAddresses, listUnroutedEmails } from '#lib/server/domains.ts';
 
 export const load: PageServerLoad = async ({ locals, platform }) => {
 	if (!locals.user?.is_admin) {

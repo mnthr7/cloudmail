@@ -1,6 +1,6 @@
 import type { D1Database, R2Bucket } from '@cloudflare/workers-types';
-import type { CloudflareSendEmailBinding } from '$lib/server/providers/cloudflare-provider';
-import type { Domain, MailAddress, User } from '$lib/types';
+import type { CloudflareSendEmailBinding } from '#lib/server/providers/cloudflare-provider.ts';
+import type { Domain, MailAddress, User } from '#lib/types.ts';
 
 declare global {
 	namespace App {
@@ -33,7 +33,7 @@ declare global {
 			/** Active domain filter, or null for the combined inbox. */
 			activeDomainId: string | null;
 			/** Mail skin for this request: account choice, then cookie, then Ledger. */
-			skin: import('$lib/skin').MailSkin;
+			skin: import('#lib/skin.ts').MailSkin;
 		}
 	}
 }

@@ -1,8 +1,8 @@
 import { listMailbox } from './mail-store';
-import { readPriorityInbox } from '$lib/server/auth';
-import { demoThreadInView } from '$lib/mailbox-view';
-import { isMailCategory } from '$lib/organizing/categories';
-import type { MailboxFilters, MailboxPage, MailboxView } from '$lib/types';
+import { readPriorityInbox } from '#lib/server/auth.ts';
+import { demoThreadInView } from '#lib/mailbox-view.ts';
+import { isMailCategory } from '#lib/organizing/categories.ts';
+import type { MailboxFilters, MailboxPage, MailboxView } from '#lib/types.ts';
 import type { D1Database } from '@cloudflare/workers-types';
 import { DEMO_MODE, DEMO_USER, demoStore } from './demo';
 

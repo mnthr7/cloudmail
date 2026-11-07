@@ -1,21 +1,21 @@
 <script lang="ts">
 	import './layout.css';
 	import { page } from '$app/stores';
-	import favicon from '$lib/assets/favicon.svg';
-	import Sidebar from '$lib/components/Sidebar.svelte';
-	import Topbar from '$lib/components/Topbar.svelte';
-	import FloatingCompose from '$lib/components/FloatingCompose.svelte';
-	import KeyboardShortcuts from '$lib/components/KeyboardShortcuts.svelte';
-	import MacClipboard from '$lib/components/MacClipboard.svelte';
-	import LedgerStatusBar from '$lib/components/LedgerStatusBar.svelte';
-	import Icon from '$lib/components/Icon.svelte';
-	import Toaster from '$lib/components/Toaster.svelte';
-	import { currentSkin, SKIN_FONTS } from '$lib/skin';
-	import '$lib/skins/ledger.css';
-	import '$lib/skins/desk.css';
-	import '$lib/skins/notes.css';
-	import { watchSystemTheme } from '$lib/theme';
-	import { applyReadingPanePreference, readReadingPanePreference } from '$lib/reading-pane';
+	import favicon from '#lib/assets/favicon.svg';
+	import Sidebar from '#lib/components/Sidebar.svelte';
+	import Topbar from '#lib/components/Topbar.svelte';
+	import FloatingCompose from '#lib/components/FloatingCompose.svelte';
+	import KeyboardShortcuts from '#lib/components/KeyboardShortcuts.svelte';
+	import MacClipboard from '#lib/components/MacClipboard.svelte';
+	import LedgerStatusBar from '#lib/components/LedgerStatusBar.svelte';
+	import Icon from '#lib/components/Icon.svelte';
+	import Toaster from '#lib/components/Toaster.svelte';
+	import { currentSkin, SKIN_FONTS } from '#lib/skin.ts';
+	import '#lib/skins/ledger.css';
+	import '#lib/skins/desk.css';
+	import '#lib/skins/notes.css';
+	import { watchSystemTheme } from '#lib/theme.ts';
+	import { applyReadingPanePreference, readReadingPanePreference } from '#lib/reading-pane.ts';
 	import type { LayoutData } from './$types';
 
 	let { children, data }: { children: import('svelte').Snippet; data: LayoutData } = $props();

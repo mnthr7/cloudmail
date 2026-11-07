@@ -1,6 +1,6 @@
 import type { D1Database } from '@cloudflare/workers-types';
-import type { User } from '$lib/types';
-import { holdUntil } from '$lib/writing/timing';
+import type { User } from '#lib/types.ts';
+import { holdUntil } from '#lib/writing/timing.ts';
 import { readUndoSendSeconds } from './auth';
 import { stripHtml } from './html';
 import { resolveFromAddress } from './outbox';

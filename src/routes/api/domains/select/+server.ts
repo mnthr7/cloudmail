@@ -1,6 +1,6 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
-import { DOMAIN_COOKIE } from '$lib/server/constants';
-import { SESSION_DAYS } from '$lib/server/constants';
+import { DOMAIN_COOKIE } from '#lib/server/constants.ts';
+import { SESSION_DAYS } from '#lib/server/constants.ts';
 
 /** Persist which connected domain the dashboard is filtered to (null = all). */
 export const POST: RequestHandler = async ({ request, cookies, locals }) => {

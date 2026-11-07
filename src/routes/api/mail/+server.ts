@@ -1,8 +1,8 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
-import { deleteDraft, listEmails } from '$lib/server/mail-store';
-import { queueOutbound } from '$lib/server/queue-outbound';
-import { holdUntil, scheduleError } from '$lib/writing/timing';
-import { DEMO_MODE, DEMO_USER } from '$lib/server/demo';
+import { deleteDraft, listEmails } from '#lib/server/mail-store.ts';
+import { queueOutbound } from '#lib/server/queue-outbound.ts';
+import { holdUntil, scheduleError } from '#lib/writing/timing.ts';
+import { DEMO_MODE, DEMO_USER } from '#lib/server/demo.ts';
 
 type SendMailBody = {
 	/** Set when the composer was editing a draft — it is removed once queued. */

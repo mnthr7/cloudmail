@@ -5,8 +5,8 @@ import {
 	hasProviderConfigured,
 	listAvailableDomains,
 	providerLoadError
-} from '$lib/server/context';
-import type { AvailableDomain } from '$lib/types';
+} from '#lib/server/context.ts';
+import type { AvailableDomain } from '#lib/types.ts';
 
 /**
  * Loads the domains the configured provider can reach so the first screen is a

@@ -1,26 +1,26 @@
 <script lang="ts">
-	import Icon from '$lib/components/Icon.svelte';
-	import AddressField from '$lib/components/AddressField.svelte';
-	import RichTextEditor from '$lib/components/RichTextEditor.svelte';
+	import Icon from '#lib/components/Icon.svelte';
+	import AddressField from '#lib/components/AddressField.svelte';
+	import RichTextEditor from '#lib/components/RichTextEditor.svelte';
 	import {
 		readThemePreference,
 		setThemePreference,
 		THEME_OPTIONS,
 		type ThemePreference
-	} from '$lib/theme';
+	} from '#lib/theme.ts';
 	import {
 		readReadingPanePreference,
 		setReadingPanePreference,
 		READING_PANE_OPTIONS,
 		type ReadingPanePreference
-	} from '$lib/reading-pane';
-	import type { MailAddress } from '$lib/types';
+	} from '#lib/reading-pane.ts';
+	import type { MailAddress } from '#lib/types.ts';
 	import type { PageData } from './$types';
 	import { invalidateAll } from '$app/navigation';
 	import { page } from '$app/stores';
 	import { untrack } from 'svelte';
-	import { CATEGORIES, type MailCategory } from '$lib/organizing/categories';
-	import { currentSkin, saveSkin, SKIN_OPTIONS, type MailSkin } from '$lib/skin';
+	import { CATEGORIES, type MailCategory } from '#lib/organizing/categories.ts';
+	import { currentSkin, saveSkin, SKIN_OPTIONS, type MailSkin } from '#lib/skin.ts';
 
 	let { data }: { data: PageData } = $props();
 

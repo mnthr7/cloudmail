@@ -1,4 +1,4 @@
-import { showToast } from '$lib/toast';
+import { showToast } from '#lib/toast.ts';
 
 /** A schedule at least this far ahead skips the undo toast. */
 const SCHEDULE_LEAD_MS = 60_000;

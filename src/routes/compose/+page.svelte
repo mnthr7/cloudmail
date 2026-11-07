@@ -74,7 +74,7 @@
 	}
 
 	function rememberDraft(id: string) {
-		const url = new URL(page.url);
+		const url = new URL(page.url.href);
 		if (url.searchParams.get('draft') === id) return;
 		url.searchParams.set('draft', id);
 		goto(url, { shallow: true, replace: true, state: page.state });

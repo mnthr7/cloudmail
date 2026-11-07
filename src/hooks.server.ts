@@ -1,3 +1,4 @@
+import { env as workerEnv } from 'cloudflare:workers';
 import { redirect } from '@sveltejs/kit';
 import type { Handle } from '@sveltejs/kit/hooks';
 import { countUsers, getUserFromSession, readSessionToken } from '#lib/server/auth.ts';
@@ -25,6 +26,13 @@ export const handle: Handle = async ({ event, resolve: resolvePage }) => {
 			...opts,
 			transformPageChunk: ({ html }) => html.replace('%qm.skin%', evt.locals.skin)
 		});
+
+	// adapter-cloudflare 8 (SvelteKit 3) no longer sets `event.platform`; bindings
+	// live on `cloudflare:workers` instead. Put them back on `platform.env` once
+	// here so every load and endpoint keeps reading `platform.env` unchanged.
+	(event as { platform: App.Platform | undefined }).platform ??= {
+		env: workerEnv
+	};
 
 	const db = event.platform?.env.DB;
 	event.locals.user = null;

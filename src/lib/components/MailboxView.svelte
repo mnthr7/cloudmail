@@ -285,7 +285,7 @@
 
 	/** Builds a URL for this mailbox with some query params changed. */
 	function withParams(changes: Record<string, string | number | boolean | null>): string {
-		const params = new URLSearchParams(currentPage.url.searchParams);
+		const params = new URLSearchParams(currentPage.url.search);
 
 		for (const [key, value] of Object.entries(changes)) {
 			if (value === null || value === false || value === '') params.delete(key);

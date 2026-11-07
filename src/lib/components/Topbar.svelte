@@ -62,12 +62,12 @@
 		event.preventDefault();
 		const params = new URLSearchParams();
 		if (query.trim()) params.set('q', query.trim());
-		goto(`${searchTarget}${params.size ? `?${params}` : ''}`, { keepFocus: true });
+		goto(`${searchTarget}${params.size ? `?${params}` : ''}`, { reset: false });
 	}
 
 	function clearSearch() {
 		query = '';
-		goto(searchTarget, { keepFocus: true });
+		goto(searchTarget, { reset: false });
 	}
 </script>
 

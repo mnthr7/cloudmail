@@ -240,15 +240,15 @@
 	}
 
 	function handleThreadSelect(id: string) {
-		const params = new URLSearchParams(page.url.searchParams);
+		const params = new URLSearchParams(page.url.search);
 		params.set('thread', id);
-		goto(`${page.url.pathname}?${params}`, { keepFocus: true, noScroll: true });
+		goto(`${page.url.pathname}?${params}`, { reset: false });
 	}
 
 	function closeThread() {
-		const params = new URLSearchParams(page.url.searchParams);
+		const params = new URLSearchParams(page.url.search);
 		params.delete('thread');
-		goto(`${page.url.pathname}${params.size ? `?${params}` : ''}`, { keepFocus: true, noScroll: true });
+		goto(`${page.url.pathname}${params.size ? `?${params}` : ''}`, { reset: false });
 	}
 
 	function toggleMessage(id: string) {

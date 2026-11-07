@@ -54,17 +54,24 @@ function adapt(sqlite: Database): D1Database {
 	} as unknown as D1Database;
 }
 
-function addUser(sqlite: Database, id: string, name: string, address: string) {
-	sqlite.run(`INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, 'x')`, [id, `${id}@login.test`, name]);
+function addUser(sqlite: Database, id: string, name: string, addresses: string[], isAdmin = false) {
+	sqlite.run(`INSERT INTO users (id, email, name, password_hash, is_admin) VALUES (?, ?, ?, 'x', ?)`, [
+		id,
+		`${id}@login.test`,
+		name,
+		isAdmin ? 1 : 0
+	]);
 	sqlite.run(`INSERT OR IGNORE INTO domains (id, name) VALUES ('d1', 'acme.com')`);
-	sqlite.run(`INSERT INTO addresses (id, user_id, domain_id, address) VALUES (?, ?, 'd1', ?)`, [`ad_${id}`, id, address]);
+	for (const address of addresses) {
+		sqlite.run(`INSERT INTO addresses (id, user_id, domain_id, address) VALUES (?, ?, 'd1', ?)`, [`ad_${address}`, id, address]);
+	}
 }
 
 function open() {
 	const sqlite = new Database(':memory:');
 	sqlite.exec('PRAGMA foreign_keys = ON');
 	migrate(sqlite);
-	addUser(sqlite, 'u1', 'Sada', 'sada@acme.com');
+	addUser(sqlite, 'u1', 'Sada', ['sada@acme.com', 'billing@acme.com']);
 	return { sqlite, db: adapt(sqlite) };
 }
 
@@ -189,7 +196,76 @@ describe('hiring and changing agents', () => {
 	});
 });
 
+describe('who an agent may send as', () => {
+	test("a non-admin can't let an agent send as someone else's address", async () => {
+		const { sqlite, db } = open();
+		addUser(sqlite, 'u2', 'Priya', ['priya@acme.com']);
+		let error: unknown;
+		try {
+			await createAgent(db, { ownerUserId: 'u2', displayName: 'Billing', definition: billing });
+		} catch (caught) {
+			error = caught;
+		}
+		expect(error).toMatchObject({ code: 'send_as' });
+	});
+
+	test("an address that doesn't exist at all is refused", async () => {
+		const { db } = open();
+		const def = { ...billing, scope: { ...billing.scope, sendAs: ['ceo@acme.com'] } };
+		await expect(createAgent(db, { ownerUserId: 'u1', displayName: 'X', definition: def })).rejects.toMatchObject({ code: 'send_as' });
+	});
+
+	test("an admin may let an agent send as another human's address", async () => {
+		const { sqlite, db } = open();
+		addUser(sqlite, 'u2', 'Priya', ['priya@acme.com'], true);
+		const agent = await createAgent(db, { ownerUserId: 'u2', displayName: 'Billing', definition: billing });
+		expect(agent.version.definition.scope.sendAs).toEqual(['billing@acme.com']);
+	});
+
+	test('the same check applies when a definition is edited', async () => {
+		const { sqlite, db } = open();
+		addUser(sqlite, 'u2', 'Priya', ['priya@acme.com']);
+		const agent = await createAgent(db, { ownerUserId: 'u1', displayName: 'Billing', definition: billing });
+		const def = { ...billing, scope: { ...billing.scope, sendAs: ['priya@acme.com'] } };
+		await expect(updateAgentDefinition(db, { agentId: agent.id, byUserId: 'u1', definition: def })).rejects.toMatchObject({
+			code: 'send_as'
+		});
+	});
+
+	test('deleting the address stops the agent sending as it straight away', async () => {
+		const { sqlite, db } = open();
+		const agent = await activeAgent(db);
+		sqlite.run(`DELETE FROM addresses WHERE address = 'billing@acme.com'`);
+		const result = await proposeAction(db, { agentId: agent.id, proposal: reply, payload: {}, threadParticipants: ['client@globex.com'] });
+		expect(result.decision).toEqual({ outcome: 'reject', reason: 'send_as_out_of_scope' });
+	});
+});
+
 describe('proposing actions', () => {
+	test('concurrent proposals cannot overrun the daily limit', async () => {
+		const { sqlite, db } = open();
+		const agent = await activeAgent(db);
+		const base = { agentId: agent.id, proposal: reply, payload: {}, threadParticipants: ['client@globex.com'] };
+		const results = await Promise.all(Array.from({ length: 6 }, () => proposeAction(db, base)));
+
+		expect(results.filter((r) => r.decision.outcome === 'execute')).toHaveLength(2);
+		expect(results.filter((r) => r.decision.reason === 'daily_limit_reached')).toHaveLength(4);
+		expect(sqlite.query(`SELECT COUNT(*) AS n FROM agent_actions WHERE status = 'auto_approved'`).get()).toEqual({ n: 2 });
+	});
+
+	test('the exact allowed addresses are stored for whatever carries the action out', async () => {
+		const { sqlite, db } = open();
+		const agent = await activeAgent(db);
+		const { actionId } = await proposeAction(db, {
+			agentId: agent.id,
+			proposal: { ...reply, recipients: ['Client@Globex.com'] },
+			payload: { to: 'anything the model wrote' },
+			threadParticipants: ['client@globex.com']
+		});
+		const row = sqlite.query('SELECT authorized_json FROM agent_actions WHERE id = ?').get(actionId) as { authorized_json: string };
+		expect(JSON.parse(row.authorized_json)).toEqual({ from: 'billing@acme.com', recipients: ['client@globex.com'] });
+	});
+
 	test('every proposal is recorded with the version and the policy decision', async () => {
 		const { sqlite, db } = open();
 		const agent = await activeAgent(db);
@@ -201,7 +277,7 @@ describe('proposing actions', () => {
 			reason: 'Invoice 7 days overdue',
 			threadParticipants: ['client@globex.com']
 		});
-		expect(result.decision).toEqual({ outcome: 'execute', reason: 'auto' });
+		expect(result.decision).toMatchObject({ outcome: 'execute', reason: 'auto' });
 		expect(
 			sqlite.query('SELECT status, policy_reason, version_id, thread_id, reason FROM agent_actions WHERE id = ?').get(result.actionId)
 		).toEqual({
@@ -306,7 +382,7 @@ describe('proposing actions', () => {
 
 		for (let i = 0; i < 20; i++) {
 			const { actionId, decision } = await proposeAction(db, base);
-			expect(decision).toEqual({ outcome: 'queue', reason: 'external_track_record' });
+			expect(decision).toMatchObject({ outcome: 'queue', reason: 'external_track_record' });
 			await decideAction(db, { actionId, byUserId: 'u1', decision: 'approve' });
 		}
 		expect((await proposeAction(db, base)).decision.outcome).toBe('execute');

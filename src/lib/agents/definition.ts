@@ -44,7 +44,8 @@ const MAX_DAILY_LIMIT = 10_000;
 export class AgentDefinitionError extends Error {
 	readonly status = 400;
 
-	constructor(readonly code: 'job' | 'capability' | 'level' | 'limit' | 'scope') {
+	/** `send_as`: an address the person hiring the agent doesn't own (checked by the store). */
+	constructor(readonly code: 'job' | 'capability' | 'level' | 'limit' | 'scope' | 'send_as') {
 		super(code);
 		this.name = 'AgentDefinitionError';
 	}

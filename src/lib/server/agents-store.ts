@@ -1,5 +1,6 @@
 import type { D1Database } from '@cloudflare/workers-types';
-import { parseDefinition, type AgentDefinition } from '$lib/agents/definition';
+import { AgentDefinitionError, parseDefinition, type AgentDefinition } from '$lib/agents/definition';
+import type { Capability } from '$lib/agents/capabilities';
 import {
 	authorize,
 	type AgentRuntime,
@@ -67,6 +68,8 @@ export class ActionStateError extends Error {
 /** Proposals a new agent makes in shadow mode before it can act (A8). Matches the migration default. */
 export const SHADOW_PROPOSALS = 20;
 const MAX_PAYLOAD_BYTES = 64 * 1024;
+/** Statuses that count toward a daily limit: the action was allowed to run. */
+const COUNTED_STATUSES = `('auto_approved', 'approved', 'executed')`;
 const MAX_REASON_LENGTH = 2000;
 const STATUS_FOR_OUTCOME: Record<PolicyDecision['outcome'], ActionStatus> = {
 	execute: 'auto_approved',
@@ -75,15 +78,49 @@ const STATUS_FOR_OUTCOME: Record<PolicyDecision['outcome'], ActionStatus> = {
 	reject: 'rejected'
 };
 
-type HumanPrincipal = { id: string; workspace_id: string };
+type HumanPrincipal = { id: string; workspace_id: string; user_id: string; is_admin: number };
 
 async function humanPrincipalForUser(db: D1Database, userId: string): Promise<HumanPrincipal> {
 	const row = await db
-		.prepare(`SELECT id, workspace_id FROM principals WHERE user_id = ? AND kind = 'human'`)
+		.prepare(
+			`SELECT p.id, p.workspace_id, p.user_id, u.is_admin
+			 FROM principals p JOIN users u ON u.id = p.user_id
+			 WHERE p.user_id = ? AND p.kind = 'human'`
+		)
 		.bind(userId)
 		.first<HumanPrincipal>();
 	if (!row) throw new NotAllowedError();
 	return row;
+}
+
+/** Addresses still owned by a human in the workspace. An agent can only send as one of these. */
+async function liveWorkspaceAddresses(db: D1Database, workspaceId: string): Promise<Map<string, string>> {
+	const { results } = await db
+		.prepare(
+			`SELECT LOWER(ad.address) AS address, ad.user_id FROM addresses ad
+			 JOIN principals p ON p.user_id = ad.user_id
+			 WHERE p.workspace_id = ? AND p.kind = 'human'`
+		)
+		.bind(workspaceId)
+		.all<{ address: string; user_id: string }>();
+	return new Map(results.map((row) => [row.address, row.user_id]));
+}
+
+/**
+ * Whoever hires or edits an agent can only let it send as addresses they could
+ * send as themselves: their own, or, for an admin, any human's address in the
+ * workspace. Addresses already went through the claiming rules (reserved role
+ * addresses are admin-only) when they were created.
+ */
+async function assertSendAsAllowed(db: D1Database, human: HumanPrincipal, definition: AgentDefinition) {
+	if (definition.scope.sendAs.length === 0) return;
+	const owned = await liveWorkspaceAddresses(db, human.workspace_id);
+	for (const address of definition.scope.sendAs) {
+		const owner = owned.get(address);
+		if (!owner || (owner !== human.user_id && human.is_admin !== 1)) {
+			throw new AgentDefinitionError('send_as');
+		}
+	}
 }
 
 export async function createAgent(
@@ -93,6 +130,7 @@ export async function createAgent(
 ): Promise<AgentRecord> {
 	const owner = await humanPrincipalForUser(db, input.ownerUserId);
 	const definition = parseDefinition(input.definition);
+	await assertSendAsAllowed(db, owner, definition);
 	const displayName = input.displayName.trim();
 	if (!displayName || displayName.length > 80) throw new Error('Enter a name for the agent');
 
@@ -180,6 +218,7 @@ export async function updateAgentDefinition(
 ): Promise<AgentRecord> {
 	const { agent, human } = await requireAgentForUser(db, input.agentId, input.byUserId);
 	const definition = parseDefinition(input.definition);
+	await assertSendAsAllowed(db, human, definition);
 	const versionId = crypto.randomUUID();
 
 	await db.batch([
@@ -244,45 +283,60 @@ export async function proposeAction(db: D1Database, input: ProposeInput, now = n
 
 	const capability = input.proposal.capability;
 	const dayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString();
-	const [founders, usage] = await Promise.all([
-		db
-			.prepare(
-				`SELECT ad.address FROM addresses ad
-				 JOIN principals p ON p.user_id = ad.user_id
-				 WHERE p.workspace_id = ? AND p.kind = 'human'`
-			)
-			.bind(agent.workspaceId)
-			.all<{ address: string }>(),
+	const [workspaceAddresses, usage] = await Promise.all([
+		liveWorkspaceAddresses(db, agent.workspaceId),
 		db
 			.prepare(
 				`SELECT
-				   SUM(CASE WHEN status IN ('auto_approved', 'approved', 'executed') AND created_at >= ? THEN 1 ELSE 0 END) AS used_today,
+				   SUM(CASE WHEN status IN ${COUNTED_STATUSES} AND created_at >= ? THEN 1 ELSE 0 END) AS used_today,
 				   SUM(CASE WHEN status IN ('approved', 'executed') AND decided_by_principal_id IS NOT NULL THEN 1 ELSE 0 END) AS approvals
 				 FROM agent_actions WHERE agent_principal_id = ? AND capability = ?`
 			)
 			.bind(dayStart, agent.id, capability)
 			.first<{ used_today: number | null; approvals: number | null }>()
 	]);
+	const humanAddresses = [...workspaceAddresses.keys()];
 
-	const decision = authorize(input.proposal, {
+	let decision = authorize(input.proposal, {
 		status: agent.status,
 		runtime: agent.runtime,
 		definition: agent.version.definition,
 		threadParticipants: input.threadParticipants ?? [],
-		founderAddresses: founders.results.map((row) => row.address),
+		founderAddresses: humanAddresses,
+		sendableAddresses: humanAddresses,
 		usedToday: usage?.used_today ?? 0,
 		humanApprovals: usage?.approvals ?? 0,
 		threadTakenOver: input.threadTakenOver
 	});
+
+	// The count above is only a fast path. Concurrent proposals could all read
+	// the same count, so the insert re-counts and turns itself into a refusal if
+	// the limit filled up in the meantime (one statement, so it is atomic).
+	// `execute` means authorize() already confirmed this is a catalog capability.
+	const limit =
+		decision.outcome === 'execute'
+			? agent.version.definition.capabilities[capability as Capability]?.dailyLimit
+			: undefined;
+	const status = STATUS_FOR_OUTCOME[decision.outcome];
+	const authorized = decision.outcome === 'reject' ? null : JSON.stringify(decision.addresses);
 
 	const actionId = crypto.randomUUID();
 	const statements = [
 		db
 			.prepare(
 				`INSERT INTO agent_actions
-				 (id, workspace_id, agent_principal_id, version_id, capability, thread_id, payload_json,
+				 (id, workspace_id, agent_principal_id, version_id, capability, thread_id, payload_json, authorized_json,
 				  reason, status, policy_reason, expires_at, created_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+				 SELECT ?, ?, ?, ?, ?, ?, ?,
+				        CASE WHEN within_limit THEN ? ELSE NULL END,
+				        ?,
+				        CASE WHEN within_limit THEN ? ELSE 'rejected' END,
+				        CASE WHEN within_limit THEN ? ELSE 'daily_limit_reached' END,
+				        ?, ?
+				 FROM (SELECT (? IS NULL OR (
+				         SELECT COUNT(*) FROM agent_actions
+				         WHERE agent_principal_id = ? AND capability = ? AND status IN ${COUNTED_STATUSES} AND created_at >= ?
+				       ) < ?) AS within_limit)`
 			)
 			.bind(
 				actionId,
@@ -292,11 +346,17 @@ export async function proposeAction(db: D1Database, input: ProposeInput, now = n
 				capability.slice(0, 64),
 				input.threadId ?? null,
 				payloadJson,
+				authorized,
 				(input.reason ?? '').slice(0, MAX_REASON_LENGTH),
-				STATUS_FOR_OUTCOME[decision.outcome],
+				status,
 				decision.reason,
 				input.expiresAt?.toISOString() ?? null,
-				now.toISOString()
+				now.toISOString(),
+				limit ?? null,
+				agent.id,
+				capability,
+				dayStart,
+				limit ?? null
 			)
 	];
 	if (decision.outcome === 'shadow') {
@@ -313,6 +373,14 @@ export async function proposeAction(db: D1Database, input: ProposeInput, now = n
 		);
 	}
 	await db.batch(statements);
+
+	if (limit !== undefined) {
+		const row = await db
+			.prepare(`SELECT status FROM agent_actions WHERE id = ?`)
+			.bind(actionId)
+			.first<{ status: ActionStatus }>();
+		if (row?.status === 'rejected') decision = { outcome: 'reject', reason: 'daily_limit_reached' };
+	}
 
 	return { actionId, decision };
 }

@@ -67,6 +67,9 @@ CREATE TABLE IF NOT EXISTS agent_actions (
 	capability TEXT NOT NULL,
 	thread_id TEXT,
 	payload_json TEXT NOT NULL,
+	-- The exact sender and recipients the policy allowed, normalized. Whatever
+	-- carries the action out sends to these, never to addresses in the payload.
+	authorized_json TEXT,
 	reason TEXT NOT NULL DEFAULT '',
 	-- queued: waiting for a human. auto_approved: allowed to run now.
 	-- shadowed: would have run, but the agent is in shadow mode.

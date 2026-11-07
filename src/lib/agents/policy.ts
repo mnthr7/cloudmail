@@ -1,4 +1,3 @@
-import { domainOf, parseEmailAddress } from '$lib/email-address';
 import {
 	CAPABILITY_TRAITS,
 	EXTERNAL_AUTO_MIN_APPROVALS,
@@ -20,11 +19,14 @@ export type AgentRuntime = 'builtin' | 'external';
 export type Proposal = {
 	/** Untrusted: comes from the model, so it is checked against the catalog. */
 	capability: string;
-	/** For sends: the address the mail would go out from. */
+	/** For sends: the address the mail would go out from. One bare address, no display name. */
 	fromAddress?: string;
-	/** For sends and invites: everyone the mail would reach (to, cc, bcc). */
+	/** For sends and invites: everyone the mail would reach (to, cc, bcc). One bare address each. */
 	recipients?: string[];
 };
+
+/** The exact addresses `authorize` allowed. Whatever carries the action out must use these, never the raw proposal. */
+export type AuthorizedAddresses = { from: string | null; recipients: string[] };
 
 export type PolicyContext = {
 	status: AgentStatus;
@@ -34,6 +36,12 @@ export type PolicyContext = {
 	threadParticipants: string[];
 	/** The workspace's human addresses. Agents may always write to them. */
 	founderAddresses: string[];
+	/**
+	 * Addresses that still exist and belong to a human in the workspace. A
+	 * send-as address in the definition that has since been deleted or moved
+	 * stops working at once.
+	 */
+	sendableAddresses: string[];
 	/** Times this capability was allowed to run today (UTC). */
 	usedToday: number;
 	/** Times a human approved this capability for this agent. */
@@ -47,16 +55,31 @@ export type RejectReason =
 	| 'unknown_capability'
 	| 'capability_off'
 	| 'thread_taken_over'
+	| 'invalid_address'
 	| 'send_as_out_of_scope'
 	| 'no_recipients'
 	| 'recipient_out_of_scope'
 	| 'daily_limit_reached';
 
 export type PolicyDecision =
-	| { outcome: 'execute'; reason: 'auto' }
-	| { outcome: 'queue'; reason: 'needs_approval' | 'external_track_record' }
-	| { outcome: 'shadow'; reason: 'shadow_mode' }
+	| { outcome: 'execute'; reason: 'auto'; addresses: AuthorizedAddresses }
+	| { outcome: 'queue'; reason: 'needs_approval' | 'external_track_record'; addresses: AuthorizedAddresses }
+	| { outcome: 'shadow'; reason: 'shadow_mode'; addresses: AuthorizedAddresses }
 	| { outcome: 'reject'; reason: RejectReason };
+
+const ADDRESS = /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/;
+
+/**
+ * Exactly one bare address, lowercased, or null. No display names, brackets,
+ * commas, quotes or whitespace: a string that a mail library might read as
+ * more than one recipient is refused rather than parsed, so what is checked is
+ * exactly what would be sent.
+ */
+export function strictAddress(value: unknown): string | null {
+	if (typeof value !== 'string' || value.length > 254) return null;
+	const address = value.trim().toLowerCase();
+	return ADDRESS.test(address) ? address : null;
+}
 
 /** Capabilities that send mail on a thread or to new people, so they need a sender and recipients. */
 const SENDS_MAIL: ReadonlySet<Capability> = new Set(['send_reply', 'send_email']);
@@ -72,61 +95,74 @@ export function authorize(proposal: Proposal, context: PolicyContext): PolicyDec
 
 	if (context.threadTakenOver && !traits.readOnly) return reject('thread_taken_over');
 
-	const scopeProblem = checkScope(capability, proposal, context);
-	if (scopeProblem) return reject(scopeProblem);
+	const scoped = checkScope(capability, proposal, context);
+	if ('reject' in scoped) return reject(scoped.reject);
+	const addresses = scoped.addresses;
 
 	if (setting.dailyLimit !== undefined && context.usedToday >= setting.dailyLimit) {
 		return reject('daily_limit_reached');
 	}
 
 	if (context.status === 'shadow' && !traits.readOnly) {
-		return { outcome: 'shadow', reason: 'shadow_mode' };
+		return { outcome: 'shadow', reason: 'shadow_mode', addresses };
 	}
 
-	if (setting.level === 'approve') return { outcome: 'queue', reason: 'needs_approval' };
+	if (setting.level === 'approve') return { outcome: 'queue', reason: 'needs_approval', addresses };
 
 	if (
 		context.runtime === 'external' &&
 		traits.externalAutoNeedsTrackRecord &&
 		context.humanApprovals < EXTERNAL_AUTO_MIN_APPROVALS
 	) {
-		return { outcome: 'queue', reason: 'external_track_record' };
+		return { outcome: 'queue', reason: 'external_track_record', addresses };
 	}
 
-	return { outcome: 'execute', reason: 'auto' };
+	return { outcome: 'execute', reason: 'auto', addresses };
 }
 
 function checkScope(
 	capability: Capability,
 	proposal: Proposal,
 	context: PolicyContext
-): RejectReason | null {
+): { addresses: AuthorizedAddresses } | { reject: RejectReason } {
 	const sendsMail = SENDS_MAIL.has(capability);
-	const recipients = (proposal.recipients ?? []).map(parseEmailAddress);
 
-	if (sendsMail || proposal.fromAddress !== undefined) {
-		const from = proposal.fromAddress ? parseEmailAddress(proposal.fromAddress) : '';
-		if (!context.definition.scope.sendAs.includes(from)) return 'send_as_out_of_scope';
+	const recipients: string[] = [];
+	for (const raw of proposal.recipients ?? []) {
+		const address = strictAddress(raw);
+		if (!address) return { reject: 'invalid_address' };
+		if (!recipients.includes(address)) recipients.push(address);
 	}
 
-	if (sendsMail && recipients.length === 0) return 'no_recipients';
+	let from: string | null = null;
+	if (sendsMail || proposal.fromAddress !== undefined) {
+		from = strictAddress(proposal.fromAddress);
+		if (proposal.fromAddress !== undefined && !from) return { reject: 'invalid_address' };
+		const sendable = new Set(context.sendableAddresses.map(strictAddress));
+		if (!from || !context.definition.scope.sendAs.includes(from) || !sendable.has(from)) {
+			return { reject: 'send_as_out_of_scope' };
+		}
+	}
+
+	if (sendsMail && recipients.length === 0) return { reject: 'no_recipients' };
 
 	if (recipients.length > 0) {
+		// Context lists come from our own database, so lenient normalization is fine there.
 		const allowed = new Set(
-			[...context.threadParticipants, ...context.founderAddresses].map(parseEmailAddress)
+			[...context.threadParticipants, ...context.founderAddresses].map((value) => value.trim().toLowerCase())
 		);
 		const scope = context.definition.scope.recipients;
 		const allowedDomains = scope.kind === 'domains' ? new Set(scope.domains) : null;
 
 		for (const recipient of recipients) {
 			if (allowed.has(recipient)) continue;
-			const domain = domainOf(recipient);
-			if (allowedDomains && domain && allowedDomains.has(domain)) continue;
-			return 'recipient_out_of_scope';
+			const domain = recipient.slice(recipient.lastIndexOf('@') + 1);
+			if (allowedDomains?.has(domain)) continue;
+			return { reject: 'recipient_out_of_scope' };
 		}
 	}
 
-	return null;
+	return { addresses: { from, recipients } };
 }
 
 function reject(reason: RejectReason): PolicyDecision {

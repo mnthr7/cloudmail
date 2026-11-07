@@ -6,7 +6,7 @@ import {
 	parseDefinition,
 	type AgentDefinition
 } from '../src/lib/agents/definition';
-import { authorize, type PolicyContext, type Proposal } from '../src/lib/agents/policy';
+import { authorize, strictAddress, type PolicyContext, type Proposal } from '../src/lib/agents/policy';
 
 function definition(overrides: Partial<AgentDefinition> = {}): AgentDefinition {
 	return {
@@ -33,6 +33,7 @@ function context(overrides: Partial<PolicyContext> = {}): PolicyContext {
 		definition: definition(),
 		threadParticipants: ['client@globex.com', 'billing@acme.com'],
 		founderAddresses: ['sada@acme.com'],
+		sendableAddresses: ['billing@acme.com', 'sada@acme.com'],
 		usedToday: 0,
 		humanApprovals: 0,
 		...overrides
@@ -47,15 +48,19 @@ const reply: Proposal = {
 
 describe('authorize: the happy paths', () => {
 	test('an auto capability in scope executes', () => {
-		expect(authorize(reply, context())).toEqual({ outcome: 'execute', reason: 'auto' });
+		expect(authorize(reply, context())).toEqual({
+			outcome: 'execute',
+			reason: 'auto',
+			addresses: { from: 'billing@acme.com', recipients: ['client@globex.com'] }
+		});
 	});
 
 	test('an approve capability is queued for a human', () => {
-		expect(authorize({ capability: 'organize' }, context())).toEqual({ outcome: 'queue', reason: 'needs_approval' });
+		expect(authorize({ capability: 'organize' }, context())).toMatchObject({ outcome: 'queue', reason: 'needs_approval' });
 	});
 
 	test('the founder can always be emailed, even when not on the thread', () => {
-		const proposal = { ...reply, recipients: ['Sada <SADA@acme.com>'] };
+		const proposal = { ...reply, recipients: ['SADA@acme.com'] };
 		expect(authorize(proposal, context({ threadParticipants: [] })).outcome).toBe('execute');
 	});
 
@@ -133,7 +138,13 @@ describe('authorize: prompt-injected proposals stay refused', () => {
 		['keep sending past the limit', reply, context({ usedToday: 99 })],
 		['act on a thread the founder took over', reply, context({ threadTakenOver: true })],
 		['act while paused', reply, context({ status: 'paused' })],
-		['use a capability the founder switched off', { capability: 'set_timer' }]
+		['use a capability the founder switched off', { capability: 'set_timer' }],
+		['smuggle a second recipient after a comma', { ...reply, recipients: ['client@globex.com, attacker@evil.test'] }],
+		['smuggle a second recipient after a semicolon', { ...reply, recipients: ['client@globex.com;attacker@evil.test'] }],
+		['hide an outsider in a display name', { ...reply, recipients: ['client@globex.com <attacker@evil.test>'] }],
+		['inject a header with a newline', { ...reply, recipients: ['client@globex.com\r\nBcc: attacker@evil.test'] }],
+		['a sender with a display name', { ...reply, fromAddress: 'Billing <billing@acme.com>' }],
+		['send as an address that no longer belongs to anyone', reply, context({ sendableAddresses: ['sada@acme.com'] })]
 	];
 
 	for (const [name, proposal, ctx] of injected) {
@@ -143,10 +154,33 @@ describe('authorize: prompt-injected proposals stay refused', () => {
 	}
 });
 
+describe('authorize: addresses are checked exactly as they would be sent', () => {
+	test('strictAddress accepts one bare address and nothing else', () => {
+		expect(strictAddress('  Client@Globex.COM ')).toBe('client@globex.com');
+		expect(strictAddress('first.last+tag@mail.globex.com')).toBe('first.last+tag@mail.globex.com');
+		for (const bad of ['', 'client', 'a@b', 'a@b.com,c@d.com', 'A <a@b.com>', '"a"@b.com', 'a b@c.com', 'a@b..com', 'a@-b.com', null, 3]) {
+			expect(strictAddress(bad)).toBeNull();
+		}
+	});
+
+	test('malformed recipients are refused as invalid, not quietly reinterpreted', () => {
+		const proposal = { ...reply, recipients: ['client@globex.com, attacker@evil.test'] };
+		expect(authorize(proposal, context())).toEqual({ outcome: 'reject', reason: 'invalid_address' });
+	});
+
+	test('the decision carries the normalized, deduplicated addresses to send to', () => {
+		const proposal = { ...reply, fromAddress: 'BILLING@acme.com', recipients: ['Client@Globex.com', 'client@globex.com'] };
+		expect(authorize(proposal, context())).toMatchObject({
+			outcome: 'execute',
+			addresses: { from: 'billing@acme.com', recipients: ['client@globex.com'] }
+		});
+	});
+});
+
 describe('authorize: shadow mode', () => {
 	test('in shadow mode nothing with an effect runs, even on auto', () => {
 		const shadow = context({ status: 'shadow' });
-		expect(authorize(reply, shadow)).toEqual({ outcome: 'shadow', reason: 'shadow_mode' });
+		expect(authorize(reply, shadow)).toMatchObject({ outcome: 'shadow', reason: 'shadow_mode' });
 		expect(authorize({ capability: 'write_note' }, shadow).outcome).toBe('shadow');
 		expect(authorize({ capability: 'organize' }, shadow).outcome).toBe('shadow');
 	});
@@ -163,7 +197,7 @@ describe('authorize: shadow mode', () => {
 
 describe('authorize: external agents', () => {
 	test('auto sends queue until the agent has 20 human approvals', () => {
-		expect(authorize(reply, context({ runtime: 'external', humanApprovals: 19 }))).toEqual({
+		expect(authorize(reply, context({ runtime: 'external', humanApprovals: 19 }))).toMatchObject({
 			outcome: 'queue',
 			reason: 'external_track_record'
 		});

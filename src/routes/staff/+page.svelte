@@ -137,7 +137,10 @@
 					});
 			const body = await res.json().catch(() => null);
 			if (!res.ok) {
-				formError = FORM_ERRORS[body?.error] ?? 'Could not save the agent.';
+				formError =
+					res.status === 403
+						? 'Only its owner or an admin can change this agent.'
+						: (FORM_ERRORS[body?.error] ?? 'Could not save the agent.');
 				return;
 			}
 			window.location.reload();
@@ -158,7 +161,8 @@
 				body: JSON.stringify({ status })
 			});
 			if (!res.ok) {
-				listError = 'Could not change that agent.';
+				listError =
+					res.status === 403 ? 'Only its owner or an admin can do that.' : 'Could not change that agent.';
 				return;
 			}
 			window.location.reload();
@@ -202,6 +206,7 @@
 					res.status === 409
 						? `That proposal is already ${body?.current ?? 'decided'}.`
 						: 'Could not record your decision.';
+				if (res.status === 403) listError = 'Only its owner or an admin can approve this.';
 				if (res.status !== 409) return;
 			}
 			window.location.reload();
@@ -408,6 +413,9 @@
 						{/if}
 						<pre class="payload">{preview(action.payload)}</pre>
 						<div class="item-actions">
+							{#if !action.canApprove}
+								<span class="item-sub">Only its owner or an admin can approve this.</span>
+							{/if}
 							<button
 								type="button"
 								class="btn-ghost text-xs"
@@ -416,14 +424,16 @@
 							>
 								Decline
 							</button>
-							<button
-								type="button"
-								class="btn-primary text-xs"
-								disabled={busy === action.id}
-								onclick={() => decide(action.id, 'approve')}
-							>
-								Approve
-							</button>
+							{#if action.canApprove}
+								<button
+									type="button"
+									class="btn-primary text-xs"
+									disabled={busy === action.id}
+									onclick={() => decide(action.id, 'approve')}
+								>
+									Approve
+								</button>
+							{/if}
 						</div>
 					</li>
 				{/each}
@@ -459,10 +469,12 @@
 						<p class="job">{agent.definition.job}</p>
 						<p class="item-sub">{enabled(agent.definition)}</p>
 						<div class="item-actions">
-							<button type="button" class="btn-ghost text-xs" onclick={() => openEdit(agent.id)}>
-								Edit
-							</button>
-							{#if agent.status === 'paused'}
+							{#if agent.canManage}
+								<button type="button" class="btn-ghost text-xs" onclick={() => openEdit(agent.id)}>
+									Edit
+								</button>
+							{/if}
+							{#if agent.status === 'paused' && agent.canManage}
 								<button
 									type="button"
 									class="btn-ghost text-xs"
@@ -479,8 +491,8 @@
 								>
 									Resume
 								</button>
-							{:else}
-								{#if agent.status === 'shadow'}
+							{:else if agent.status !== 'paused'}
+								{#if agent.status === 'shadow' && agent.canManage}
 									<button
 										type="button"
 										class="btn-ghost text-xs"

@@ -261,7 +261,7 @@ describe('who an agent may send as', () => {
 		const { sqlite, db } = open();
 		addUser(sqlite, 'u2', 'Priya', ['priya@acme.com'], true);
 		const agent = await createAgent(db, { ownerUserId: 'u2', displayName: 'Billing', definition: billing });
-		await setAgentStatus(db, { agentId: agent.id, byUserId: 'u1', status: 'active' });
+		await setAgentStatus(db, { agentId: agent.id, byUserId: 'u2', status: 'active' });
 		sqlite.run(`DELETE FROM users WHERE id = 'u2'`);
 		const result = await proposeAction(db, { agentId: agent.id, proposal: reply, payload: {}, threadParticipants: ['client@globex.com'] });
 		expect(result.decision).toEqual({ outcome: 'reject', reason: 'send_as_out_of_scope' });
@@ -516,7 +516,11 @@ describe('the Staff page', () => {
 	test('lists every agent in the workspace with what is waiting for a human', async () => {
 		const { db } = open();
 		const agent = await activeAgent(db);
-		await createAgent(db, { ownerUserId: 'u1', displayName: 'Scout', definition: { ...billing, scope: { sendAs: [], recipients: { kind: 'thread' } } } });
+		await createAgent(
+			db,
+			{ ownerUserId: 'u1', displayName: 'Scout', definition: { ...billing, scope: { sendAs: [], recipients: { kind: 'thread' } } } },
+			new Date(Date.now() + 60_000)
+		);
 		const now = new Date('2026-11-07T12:00:00Z');
 		await proposeAction(db, { agentId: agent.id, proposal: email, payload: {}, threadParticipants: ['client@globex.com'] }, now);
 		await proposeAction(
@@ -596,5 +600,65 @@ describe('the Staff page', () => {
 		await expect(getAgentForUser(db, agent.id, 'u2')).rejects.toBeInstanceOf(AgentNotFoundError);
 		await expect(getAgentForUser(db, agent.id, 'nobody')).rejects.toBeInstanceOf(NotAllowedError);
 		await expect(pauseAllAgents(db, 'nobody')).rejects.toBeInstanceOf(NotAllowedError);
+	});
+});
+
+describe('who may manage an agent', () => {
+	const email = { capability: 'send_email', fromAddress: 'billing@acme.com', recipients: ['client@globex.com'] };
+
+	async function setup() {
+		const { sqlite, db } = open();
+		addUser(sqlite, 'u2', 'Priya', ['priya@acme.com']);
+		addUser(sqlite, 'u3', 'Root', ['root@acme.com'], true);
+		const agent = await activeAgent(db);
+		const queued = await proposeAction(db, { agentId: agent.id, proposal: email, payload: {}, threadParticipants: ['client@globex.com'] });
+		return { sqlite, db, agent, actionId: queued.actionId };
+	}
+
+	test("a teammate can't edit, resume, or end shadow mode on someone else's agent", async () => {
+		const { db, agent } = await setup();
+		await expect(
+			updateAgentDefinition(db, { agentId: agent.id, byUserId: 'u2', definition: { ...billing, scope: { sendAs: [], recipients: { kind: 'thread' } } } })
+		).rejects.toBeInstanceOf(NotAllowedError);
+		await expect(setAgentStatus(db, { agentId: agent.id, byUserId: 'u2', status: 'shadow' })).rejects.toBeInstanceOf(NotAllowedError);
+
+		await setAgentStatus(db, { agentId: agent.id, byUserId: 'u1', status: 'paused' });
+		await expect(setAgentStatus(db, { agentId: agent.id, byUserId: 'u2', status: 'active' })).rejects.toBeInstanceOf(NotAllowedError);
+		expect((await getAgent(db, agent.id))?.status).toBe('paused');
+	});
+
+	test('anyone in the workspace can pause an agent', async () => {
+		const { db, agent } = await setup();
+		await setAgentStatus(db, { agentId: agent.id, byUserId: 'u2', status: 'paused' });
+		expect((await getAgent(db, agent.id))?.status).toBe('paused');
+	});
+
+	test("a teammate can decline someone else's proposal but not approve it", async () => {
+		const { db, actionId } = await setup();
+		expect((await listQueuedActions(db, 'u2')).map((action) => action.canApprove)).toEqual([false]);
+		await expect(decideAction(db, { actionId, byUserId: 'u2', decision: 'approve' })).rejects.toBeInstanceOf(NotAllowedError);
+		expect(await decideAction(db, { actionId, byUserId: 'u2', decision: 'decline' })).toBe('declined');
+	});
+
+	test('the owner and an admin can approve', async () => {
+		const { db, agent, actionId } = await setup();
+		expect(await decideAction(db, { actionId, byUserId: 'u1', decision: 'approve' })).toBe('approved');
+
+		const second = await proposeAction(db, { agentId: agent.id, proposal: email, payload: {}, threadParticipants: ['client@globex.com'] });
+		expect((await listQueuedActions(db, 'u3')).map((action) => action.canApprove)).toEqual([true]);
+		expect(await decideAction(db, { actionId: second.actionId, byUserId: 'u3', decision: 'approve' })).toBe('approved');
+	});
+
+	test('an owner who no longer holds the sending address cannot approve a send from it', async () => {
+		const { sqlite, db, actionId } = await setup();
+		sqlite.run(`UPDATE addresses SET user_id = 'u2' WHERE address = 'billing@acme.com'`);
+		await expect(decideAction(db, { actionId, byUserId: 'u1', decision: 'approve' })).rejects.toBeInstanceOf(NotAllowedError);
+	});
+
+	test('the Staff list says who can manage each agent', async () => {
+		const { db } = await setup();
+		expect((await listAgents(db, 'u1')).map((agent) => agent.canManage)).toEqual([true]);
+		expect((await listAgents(db, 'u2')).map((agent) => agent.canManage)).toEqual([false]);
+		expect((await listAgents(db, 'u3')).map((agent) => agent.canManage)).toEqual([true]);
 	});
 });

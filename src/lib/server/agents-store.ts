@@ -242,6 +242,11 @@ async function requireAgentForUser(db: D1Database, agentId: string, userId: stri
 	return { agent, human };
 }
 
+/** The agent's owner or a workspace admin. Everyone else can only stop it (pause) or say no (decline). */
+function canManage(agent: { ownerPrincipalId: string | null }, human: HumanPrincipal): boolean {
+	return human.is_admin === 1 || agent.ownerPrincipalId === human.id;
+}
+
 /** Saves a new version and makes it current. Old versions stay for audit and rollback. */
 export async function updateAgentDefinition(
 	db: D1Database,
@@ -249,6 +254,7 @@ export async function updateAgentDefinition(
 	now = new Date()
 ): Promise<AgentRecord> {
 	const { agent, human } = await requireAgentForUser(db, input.agentId, input.byUserId);
+	if (!canManage(agent, human)) throw new NotAllowedError();
 	const definition = parseDefinition(input.definition);
 	await assertSendAsAllowed(db, human, definition);
 	const versionId = crypto.randomUUID();
@@ -273,7 +279,9 @@ export async function setAgentStatus(
 	db: D1Database,
 	input: { agentId: string; byUserId: string; status: AgentStatus }
 ): Promise<void> {
-	const { agent } = await requireAgentForUser(db, input.agentId, input.byUserId);
+	const { agent, human } = await requireAgentForUser(db, input.agentId, input.byUserId);
+	// Anyone in the workspace can pull the brake. Letting an agent act again is the owner's or an admin's call.
+	if (input.status !== 'paused' && !canManage(agent, human)) throw new NotAllowedError();
 	// Going back into shadow mode starts a fresh run of shadowed proposals.
 	await db
 		.prepare(
@@ -418,7 +426,28 @@ export async function proposeAction(db: D1Database, input: ProposeInput, now = n
 	return { actionId, decision };
 }
 
-type ActionRow = { id: string; workspace_id: string; status: ActionStatus; expires_at: string | null };
+type ActionRow = {
+	id: string;
+	workspace_id: string;
+	status: ActionStatus;
+	expires_at: string | null;
+	authorized_json: string | null;
+	owner_principal_id: string | null;
+};
+
+/**
+ * Approving lets an action run, so it takes the same standing as granting it:
+ * the agent's owner or an admin, who could also send from the address the
+ * action would go out from. Declining only stops it, so anyone may.
+ */
+async function assertCanApprove(db: D1Database, human: HumanPrincipal, action: ActionRow): Promise<void> {
+	if (!canManage({ ownerPrincipalId: action.owner_principal_id }, human)) throw new NotAllowedError();
+	if (human.is_admin === 1 || !action.authorized_json) return;
+	const { from } = JSON.parse(action.authorized_json) as { from: string | null };
+	if (!from) return;
+	const owner = (await liveWorkspaceAddresses(db, human.workspace_id)).get(from);
+	if (owner !== human.user_id) throw new NotAllowedError();
+}
 
 /** A human approves or declines a queued proposal (A7). */
 export async function decideAction(
@@ -428,11 +457,16 @@ export async function decideAction(
 ): Promise<ActionStatus> {
 	const human = await humanPrincipalForUser(db, input.byUserId);
 	const action = await db
-		.prepare(`SELECT id, workspace_id, status, expires_at FROM agent_actions WHERE id = ?`)
+		.prepare(
+			`SELECT x.id, x.workspace_id, x.status, x.expires_at, x.authorized_json, p.owner_principal_id
+			 FROM agent_actions x JOIN principals p ON p.id = x.agent_principal_id
+			 WHERE x.id = ?`
+		)
 		.bind(input.actionId)
 		.first<ActionRow>();
 	if (!action || action.workspace_id !== human.workspace_id) throw new ActionStateError('missing');
 	if (action.status !== 'queued') throw new ActionStateError(action.status);
+	if (input.decision === 'approve') await assertCanApprove(db, human, action);
 	if (action.expires_at && action.expires_at <= now.toISOString()) {
 		await expireActions(db, now);
 		throw new ActionStateError('expired');
@@ -505,6 +539,8 @@ export type QueuedAction = {
 	reason: string;
 	createdAt: string;
 	expiresAt: string | null;
+	/** Whether this user may approve it (the server still checks the sending address). */
+	canApprove: boolean;
 };
 
 /** The Needs your OK queue for a user's workspace, oldest first. */
@@ -513,7 +549,7 @@ export async function listQueuedActions(db: D1Database, userId: string, now = ne
 	await expireActions(db, now);
 	const { results } = await db
 		.prepare(
-			`SELECT x.id, x.agent_principal_id, p.display_name, x.capability, x.thread_id,
+			`SELECT x.id, x.agent_principal_id, p.display_name, p.owner_principal_id, x.capability, x.thread_id,
 			        x.payload_json, x.reason, x.created_at, x.expires_at
 			 FROM agent_actions x JOIN principals p ON p.id = x.agent_principal_id
 			 WHERE x.workspace_id = ? AND x.status = 'queued'
@@ -524,6 +560,7 @@ export async function listQueuedActions(db: D1Database, userId: string, now = ne
 			id: string;
 			agent_principal_id: string;
 			display_name: string;
+			owner_principal_id: string | null;
 			capability: string;
 			thread_id: string | null;
 			payload_json: string;
@@ -541,7 +578,8 @@ export async function listQueuedActions(db: D1Database, userId: string, now = ne
 		payload: JSON.parse(row.payload_json),
 		reason: row.reason,
 		createdAt: row.created_at,
-		expiresAt: row.expires_at
+		expiresAt: row.expires_at,
+		canApprove: canManage({ ownerPrincipalId: row.owner_principal_id }, human)
 	}));
 }
 
@@ -555,6 +593,8 @@ export type AgentSummary = {
 	definition: AgentDefinition;
 	queued: number;
 	createdAt: string;
+	/** Owner or admin: may edit, resume, and approve. Anyone may pause. */
+	canManage: boolean;
 };
 
 /** Every agent in the user's workspace, oldest first, for the Staff page (A10). */
@@ -563,7 +603,7 @@ export async function listAgents(db: D1Database, userId: string, now = new Date(
 	await expireActions(db, now);
 	const { results } = await db
 		.prepare(
-			`SELECT p.id, p.display_name, p.created_at, a.status, a.runtime, a.shadow_remaining,
+			`SELECT p.id, p.display_name, p.created_at, p.owner_principal_id, a.status, a.runtime, a.shadow_remaining,
 			        v.version, v.definition_json,
 			        (SELECT COUNT(*) FROM agent_actions x
 			         WHERE x.agent_principal_id = p.id AND x.status = 'queued') AS queued
@@ -578,6 +618,7 @@ export async function listAgents(db: D1Database, userId: string, now = new Date(
 			id: string;
 			display_name: string;
 			created_at: string;
+			owner_principal_id: string | null;
 			status: AgentStatus;
 			runtime: AgentRuntime;
 			shadow_remaining: number;
@@ -595,7 +636,8 @@ export async function listAgents(db: D1Database, userId: string, now = new Date(
 		versionNumber: row.version,
 		definition: parseDefinition(JSON.parse(row.definition_json)),
 		queued: row.queued,
-		createdAt: row.created_at
+		createdAt: row.created_at,
+		canManage: canManage({ ownerPrincipalId: row.owner_principal_id }, human)
 	}));
 }
 

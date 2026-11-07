@@ -58,6 +58,9 @@ jobs:
           AUTHOR: ${{ github.event.pull_request.user.login }}
           ASSOCIATION: ${{ github.event.pull_request.author_association }}
           ACTOR: ${{ github.actor }}
+          # Differs from ACTOR when someone re-runs an old run; then nobody is trusted.
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           OWNER: ${{ github.repository_owner }}
           DRAFT: ${{ github.event.pull_request.draft }}
           LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
@@ -75,12 +78,22 @@ jobs:
           tier=$(jq -r .tier "$RUNNER_TEMP/tier.json")
           why="files"
 
-          # Who wrote each commit. The API lists at most 250, so a longer pull
-          # request counts as having an unknown author.
+          # Who wrote each commit, and whether GitHub verified its signature. The
+          # API lists at most 250, so a longer pull request counts as unknown.
+          # author.login comes from the commit email, which anyone who can push
+          # could fake; GitHub signs Dependabot's commits, so those must verify.
           gh api --paginate "repos/$REPO/pulls/$PR/commits" \
-            --jq '.[] | (.author.login // "!unknown")' > "$RUNNER_TEMP/authors.txt"
+            --jq '.[] | (.author.login // "!unknown") + " " + (.commit.verification.verified | tostring)' \
+            > "$RUNNER_TEMP/authors.txt"
           commits=$(grep -c '' "$RUNNER_TEMP/authors.txt" || true)
-          only_by() { [ "$commits" -gt 0 ] && [ "$commits" -lt 250 ] && ! grep -qvxF "$1" "$RUNNER_TEMP/authors.txt"; }
+          # only_by LOGIN [signed]: every commit is by LOGIN (and, with "signed", verified).
+          only_by() {
+            [ "$commits" -gt 0 ] && [ "$commits" -lt 250 ] || return 1
+            awk -v want="$1" -v signed="${2:-}" \
+              '$1 != want || (signed == "signed" && $2 != "true") { bad = 1 } END { exit bad }' \
+              "$RUNNER_TEMP/authors.txt"
+          }
+          [ "$TRIGGERING_ACTOR" = "$ACTOR" ] || ACTOR="!rerun-by-$TRIGGERING_ACTOR"
 
           # Dependabot patch and minor bumps that only touch manifests and lockfiles.
           # Majors stay high: they can change behaviour.
@@ -106,7 +119,7 @@ jobs:
           trusted=false
           if [ "$ASSOCIATION" = "OWNER" ] && [ "$ACTOR" = "$OWNER" ] && only_by "$OWNER"; then trusted=true; fi
           if [ "$AUTHOR" = "dependabot[bot]" ] && { [ "$ACTOR" = "dependabot[bot]" ] || [ "$ACTOR" = "$OWNER" ]; } \
-            && only_by "dependabot[bot]"; then
+            && only_by "dependabot[bot]" signed; then
             trusted=true
           fi
           held=false
@@ -124,7 +137,8 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           if [ "$tier" = low ] && [ "$trusted" = true ] && [ "$DRAFT" = false ] && [ "$held" = false ]; then
-            if ! gh pr merge "$PR" --repo "$REPO" --auto --squash; then
+            # Only the commit that was checked here may merge; a newer push gets its own run.
+            if ! gh pr merge "$PR" --repo "$REPO" --auto --squash --match-head-commit "$HEAD_SHA"; then
               echo "::warning::Could not turn on auto-merge. Is 'Allow auto-merge' on in the repository settings?"
             fi
           else

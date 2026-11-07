@@ -34,10 +34,10 @@ jobs:
       pull-requests: write # labels and auto-merge
       issues: write # create the labels if they don't exist yet
     steps:
-      # The base branch, never the pull request's code.
+      # On pull_request_target the default checkout is the base branch, never the
+      # pull request's code. Don't add a `ref:` here.
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
           persist-credentials: false
 
       - name: Read Dependabot metadata

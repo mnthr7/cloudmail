@@ -8,6 +8,7 @@ import { readVtThreshold } from './lib/server/auth';
 import { scanPending } from './lib/server/attachment-scan';
 import { getEmailProvider } from './lib/server/context';
 import type { EmailProvider } from './lib/server/email-provider';
+import { expireActions } from './lib/server/agents-store';
 import { deliverDue } from './lib/server/outbox-schedule';
 import { createVirusTotal } from './lib/server/virus-total';
 // Renamed from `_worker.js` by `scripts/wrap-cloudflare-worker.mjs` after `vite build`.
@@ -84,6 +85,13 @@ export default {
 			deliverDue(env.DB, getEmailProvider({ env }), new Date(), 20).then(
 				() => undefined,
 				(error) => console.error('Failed to deliver scheduled mail', error)
+			)
+		);
+		// Proposals nobody approved in time are never sent late (A7).
+		ctx.waitUntil(
+			expireActions(env.DB).then(
+				() => undefined,
+				(error) => console.error('Failed to expire agent proposals', error)
 			)
 		);
 		ctx.waitUntil(

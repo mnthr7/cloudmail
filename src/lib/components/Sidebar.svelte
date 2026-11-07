@@ -239,6 +239,11 @@
 
 	const tools = $derived<NavItem[]>([
 		{
+			href: '/staff',
+			icon: 'team-line',
+			label: 'Staff'
+		},
+		{
 			href: '/settings',
 			icon: 'user-settings-line',
 			label: 'Settings'

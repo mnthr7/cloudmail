@@ -1,7 +1,8 @@
 version: 2
 updates:
-  # bun.lock is read by Dependabot's npm ecosystem.
-  - package-ecosystem: npm
+  # Dependabot's bun ecosystem keeps bun.lock in step with package.json, so
+  # CI's `bun install --frozen-lockfile` passes on its PRs.
+  - package-ecosystem: bun
     directory: /
     schedule:
       interval: weekly

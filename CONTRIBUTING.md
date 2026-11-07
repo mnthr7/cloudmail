@@ -21,13 +21,14 @@ You need [Bun](https://bun.sh) 1.4+. You don't need a Cloudflare account to deve
 
 ```bash
 bun install
-cp .dev.vars.example .dev.vars   # or: echo "DEMO_MODE=true" > .dev.vars
+cp .dev.vars.example .dev.vars
 bun run db:migrate:local
-bun run dev                      # http://localhost:5173
+DEMO_MODE=true bun run dev       # http://localhost:5173, sample data, no provider
 ```
 
-`DEMO_MODE=true` runs the UI with sample data and no mail provider. See the
-README for full provider setup.
+Demo mode reads `DEMO_MODE` from the dev server's process environment, so set it
+on the command as above. Putting it in `.dev.vars` doesn't turn it on. Leave it
+off (`bun run dev`) once you've set up a real provider; see the README for that.
 
 ## Before you open a PR
 
@@ -44,7 +45,9 @@ bun run build
 - **Database changes** go in a new numbered file in `migrations/`. Never edit a
   migration that has already been released. Call out the migration in your PR.
 - **Never commit secrets**, real API keys, Cloudflare account ids, or your own
-  domain. Use `example.com` and placeholders. `check:clean` will fail if you do.
+  domain. Use `example.com` and placeholders. `check:clean` catches the common
+  formats, but not everything (for example an account id in a plain variable, or
+  a hostname outside the Wrangler routes), so read through your diff as well.
 - **UI changes:** include before/after screenshots. If you can, check both light
   and dark mode and a phone-width screen.
 

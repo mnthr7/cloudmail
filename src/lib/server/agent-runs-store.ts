@@ -199,6 +199,18 @@ export async function claimRuns(db: D1Database, limit: number, now = new Date())
 
 export type RunUsage = { model: string; inputTokens: number; outputTokens: number; costMicros: number };
 
+/** Adds one model response's usage to the run straight away, so a later failure can't lose it. */
+export async function addRunUsage(db: D1Database, runId: string, usage: RunUsage): Promise<void> {
+	await db
+		.prepare(
+			`UPDATE agent_runs
+			 SET model = ?, input_tokens = input_tokens + ?, output_tokens = output_tokens + ?, cost_micros = cost_micros + ?
+			 WHERE id = ?`
+		)
+		.bind(usage.model, usage.inputTokens, usage.outputTokens, usage.costMicros, runId)
+		.run();
+}
+
 /** Records how a run ended, and what it cost so far. */
 export async function finishRun(
 	db: D1Database,
@@ -342,6 +354,8 @@ export type ShadowAction = {
 	agentName: string;
 	capability: string;
 	payload: unknown;
+	/** The thread is in someone else's mailbox, so its content isn't shown. */
+	hidden: boolean;
 	reason: string;
 	status: 'shadowed' | 'auto_approved';
 	feedback: 'up' | 'down' | null;
@@ -351,25 +365,29 @@ export type ShadowAction = {
 /**
  * What agents would have done (shadow mode), and what they were allowed to do
  * on their own, newest first (A8). Nothing in this list has been carried out.
+ * Content from a thread in someone else's mailbox is left out.
  */
 export async function listShadowActions(db: D1Database, userId: string, limit = 30): Promise<ShadowAction[]> {
 	const human = await humanPrincipalForUser(db, userId);
 	const { results } = await db
 		.prepare(
-			`SELECT x.id, x.agent_principal_id, p.display_name, x.capability, x.payload_json, x.reason, x.status,
-			        x.feedback, x.created_at
-			 FROM agent_actions x JOIN principals p ON p.id = x.agent_principal_id
+			`SELECT x.id, x.agent_principal_id, p.display_name, x.capability, x.status, x.feedback, x.created_at,
+			        CASE WHEN r.id IS NULL OR r.mailbox_user_id = ? THEN x.payload_json ELSE NULL END AS payload_json,
+			        CASE WHEN r.id IS NULL OR r.mailbox_user_id = ? THEN x.reason ELSE '' END AS reason
+			 FROM agent_actions x
+			 JOIN principals p ON p.id = x.agent_principal_id
+			 LEFT JOIN agent_runs r ON r.id = x.run_id
 			 WHERE x.workspace_id = ? AND x.status IN ('shadowed', 'auto_approved')
 			 ORDER BY x.created_at DESC
 			 LIMIT ?`
 		)
-		.bind(human.workspace_id, limit)
+		.bind(userId, userId, human.workspace_id, limit)
 		.all<{
 			id: string;
 			agent_principal_id: string;
 			display_name: string;
 			capability: string;
-			payload_json: string;
+			payload_json: string | null;
 			reason: string;
 			status: 'shadowed' | 'auto_approved';
 			feedback: 'up' | 'down' | null;
@@ -380,7 +398,8 @@ export async function listShadowActions(db: D1Database, userId: string, limit = 
 		agentId: row.agent_principal_id,
 		agentName: row.display_name,
 		capability: row.capability,
-		payload: JSON.parse(row.payload_json),
+		payload: row.payload_json === null ? null : JSON.parse(row.payload_json),
+		hidden: row.payload_json === null,
 		reason: row.reason,
 		status: row.status,
 		feedback: row.feedback,

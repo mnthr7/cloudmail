@@ -4,6 +4,7 @@ import type { AgentDefinition, AgentModel } from '#lib/agents/definition.ts';
 import { parseEmailAddresses } from '#lib/email-address.ts';
 import type { ThreadMessage } from '#lib/types.ts';
 import { stripHtml } from './html.ts';
+import { parseMessageIds } from './threads.ts';
 
 /**
  * What an agent sees and the tools it can call (docs/specs/agent-staff-platform.md,
@@ -78,13 +79,51 @@ function messageBody(message: ThreadMessage): string {
 	return `${text.slice(0, MAX_MESSAGE_CHARS)}\n[The rest of this message, ${text.length - MAX_MESSAGE_CHARS} characters, was left out.]`;
 }
 
-/** Everyone on the thread: senders and recipients of every message. */
+/**
+ * The part of a conversation an agent may read for new mail. Threads are also
+ * joined by subject, so anyone can land a message in an existing thread by
+ * reusing its subject. Only messages the new one reaches through its own
+ * In-Reply-To and References headers (a Message-ID only someone who got that
+ * mail knows) count; the rest of the thread stays out of the agent's view.
+ * When a human asks on a thread, they chose it, so the agent sees all of it.
+ */
+export function verifiedContext(
+	messages: ThreadMessage[],
+	trigger: { id: string; in_reply_to: string | null; references_header: string | null },
+	kind: 'mail' | 'ask'
+): ThreadMessage[] {
+	if (kind === 'ask') return messages;
+	const byMessageId = new Map<string, ThreadMessage>();
+	for (const message of messages) {
+		const id = message.message_id?.trim().replace(/^<|>$/g, '').toLowerCase();
+		if (id) byMessageId.set(id, message);
+	}
+	const keep = new Set<string>([trigger.id]);
+	const pending = parseMessageIds(trigger.in_reply_to, trigger.references_header);
+	const seen = new Set<string>();
+	while (pending.length) {
+		const id = pending.pop()!.toLowerCase();
+		if (seen.has(id)) continue;
+		seen.add(id);
+		const message = byMessageId.get(id);
+		if (!message || keep.has(message.id)) continue;
+		keep.add(message.id);
+		pending.push(...parseMessageIds(message.references_header));
+	}
+	return messages.filter((message) => keep.has(message.id));
+}
+
+/**
+ * Who the agent may write to as "already on the thread": senders of the mail
+ * it can see, and everyone on mail the workspace sent. The To and Cc lines of
+ * incoming mail are left out, since whoever wrote that mail chose them.
+ */
 export function threadParticipants(messages: ThreadMessage[]): string[] {
 	const seen = new Set<string>();
 	for (const message of messages) {
-		for (const address of parseEmailAddresses([message.from_addr, message.to_addr, message.cc_addr ?? ''])) {
-			seen.add(address.toLowerCase());
-		}
+		const fields =
+			message.direction === 'outbound' ? [message.from_addr, message.to_addr, message.cc_addr ?? ''] : [message.from_addr];
+		for (const address of parseEmailAddresses(fields)) seen.add(address.toLowerCase());
 	}
 	return [...seen];
 }

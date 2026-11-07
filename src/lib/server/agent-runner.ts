@@ -9,9 +9,11 @@ import {
 	threadParticipants,
 	toolsFor,
 	toProposal,
+	verifiedContext,
 	type RunTrigger
 } from './agent-brain.ts';
 import {
+	addRunUsage,
 	claimRuns,
 	finishRun,
 	MAX_RUN_ATTEMPTS,
@@ -112,7 +114,9 @@ async function runOne(db: D1Database, client: MessagesClient, run: AgentRun, now
 
 	const email = await getEmailForUser(db, run.mailbox_user_id, run.email_id);
 	if (!email || email.deleted_at) return skip('email_gone');
-	const messages = await listThreadMessages(db, run.mailbox_user_id, email);
+	const thread = await listThreadMessages(db, run.mailbox_user_id, email);
+	// New mail only sees the part of the thread it provably belongs to.
+	const messages = verifiedContext(thread, email, run.trigger_kind);
 	if (messages.length === 0) return skip('email_gone');
 
 	let trigger: RunTrigger = { kind: 'mail' };
@@ -145,12 +149,18 @@ async function runOne(db: D1Database, client: MessagesClient, run: AgentRun, now
 		}
 	];
 
-	const usage: RunUsage = { model: definition.model, inputTokens: 0, outputTokens: 0, costMicros: 0 };
+	let spent = await spentThisMonth(db, agent.id, now());
 	let summary = '';
 	let outcome = 'turn_limit';
 	let proposals = 0;
 
 	for (let turn = 0; turn < MAX_TURNS; turn++) {
+		// Checked before every call, not only at the start, so one run can't run far past the cap.
+		if (spent >= budgetMicros) {
+			outcome = 'budget_reached';
+			await pauseForBudget(db, agent.id);
+			break;
+		}
 		const response = await client.create({
 			model: definition.model,
 			max_tokens: 8000,
@@ -163,12 +173,18 @@ async function runOne(db: D1Database, client: MessagesClient, run: AgentRun, now
 			betas: ['server-side-fallback-2026-07-01'],
 			fallbacks: 'default'
 		});
-		usage.inputTokens +=
-			response.usage.input_tokens +
-			(response.usage.cache_creation_input_tokens ?? 0) +
-			(response.usage.cache_read_input_tokens ?? 0);
-		usage.outputTokens += response.usage.output_tokens;
-		usage.costMicros += costMicros(definition.model, response.usage);
+		// Saved at once, so a failure later in the run can't make this call free.
+		const usage: RunUsage = {
+			model: definition.model,
+			inputTokens:
+				response.usage.input_tokens +
+				(response.usage.cache_creation_input_tokens ?? 0) +
+				(response.usage.cache_read_input_tokens ?? 0),
+			outputTokens: response.usage.output_tokens,
+			costMicros: costMicros(definition.model, response.usage)
+		};
+		await addRunUsage(db, run.id, usage);
+		spent += usage.costMicros;
 
 		if (response.stop_reason === 'refusal') {
 			outcome = 'refused';
@@ -234,8 +250,8 @@ async function runOne(db: D1Database, client: MessagesClient, run: AgentRun, now
 	await finishRun(
 		db,
 		run.id,
-		{ status: 'done', outcome, summary, versionId: agent.version.id, usage },
+		{ status: 'done', outcome, summary, versionId: agent.version.id },
 		now()
 	);
-	if ((await spentThisMonth(db, agent.id, now())) >= budgetMicros) await pauseForBudget(db, agent.id);
+	if (spent >= budgetMicros) await pauseForBudget(db, agent.id);
 }

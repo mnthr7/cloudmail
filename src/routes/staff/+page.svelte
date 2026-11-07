@@ -572,7 +572,11 @@
 						{#if action.reason}
 							<p class="item-sub">{action.reason}</p>
 						{/if}
-						<pre class="payload">{preview(action.payload)}</pre>
+						{#if action.hidden}
+							<p class="item-sub">This is about a thread in someone else's mailbox. Only they can see and approve it.</p>
+						{:else}
+							<pre class="payload">{preview(action.payload)}</pre>
+						{/if}
 						<div class="item-actions">
 							{#if !action.canApprove}
 								<span class="item-sub">Only its owner or an admin can approve this.</span>
@@ -620,7 +624,11 @@
 						{#if action.reason}
 							<p class="item-sub">{action.reason}</p>
 						{/if}
-						<pre class="payload">{payloadText(action.payload)}</pre>
+						{#if action.hidden}
+							<p class="item-sub">This is about a thread in someone else's mailbox.</p>
+						{:else}
+							<pre class="payload">{payloadText(action.payload)}</pre>
+						{/if}
 						<div class="item-actions">
 							<span class="item-sub">{when(action.createdAt)}</span>
 							<button

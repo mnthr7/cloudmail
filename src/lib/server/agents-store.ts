@@ -437,6 +437,8 @@ type ActionRow = {
 	expires_at: string | null;
 	authorized_json: string | null;
 	owner_principal_id: string | null;
+	/** Whose mailbox the proposal's thread is in, when an agent run made it. */
+	mailbox_user_id: string | null;
 };
 
 /**
@@ -446,6 +448,8 @@ type ActionRow = {
  */
 async function assertCanApprove(db: D1Database, human: HumanPrincipal, action: ActionRow): Promise<void> {
 	if (!canManage({ ownerPrincipalId: action.owner_principal_id }, human)) throw new NotAllowedError();
+	// Only the mailbox owner sees a run's proposal, so only they can approve it.
+	if (action.mailbox_user_id && action.mailbox_user_id !== human.user_id) throw new NotAllowedError();
 	if (human.is_admin === 1 || !action.authorized_json) return;
 	const { from } = JSON.parse(action.authorized_json) as { from: string | null };
 	if (!from) return;
@@ -462,8 +466,11 @@ export async function decideAction(
 	const human = await humanPrincipalForUser(db, input.byUserId);
 	const action = await db
 		.prepare(
-			`SELECT x.id, x.workspace_id, x.status, x.expires_at, x.authorized_json, p.owner_principal_id
-			 FROM agent_actions x JOIN principals p ON p.id = x.agent_principal_id
+			`SELECT x.id, x.workspace_id, x.status, x.expires_at, x.authorized_json, p.owner_principal_id,
+			        r.mailbox_user_id
+			 FROM agent_actions x
+			 JOIN principals p ON p.id = x.agent_principal_id
+			 LEFT JOIN agent_runs r ON r.id = x.run_id
 			 WHERE x.id = ?`
 		)
 		.bind(input.actionId)
@@ -540,6 +547,8 @@ export type QueuedAction = {
 	capability: string;
 	threadId: string | null;
 	payload: unknown;
+	/** The thread is in someone else's mailbox, so its content isn't shown and only they can approve it. */
+	hidden: boolean;
 	reason: string;
 	createdAt: string;
 	expiresAt: string | null;
@@ -547,19 +556,26 @@ export type QueuedAction = {
 	canApprove: boolean;
 };
 
-/** The Needs your OK queue for a user's workspace, oldest first. */
+/**
+ * The Needs your OK queue for a user's workspace, oldest first. A proposal
+ * about a thread in someone else's mailbox shows without its content.
+ */
 export async function listQueuedActions(db: D1Database, userId: string, now = new Date()): Promise<QueuedAction[]> {
 	const human = await humanPrincipalForUser(db, userId);
 	await expireActions(db, now);
 	const { results } = await db
 		.prepare(
 			`SELECT x.id, x.agent_principal_id, p.display_name, p.owner_principal_id, x.capability, x.thread_id,
-			        x.payload_json, x.reason, x.created_at, x.expires_at
-			 FROM agent_actions x JOIN principals p ON p.id = x.agent_principal_id
+			        x.created_at, x.expires_at,
+			        CASE WHEN r.id IS NULL OR r.mailbox_user_id = ? THEN x.payload_json ELSE NULL END AS payload_json,
+			        CASE WHEN r.id IS NULL OR r.mailbox_user_id = ? THEN x.reason ELSE '' END AS reason
+			 FROM agent_actions x
+			 JOIN principals p ON p.id = x.agent_principal_id
+			 LEFT JOIN agent_runs r ON r.id = x.run_id
 			 WHERE x.workspace_id = ? AND x.status = 'queued'
 			 ORDER BY x.created_at ASC`
 		)
-		.bind(human.workspace_id)
+		.bind(human.user_id, human.user_id, human.workspace_id)
 		.all<{
 			id: string;
 			agent_principal_id: string;
@@ -567,7 +583,7 @@ export async function listQueuedActions(db: D1Database, userId: string, now = ne
 			owner_principal_id: string | null;
 			capability: string;
 			thread_id: string | null;
-			payload_json: string;
+			payload_json: string | null;
 			reason: string;
 			created_at: string;
 			expires_at: string | null;
@@ -579,11 +595,13 @@ export async function listQueuedActions(db: D1Database, userId: string, now = ne
 		agentName: row.display_name,
 		capability: row.capability,
 		threadId: row.thread_id,
-		payload: JSON.parse(row.payload_json),
+		payload: row.payload_json === null ? null : JSON.parse(row.payload_json),
+		hidden: row.payload_json === null,
 		reason: row.reason,
 		createdAt: row.created_at,
 		expiresAt: row.expires_at,
-		canApprove: canManage({ ownerPrincipalId: row.owner_principal_id }, human)
+		// You can't approve what you can't see.
+		canApprove: row.payload_json !== null && canManage({ ownerPrincipalId: row.owner_principal_id }, human)
 	}));
 }
 

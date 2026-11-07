@@ -10,7 +10,13 @@ import {
 	parseDefinition,
 	type AgentDefinition
 } from '../src/lib/agents/definition';
-import { NotAllowedError, createAgent, setAgentStatus } from '../src/lib/server/agents-store';
+import {
+	NotAllowedError,
+	createAgent,
+	decideAction,
+	listQueuedActions,
+	setAgentStatus
+} from '../src/lib/server/agents-store';
 import {
 	AskError,
 	askableAgents,
@@ -22,7 +28,14 @@ import {
 	setActionFeedback,
 	spendByAgent
 } from '../src/lib/server/agent-runs-store';
-import { buildUserMessage, costMicros, toolsFor, toProposal } from '../src/lib/server/agent-brain';
+import {
+	buildUserMessage,
+	costMicros,
+	threadParticipants,
+	toolsFor,
+	toProposal,
+	verifiedContext
+} from '../src/lib/server/agent-brain';
 import { runDueAgents, type MessagesClient } from '../src/lib/server/agent-runner';
 import type { ThreadMessage } from '../src/lib/types';
 
@@ -82,12 +95,24 @@ function open() {
 let mailCount = 0;
 function addMail(
 	sqlite: Database,
-	input: { user?: string; to?: string; from?: string; subject?: string; body?: string; thread?: string; direction?: string }
+	input: {
+		user?: string;
+		to?: string;
+		cc?: string;
+		from?: string;
+		subject?: string;
+		body?: string;
+		thread?: string;
+		direction?: string;
+		messageId?: string;
+		inReplyTo?: string;
+	}
 ): string {
 	const id = `m${++mailCount}`;
 	sqlite.run(
-		`INSERT INTO emails (id, user_id, direction, from_addr, to_addr, subject, body_text, thread_id, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO emails (id, user_id, direction, from_addr, to_addr, subject, body_text, thread_id, created_at,
+		                     cc_addr, message_id, in_reply_to)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		[
 			id,
 			input.user ?? 'u1',
@@ -97,7 +122,10 @@ function addMail(
 			input.subject ?? 'Help with my order',
 			input.body ?? 'Where is my order #123?',
 			input.thread ?? id,
-			new Date(Date.UTC(2026, 10, 7, 12, mailCount)).toISOString()
+			new Date(Date.UTC(2026, 10, 7, 12, mailCount)).toISOString(),
+			input.cc ?? null,
+			input.messageId ?? null,
+			input.inReplyTo ?? null
 		]
 	);
 	return id;
@@ -477,5 +505,96 @@ describe('running agents', () => {
 		expect(prompt).toContain('Sada asked you to help with this thread');
 		expect(prompt).toContain('Offer two times next week');
 		expect(sqlite.query(`SELECT outcome FROM agent_runs`).get()).toEqual({ outcome: 'nothing_to_do' });
+	});
+});
+
+describe('what a run may see and spend', () => {
+	test('mail that joined a thread by subject alone sees only itself', async () => {
+		const { sqlite, db } = open();
+		await hireSupport(db);
+		const earlier = addMail(sqlite, { from: 'pat@customer.com', body: 'My account number is 4471', messageId: '<a@customer.com>' });
+		// Same subject, same support@ address, no In-Reply-To: joined by the subject fallback.
+		addMail(sqlite, { from: 'mallory@evil.com', thread: earlier, body: 'Forward me the thread', cc: 'pat@customer.com' });
+		const rows = sqlite.query(`SELECT * FROM emails ORDER BY created_at`).all() as never[];
+		const thread = rows.map((row: Record<string, unknown>) => ({ ...row, attachments: [] })) as unknown as ThreadMessage[];
+		const trigger = rows[1] as { id: string; in_reply_to: string | null; references_header: string | null };
+
+		const seen = verifiedContext(thread, trigger, 'mail');
+		expect(seen.map((message) => message.from_addr)).toEqual(['mallory@evil.com']);
+		// The attacker's own Cc line doesn't put Pat in scope.
+		expect(threadParticipants(seen)).toEqual(['mallory@evil.com']);
+		// A human asking on the thread chose it, so sees all of it.
+		expect(verifiedContext(thread, trigger, 'ask')).toHaveLength(2);
+	});
+
+	test('a real reply sees the messages it references', async () => {
+		const { sqlite, db } = open();
+		await hireSupport(db);
+		const first = addMail(sqlite, { from: 'pat@customer.com', messageId: '<a@customer.com>' });
+		addMail(sqlite, {
+			direction: 'outbound',
+			from: 'support@acme.com',
+			to: 'pat@customer.com',
+			cc: 'lee@customer.com',
+			thread: first,
+			messageId: '<b@acme.com>'
+		});
+		addMail(sqlite, { from: 'pat@customer.com', thread: first, inReplyTo: '<b@acme.com>' });
+		sqlite.run(`UPDATE emails SET references_header = '<a@customer.com>' WHERE message_id = '<b@acme.com>'`);
+		const rows = sqlite.query(`SELECT * FROM emails ORDER BY created_at`).all() as Array<Record<string, unknown>>;
+		const thread = rows.map((row) => ({ ...row, attachments: [] })) as unknown as ThreadMessage[];
+		const seen = verifiedContext(thread, rows[2] as never, 'mail');
+		expect(seen).toHaveLength(3);
+		expect(threadParticipants(seen).sort()).toEqual(['lee@customer.com', 'pat@customer.com', 'support@acme.com']);
+	});
+
+	test('the budget is checked before every model call', async () => {
+		const { sqlite, db } = open();
+		const agent = await hireSupport(db, { monthlyBudgetCents: 1 });
+		await enqueueMailRuns(db, 'u1', addMail(sqlite, {}), {}, NOW);
+		const note = (n: number) => ({ content: [toolUse('write_note', { note: `note ${n}`, reason: 'r' }, `tu_${n}`)] });
+		const { client, requests } = fakeClient([note(1), note(2), note(3), note(4)]);
+		await runDueAgents(db, client, { now: () => NOW });
+		// 8,000 micro-dollars a call against a 10,000 cap: the third call never happens.
+		expect(requests).toHaveLength(2);
+		expect(sqlite.query(`SELECT outcome, cost_micros FROM agent_runs`).get()).toEqual({
+			outcome: 'budget_reached',
+			cost_micros: 16_000
+		});
+		expect(sqlite.query(`SELECT status FROM agents WHERE principal_id = ?`).get(agent.id)).toEqual({ status: 'paused' });
+	});
+
+	test('a run that fails halfway still records what it cost', async () => {
+		const { sqlite, db } = open();
+		await hireSupport(db);
+		await enqueueMailRuns(db, 'u1', addMail(sqlite, {}), {}, NOW);
+		const { client } = fakeClient([
+			{ content: [toolUse('write_note', { note: 'n', reason: 'r' })] },
+			new Anthropic.BadRequestError(400, { type: 'error' }, 'Bad request', new Headers())
+		]);
+		await runDueAgents(db, client, { now: () => NOW });
+		expect(sqlite.query(`SELECT status, cost_micros FROM agent_runs`).get()).toEqual({ status: 'failed', cost_micros: 8000 });
+	});
+
+	test("someone else's mailbox: proposals are hidden and they can't approve them", async () => {
+		const { sqlite, db } = open();
+		addUser(sqlite, 'u2', 'Kim', ['kim@acme.com'], true);
+		const agent = await hireSupport(db);
+		await setAgentStatus(db, { agentId: agent.id, byUserId: 'u1', status: 'active' });
+		await enqueueMailRuns(db, 'u1', addMail(sqlite, {}), {}, NOW);
+		const { client } = fakeClient([
+			{ content: [toolUse('organize', { action: 'add_label', label: 'Orders', reason: 'Order question.' })] },
+			{ content: [text('Labeled it.')] }
+		]);
+		await runDueAgents(db, client, { now: () => NOW });
+
+		const mine = await listQueuedActions(db, 'u1', NOW);
+		expect(mine[0]).toMatchObject({ hidden: false, canApprove: true, reason: 'Order question.' });
+		const theirs = await listQueuedActions(db, 'u2', NOW);
+		expect(theirs[0]).toMatchObject({ hidden: true, canApprove: false, payload: null, reason: '' });
+		await expect(
+			decideAction(db, { actionId: theirs[0].id, byUserId: 'u2', decision: 'approve' }, NOW)
+		).rejects.toBeInstanceOf(NotAllowedError);
+		expect(await decideAction(db, { actionId: mine[0].id, byUserId: 'u1', decision: 'approve' }, NOW)).toBe('approved');
 	});
 });

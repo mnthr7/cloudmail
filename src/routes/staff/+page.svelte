@@ -54,6 +54,9 @@
 
 	let draft = $state<Draft>(blankDraft());
 	let editingId = $state<string | null>(null);
+	/** Send-as addresses the agent had when the form opened, so ones the editor can't grant stay visible and untickable. */
+	let grantedSendAs = $state<string[]>([]);
+	const sendAsOptions = $derived([...new Set([...data.sendAs, ...grantedSendAs])].sort());
 	let formOpen = $state(false);
 	let saving = $state(false);
 	let formError = $state('');
@@ -74,6 +77,7 @@
 	function openHire() {
 		draft = blankDraft();
 		editingId = null;
+		grantedSendAs = [];
 		formError = '';
 		formOpen = true;
 	}
@@ -83,6 +87,7 @@
 		if (!agent) return;
 		draft = draftFrom(agent.displayName, agent.definition);
 		editingId = id;
+		grantedSendAs = [...agent.definition.scope.sendAs];
 		formError = '';
 		formOpen = true;
 	}
@@ -346,14 +351,17 @@
 
 			<fieldset class="group">
 				<legend>Send as</legend>
-				{#if data.sendAs.length === 0}
+				{#if sendAsOptions.length === 0}
 					<p class="card-hint">You have no addresses it could send from.</p>
 				{:else}
 					<div class="checks">
-						{#each data.sendAs as address (address)}
+						{#each sendAsOptions as address (address)}
 							<label class="check">
 								<input type="checkbox" value={address} bind:group={draft.sendAs} />
 								<span>{address}</span>
+								{#if !data.sendAs.includes(address)}
+									<span class="item-sub">You can't grant this one any more. Untick it to save.</span>
+								{/if}
 							</label>
 						{/each}
 					</div>

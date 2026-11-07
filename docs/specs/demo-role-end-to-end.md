@@ -24,7 +24,7 @@
 
 ## TL;DR
 
-A solo founder sets up a **Demos role** with an address (`demo@acme.com`), a public booking page (`acme.com/book/demo`), and an agent, **Ava**. A prospect books a slot, and from then on everything happens in one email thread from `demo@`. Ava confirms the booking, handles reschedules sent as plain replies, sends the founder a prep brief, and drafts the follow-up. Anything substantive waits in a **Needs your OK** queue until the founder approves it. Ava signs every message as herself and always says she is an AI assistant. The founder's Google Calendar stays the source of truth for their time.
+A solo founder sets up a **Demos role** with an address (`demo@acme.com`), a public booking page (`acme.com/book/demo`), and an agent, **Ava**. A prospect books a slot, and from then on everything happens in one email thread from `demo@`. Ava confirms the booking, handles reschedules sent as plain replies, sends the founder a prep brief, and drafts the follow-up. Anything substantive waits in a **Needs your OK** queue until the founder approves it. Ava signs every message as herself and always says she is an AI assistant. The founder's existing calendar (Google, Apple, or Outlook) stays the source of truth for their time. In v1 CloudMail reads it through a secret ICS feed and writes to it by sending invites, so no OAuth and no Google approval are needed.
 
 The key change from Calendly is that **the booking and the email thread are the same object**, and the address it comes from has staff behind it.
 
@@ -49,9 +49,9 @@ AgentMail gives agents their own mailboxes, but humans stay outside the system. 
 | Non-goal | Why |
 |---|---|
 | Teams, round-robin pools, or more than one human per role | Solo founder first. The data model allows pools (see §8), but there's no UI or logic for them |
-| Microsoft 365, iCloud, or CalDAV calendars | Google covers most of the target users. One provider done properly beats three done badly |
+| OAuth calendar APIs (Google, Microsoft Graph, CalDAV) | v1 reads secret ICS feeds and writes by sending invites, so we don't need Google's app verification. OAuth is the R22 upgrade |
 | Agents joining calls or taking notes | A different product. The founder adds notes by replying to the brief (R12) |
-| Hosted signup, billing, or being a system-of-record calendar | v1 runs on a single-workspace deploy and adds a calendar layer on top of Google |
+| Hosted signup, billing, or being a system-of-record calendar | v1 runs on a single-workspace deploy and adds a calendar layer on top of the founder's existing calendar |
 | Bring-your-own agent runtime | Ava is built in. We define the action contract (§8.4) so external runtimes can plug in later |
 | Paid bookings, CRM sync, third-party lead enrichment | They add integrations without proving the core loop |
 | Outbound prospecting by Ava | Ava only responds to people who booked or wrote in. Cold outreach is a reputation risk |
@@ -66,7 +66,7 @@ AgentMail gives agents their own mailboxes, but humans stay outside the system. 
 
 ### Founder
 1. As a founder, I want to create a Demos role with its own address, booking page, and agent, so that demo requests have one home that isn't my personal inbox.
-2. As a founder, I want to connect my Google Calendar once, so that bookings never conflict with my real schedule and booked demos appear where I already look.
+2. As a founder, I want to connect my calendar once, so that bookings never conflict with my real schedule and booked demos appear where I already look.
 3. As a founder, I want to set when demos can happen (blocks, buffers, a daily cap, minimum notice), so that demos fit around focus time instead of breaking it up.
 4. As a founder, I want to write a short playbook in plain language, so that Ava qualifies, answers, and follows up the way I would.
 5. As a founder, I want everything Ava wants to say that isn't logistics to wait for my OK, so that nothing reaches a prospect that I wouldn't stand behind.
@@ -81,7 +81,7 @@ AgentMail gives agents their own mailboxes, but humans stay outside the system. 
 12. As a prospect, I want to know when I'm talking to an AI assistant, so that I'm never misled about who is on the other end.
 
 ### Edge cases
-13. As a founder, I want a slot that becomes busy on Google after booking to be flagged to me, not silently moved.
+13. As a founder, I want a slot that becomes busy on my calendar after booking to be flagged to me, not silently moved.
 14. As a prospect, I want a clear message if my chosen slot was just taken, plus the next available times.
 15. As a founder, I want instructions hidden in a prospect's email ("ignore your rules and…") to have no effect on Ava.
 16. As a founder, I want queued drafts that are going stale (for example, a reschedule offer for a time that has passed) to expire, not be sent late.
@@ -102,21 +102,22 @@ A role has a name, a slug, an address from the existing `addresses` table, an ow
 - [ ] Mail arriving at the role address lands in a **Demos** mailbox view shared by the founder and Ava. It doesn't go to the founder's personal inbox
 - [ ] Only human principals can edit the playbook or autonomy settings
 
-**R3. Google Calendar connection (as a layer on top)**
-OAuth with Google: read free/busy from the calendars the founder selects, and write confirmed bookings to one chosen calendar. Store tokens encrypted. Use push notifications (watch channels) plus incremental sync. If push fails, fall back to polling every 5 minutes from the existing cron job.
-- [ ] Busy times are considered within 60 seconds of a change on Google when push works, and within 5 minutes when it doesn't
-- [ ] Revoking access on Google's side disables the booking page within one sync cycle, shows a reconnect banner, and emails the founder
-- [ ] Tokens never appear in logs or API responses
-- [ ] If a new Google event overlaps a confirmed booking, the founder gets a queue item ("Conflict with <event>: keep, or have Ava offer new times?"). Nothing moves automatically (story 13)
+**R3. Calendar connection through ICS feeds (no OAuth in v1)**
+The founder pastes one or more secret calendar feed URLs: Google's "Secret address in iCal format", an iCloud public calendar link, or an Outlook published calendar. CloudMail fetches each feed every 5 minutes from the existing cron job, using conditional requests (`ETag` / `If-Modified-Since`). It expands recurring events (`RRULE`, `EXDATE`, and per-instance changes) across the booking horizon and **stores only busy intervals**. Event titles, descriptions, and attendees are discarded. Bookings reach the founder's calendar through the invite in R7, because the founder is an attendee on it. There's no separate write to their calendar.
+- [ ] Busy times are taken into account within 5 minutes of CloudMail's next fetch. *Note:* Google can take a while to show changes in its secret feed, so measure the real delay in dogfood
+- [ ] Feed URLs are secrets: encrypted at rest, never logged, and masked in the UI once saved
+- [ ] If no feed has been fetched successfully for 60 minutes, the booking page stops offering slots, shows "temporarily unavailable", shows the founder a banner, and emails them
+- [ ] Handles all-day events, `TRANSP:TRANSPARENT` (shown as free), `STATUS:CANCELLED`, and events with their own time zones
+- [ ] If a new event in the feed overlaps a confirmed booking, the founder gets a queue item ("Conflict with <event>: keep, or have Ava offer new times?"). Nothing moves automatically (story 13)
 
 **R4. Availability engine**
-Each event type has weekly blocks in the founder's time zone, a duration (15/30/45/60 minutes), buffers before and after, a daily cap, minimum notice, and a booking horizon. Free slots are the blocks, minus Google busy times, minus existing bookings and buffers, minus days that have hit the cap.
+Each event type has weekly blocks in the founder's time zone, a duration (15/30/45/60 minutes), buffers before and after, a daily cap, minimum notice, and a booking horizon. Free slots are the blocks, minus busy times from the feed, minus existing bookings and buffers, minus days that have hit the cap.
 - [ ] Handles daylight-saving changes correctly in both the founder's and the prospect's time zones (tests cover US and EU switchover weeks)
 - [ ] Slots are shown in the prospect's detected time zone, which they can change
 - [ ] The cap counts confirmed and held bookings, not cancelled ones
 
 **R5. Atomic slot holds**
-One Durable Object per calendar owner holds slots. Booking takes a 10-minute hold, re-checks Google free/busy, then confirms or releases the hold.
+One Durable Object per calendar owner holds slots. Booking takes a 10-minute hold, re-checks the busy cache (refetching the feeds first if the last fetch is more than 2 minutes old), then confirms or releases the hold.
 - [ ] Two simultaneous bookings for the same slot: exactly one succeeds, and the other gets the "just taken" response with the next three slots (story 14)
 - [ ] An expired hold releases the slot without any manual step
 
@@ -127,9 +128,10 @@ One Durable Object per calendar owner holds slots. Booking takes a 10-minute hol
 - [ ] The page is rate limited per IP and per invitee email
 
 **R7. The booking is the thread (core)**
-Confirming a booking creates a thread in the Demos mailbox and sends a confirmation **from the role address** with an iCalendar invite (an email with `METHOD:REQUEST`, using a stable `UID`). The thread and the booking point at each other. Rescheduling resends the invite with the same `UID` and a higher `SEQUENCE`. Cancelling sends `METHOD:CANCEL`. The confirmed event is also written to the founder's Google Calendar. *See open question Q1 about duplicate invitations.*
+Confirming a booking creates a thread in the Demos mailbox and sends a confirmation **from the role address** with an iCalendar invite (an email with `METHOD:REQUEST`, using a stable `UID`). The thread and the booking point at each other. Rescheduling resends the invite with the same `UID` and a higher `SEQUENCE`. Cancelling sends `METHOD:CANCEL`. **The role address is the organizer, and both the prospect and the founder are attendees on the same invite**, so the founder's calendar adds the event through the invite like any other. There's only one invite, so nothing is duplicated.
 - [ ] The prospect's Gmail, Outlook, and Apple Mail each show a native accept/decline invite, and accepting doesn't create duplicates on reschedule
-- [ ] The founder's Google Calendar shows the event with a link back to the thread
+- [ ] The founder's calendar (Gmail with Google Calendar, Apple Calendar, Outlook) shows the event, with a link back to the thread in its description
+- [ ] On the next fetch, the busy cache recognizes the founder's copy of the event by its `UID` and doesn't count it as a conflict with its own booking
 - [ ] Every reply from the prospect goes into the same thread (using the `In-Reply-To` and `References` threading that already exists)
 
 **R8. Ava's identity and disclosure**
@@ -192,11 +194,11 @@ Only the playbook, autonomy settings, and internal notes from human principals c
 ### P1: fast follows
 
 - **R17. Qualify before confirming:** an option to hold the booking as *pending* until Ava qualifies it, for founders who get flooded with poor-fit demo requests. Off by default, because confirming instantly converts better.
-- **R18. Google Meet links:** generate a Meet link when the event is written to Google. Fallback: a fixed meeting URL per event type (P0 ships the fixed URL).
+- **R18. Generated meeting links:** generate a Google Meet or Teams link for each booking. This needs R22 OAuth. P0 uses a fixed meeting URL per event type.
 - **R19. More event types per role**, such as "30-minute demo" and "15-minute intro". The P0 data model already allows this; P1 adds the UI.
 - **R20. Weekly digest:** demos booked, held, no-shows, and approvals made, with Ava's suggestions for playbook changes.
 - **R21. Overrides for high-value leads:** a playbook rule that lets Ava offer time *outside* demo blocks to qualified leads, which always needs approval.
-- **R22. Read-only ICS feed subscriptions** for busy times from Apple or other calendars.
+- **R22. OAuth calendar upgrade (two-way, push):** Google Calendar API with watch channels for changes within seconds, writing events directly to the calendar, and Meet links, behind a `CalendarProvider` interface (then Microsoft Graph, then CalDAV). **Deferred because it needs Google's app verification.** Shortcut: if the founder's own account is on Google Workspace, register the app as *Internal*, which skips verification for users in their own organization. Avoid unverified *external* apps in testing mode, where Google expires refresh tokens after 7 days.
 
 ### P2: plan for these now, build later
 
@@ -214,7 +216,7 @@ Only the playbook, autonomy settings, and internal notes from human principals c
 | Approve-without-edit rate on queued drafts | Leading | 80% / 90% by week 3 | Status and edit diff on `agent_actions` | Weekly |
 | Booking page conversion (page view → confirmed booking) | Leading | ≥ 25% | Page events → `bookings` | Weekly |
 | Reschedules handled by Ava with no founder action | Leading | ≥ 90% | `agent_actions` of kind reschedule | Weekly |
-| Double bookings or wrong-time invites | Quality | **0** | Incident log plus a nightly check of bookings against Google | Continuous |
+| Double bookings or wrong-time invites | Quality | **0** | Incident log plus a nightly check of bookings against the feeds | Continuous |
 | Unauthorized agent actions (R16) | Quality | **0** | Server rejections of model-requested actions, plus red-team suite in CI | Every release |
 | Founder logistics time per demo (self-reported plus time spent in the queue) | Lagging | < 5 minutes | Dogfood survey plus time on queue actions | Week 4 |
 | Founders still using it weekly after 4 weeks (dogfood cohort of 5) | Lagging | 4 of 5 | Weekly active founders | Week 4 and week 8 |
@@ -238,9 +240,10 @@ autonomy_settings (role_id, action_kind, level CHECK (level IN ('auto','approve'
 event_types       (id, role_id, slug, title, duration_min, buffer_before_min, buffer_after_min,
                    daily_cap, min_notice_min, horizon_days, weekly_blocks_json, timezone,
                    intake_questions_json, meeting_url)
-calendar_connections (id, principal_id, provider, account_email, tokens_enc,
-                   busy_calendar_ids_json, write_calendar_id, sync_token, watch_channel_id,
-                   watch_expires_at, status)
+calendar_connections (id, principal_id, provider CHECK (provider IN ('ics')),  -- 'google' etc. arrive with R22
+                   label, feed_url_enc, etag, last_modified, last_fetched_at, last_ok_at,
+                   consecutive_failures, status)
+calendar_busy     (connection_id, start_utc, end_utc, ical_uid NULL)   -- busy intervals only, no titles
 bookings          (id, event_type_id, thread_id, invitee_name, invitee_email, intake_json,
                    start_utc, end_utc, invitee_tz, status, ical_uid, ical_sequence,
                    google_event_id, assignee_principal_id, created_at)
@@ -259,7 +262,7 @@ Existing tables get a nullable `workspace_id` filled in by the migration. In v1 
 - **Model:** Claude through the Anthropic API. Use a cheaper model for sorting replies (R10) and a stronger one for drafting (R11 and R12). See Q5.
 - **Sending:** reuses `sendAndStore` with a new `actor_principal_id`. The disclosure footer (R8) is added in the send path, not in drafts.
 - **iCalendar:** a small module that builds and parses VEVENT and iMIP messages, sent as a `text/calendar; method=REQUEST` part with both providers. Inbound parsing of REPLY messages (attendee accept or decline) updates `bookings`.
-- **Google:** OAuth web flow, the free/busy and events endpoints, and push-notification watch channels renewed before they expire. A `CalendarProvider` interface keeps P2 providers easy to add.
+- **Calendar feeds:** an `IcsFeedProvider` behind a `CalendarProvider` interface. A cron job fetches and parses each feed (RRULE expansion via a well-maintained iCalendar library), and the busy intervals are written into the CalendarDO cache. The R22 OAuth providers plug into the same interface later.
 
 ### 8.3 Inbound routing change
 
@@ -277,8 +280,8 @@ Every agent, built-in or external, can only *propose*. The server decides whethe
 
 | # | Question | Owner | Blocking? |
 |---|---|---|---|
-| Q1 | Who is the organizer of record? If we send our own invite **and** write the event with attendees to Google, the prospect may get two invites. Options: (a) write to Google *without* attendees, as a private copy for the founder; (b) let Google send the invite and drop our own invite. Leaning (a) | Engineering | **Yes**, before R7 |
-| Q2 | Google OAuth verification for calendar scopes can take weeks, and the app is limited to 100 test users until it's verified. Start the application on day 1 | Engineering / stakeholder | **Yes**, for anything past dogfood |
+| Q1 | ~~Who is the organizer of record?~~ **Settled for v1:** the role address organizes and the founder is an attendee (R7). Reopen when R22 OAuth writes events directly | Engineering | No |
+| Q2 | **Deferred (2026-11-06).** Google OAuth verification is only needed for R22. When we pick it up, decide between an *Internal* Workspace app (founder only, no verification) and full verification (other founders) | Engineering / stakeholder | No |
 | Q3 | Is the fixed disclosure line in R8 enough for California's bot-disclosure law and the EU AI Act's transparency rules? Does it need a link to a short "about Ava" page? | Legal | No, but needed before public launch |
 | Q4 | Retention: how long do we keep model inputs, fetched company pages, and call notes? | Legal / engineering | No |
 | Q5 | Model choice and cost per demo. Target: under $0.10 of model cost per booking lifecycle | Engineering / data | No |
@@ -290,11 +293,11 @@ Every agent, built-in or external, can only *propose*. The server decides whethe
 
 | Phase | Contents | Exit criteria |
 |---|---|---|
-| **0. Foundations** (~1 week) | R1 workspace and principals migration, R14 timeline, the `agent_actions` table, the empty Needs your OK view. **Start Google OAuth verification (Q2).** | All existing tests green, migration rehearsed on a copy of production data |
-| **1. Calendar** (~2 weeks) | R3 Google connection, R4 availability, R5 CalendarDO holds, R6 booking page, R7 thread and iCalendar invite | A founder can be booked by a real Gmail and Outlook user, with no double booking under a concurrency test |
+| **0. Foundations** (~1 week) | R1 workspace and principals migration, R14 timeline, the `agent_actions` table, the empty Needs your OK view | All existing tests green, migration rehearsed on a copy of production data |
+| **1. Calendar** (~2 weeks) | R3 ICS feed connection, R4 availability, R5 CalendarDO holds, R6 booking page, R7 thread and iCalendar invite | A founder can be booked by a real Gmail and Outlook user, the invite appears on the founder's own calendar, and there's no double booking under a concurrency test |
 | **2. Ava** (~2 weeks) | R2 roles and playbook, R8 identity, R9 queue, R10 reply handling, R11 brief, R12 follow-up, R13 no-show, R15 take over, R16 safety suite | The red-team suite passes, and a full simulated booking lifecycle runs in CI |
 | **3. Dogfood** (~4 weeks) | 5 solo founders on a hosted single-workspace deploy each. Weekly metric review against §7 | Go/no-go for P1 and for hosted multi-tenancy, based on zero-touch and approve-without-edit rates |
 
-**Dependencies:** Google OAuth verification (external, slow). Cloudflare Durable Objects and Queues (needs a Workers paid plan; Cloudflare Email Sending already requires one). An Anthropic API key.
+**Dependencies:** Cloudflare Durable Objects and Queues (needs a Workers paid plan; Cloudflare Email Sending already requires one). An Anthropic API key.
 
 **Riskiest assumption:** founders will let Ava send logistics emails on her own and will approve most of her drafts without editing. Phase 3 is designed to test exactly this. If approve-without-edit stays under 60%, re-scope toward "Ava drafts, the founder sends" before building anything wider.

@@ -20,9 +20,8 @@
 	},
 	"devDependencies": {
 		"@cloudflare/workers-types": "^4.20260601.1",
-		"@sveltejs/adapter-auto": "^7.0.1",
-		"@sveltejs/adapter-cloudflare": "^7.2.8",
-		"@sveltejs/kit": "^2.57.0",
+		"@sveltejs/adapter-cloudflare": "^8.0.2",
+		"@sveltejs/kit": "^3.1.1",
 		"@sveltejs/vite-plugin-svelte": "^7.3.1",
 		"@tailwindcss/vite": "^4.3.4",
 		"@types/node": "^24.10.1",

@@ -1,0 +1,118 @@
+name: Risk tier
+
+# Labels every pull request risk:low or risk:high from the files it changes
+# (scripts/risk-tier.mjs), and turns on auto-merge for the low tier.
+#
+# Auto-merge only waits for the required checks in the "Main Protection"
+# ruleset, so a low-risk pull request merges once CI passes. It applies to:
+#   - pull requests the repo owner opens (including ones an agent opens for them)
+#   - Dependabot patch and minor updates
+# Anyone else's pull request is labeled but never merged automatically.
+# Add the "hold" label to keep any pull request from merging on its own.
+#
+# Security: this runs on pull_request_target so it can label and merge, which
+# means it has a write token. It must never check out or run code from the
+# pull request. It checks out the base branch, so the classifier is the
+# reviewed copy on main, and treats the pull request's file names as data.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, labeled, unlabeled]
+
+permissions: {}
+
+concurrency:
+  group: risk-tier-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  tier:
+    name: Risk tier
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # enable auto-merge
+      pull-requests: write # labels and auto-merge
+      issues: write # create the labels if they don't exist yet
+    steps:
+      # The base branch, never the pull request's code.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: Read Dependabot metadata
+        id: deps
+        if: github.event.pull_request.user.login == 'dependabot[bot]'
+        # If this can't read the update type, the pull request stays high risk.
+        continue-on-error: true
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+
+      - name: Classify and apply
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          ASSOCIATION: ${{ github.event.pull_request.author_association }}
+          ACTOR: ${{ github.actor }}
+          OWNER: ${{ github.repository_owner }}
+          DRAFT: ${{ github.event.pull_request.draft }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          UPDATE_TYPE: ${{ steps.deps.outputs.update-type }}
+        run: |
+          set -euo pipefail
+
+          # Every file, and the old name of anything renamed. A name with a control
+          # character (a newline could split one path into two) counts as high risk.
+          gh api --paginate "repos/$REPO/pulls/$PR/files" \
+            --jq '.[] | .filename, (.previous_filename // empty)
+                  | if test("[[:cntrl:]]") then "!control-character-in-path" else . end' \
+            > "$RUNNER_TEMP/files.txt"
+          node scripts/risk-tier.mjs < "$RUNNER_TEMP/files.txt" > "$RUNNER_TEMP/tier.json"
+          tier=$(jq -r .tier "$RUNNER_TEMP/tier.json")
+          why="files"
+
+          # Dependabot patch and minor bumps only touch the lockfile and manifests.
+          # Majors stay high: they can change behaviour.
+          if [ "$AUTHOR" = "dependabot[bot]" ]; then
+            case "$UPDATE_TYPE" in
+              version-update:semver-patch|version-update:semver-minor) tier=low; why="dependabot $UPDATE_TYPE" ;;
+              *) tier=high; why="dependabot ${UPDATE_TYPE:-unknown update}" ;;
+            esac
+          fi
+
+          gh label create risk:low --repo "$REPO" --color 0E8A16 --description "Can merge once CI passes" --force >/dev/null
+          gh label create risk:high --repo "$REPO" --color B60205 --description "Needs a human to review and merge" --force >/dev/null
+          gh label create hold --repo "$REPO" --color FBCA04 --description "Never merge automatically" --force >/dev/null
+          other=$([ "$tier" = low ] && echo high || echo low)
+          gh pr edit "$PR" --repo "$REPO" --add-label "risk:$tier" --remove-label "risk:$other" >/dev/null
+
+          # Who may skip a human: the owner's own pull requests, and Dependabot's
+          # when Dependabot or the owner triggered this run.
+          trusted=false
+          if [ "$ASSOCIATION" = "OWNER" ]; then trusted=true; fi
+          if [ "$AUTHOR" = "dependabot[bot]" ] && { [ "$ACTOR" = "dependabot[bot]" ] || [ "$ACTOR" = "$OWNER" ]; }; then
+            trusted=true
+          fi
+          held=false
+          case ",$LABELS," in *,hold,*) held=true ;; esac
+
+          {
+            echo "### Risk tier: $tier"
+            echo
+            echo "Decided by: $why. Trusted author: $trusted. Draft: $DRAFT. Hold: $held."
+            if [ "$tier" = high ] && [ "$why" = files ]; then
+              echo
+              echo "Files that need a human:"
+              jq -r '.highRisk[] | "- `" + . + "`"' "$RUNNER_TEMP/tier.json"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$tier" = low ] && [ "$trusted" = true ] && [ "$DRAFT" = false ] && [ "$held" = false ]; then
+            if ! gh pr merge "$PR" --repo "$REPO" --auto --squash; then
+              echo "::warning::Could not turn on auto-merge. Is 'Allow auto-merge' on in the repository settings?"
+            fi
+          else
+            # A later push can raise the tier, or someone adds "hold": stop any pending auto-merge.
+            gh pr merge "$PR" --repo "$REPO" --disable-auto >/dev/null 2>&1 || true
+          fi

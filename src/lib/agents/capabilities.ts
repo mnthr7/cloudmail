@@ -59,3 +59,24 @@ export function isCapability(value: unknown): value is Capability {
 export function isAutonomyLevel(value: unknown): value is AutonomyLevel {
 	return typeof value === 'string' && (AUTONOMY_LEVELS as readonly string[]).includes(value);
 }
+
+/** Plain-language names for the Staff page. */
+export const CAPABILITY_LABELS: Record<Capability, { name: string; hint: string }> = {
+	read_threads: { name: 'Read threads', hint: 'See the mail it is working on' },
+	write_note: { name: 'Write notes', hint: 'Leave private notes on a thread for you' },
+	draft_reply: { name: 'Draft replies', hint: 'Write drafts you can send yourself' },
+	organize: { name: 'Organize', hint: 'Label, archive, and move mail' },
+	send_reply: { name: 'Send replies', hint: 'Reply to people already on the thread' },
+	send_email: { name: 'Send new email', hint: 'Start new threads with people' },
+	set_timer: { name: 'Set timers', hint: 'Come back to a thread later' },
+	calendar: { name: 'Calendar', hint: 'Hold times and send invites' },
+	hand_off: { name: 'Hand off', hint: 'Pass a thread to you or another agent' },
+	fetch_web: { name: 'Fetch web pages', hint: 'Read public pages for context' },
+	propose_memory: { name: 'Remember things', hint: 'Suggest facts to keep for later' }
+};
+
+export const AUTONOMY_LABELS: Record<AutonomyLevel, string> = {
+	off: 'Off',
+	approve: 'Ask me first',
+	auto: 'On its own'
+};

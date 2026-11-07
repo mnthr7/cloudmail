@@ -544,3 +544,90 @@ export async function listQueuedActions(db: D1Database, userId: string, now = ne
 		expiresAt: row.expires_at
 	}));
 }
+
+export type AgentSummary = {
+	id: string;
+	displayName: string;
+	status: AgentStatus;
+	runtime: AgentRuntime;
+	shadowRemaining: number;
+	versionNumber: number;
+	definition: AgentDefinition;
+	queued: number;
+	createdAt: string;
+};
+
+/** Every agent in the user's workspace, oldest first, for the Staff page (A10). */
+export async function listAgents(db: D1Database, userId: string, now = new Date()): Promise<AgentSummary[]> {
+	const human = await humanPrincipalForUser(db, userId);
+	await expireActions(db, now);
+	const { results } = await db
+		.prepare(
+			`SELECT p.id, p.display_name, p.created_at, a.status, a.runtime, a.shadow_remaining,
+			        v.version, v.definition_json,
+			        (SELECT COUNT(*) FROM agent_actions x
+			         WHERE x.agent_principal_id = p.id AND x.status = 'queued') AS queued
+			 FROM principals p
+			 JOIN agents a ON a.principal_id = p.id
+			 JOIN agent_versions v ON v.id = a.current_version_id
+			 WHERE p.workspace_id = ? AND p.kind = 'agent'
+			 ORDER BY p.created_at ASC, p.id ASC`
+		)
+		.bind(human.workspace_id)
+		.all<{
+			id: string;
+			display_name: string;
+			created_at: string;
+			status: AgentStatus;
+			runtime: AgentRuntime;
+			shadow_remaining: number;
+			version: number;
+			definition_json: string;
+			queued: number;
+		}>();
+
+	return results.map((row) => ({
+		id: row.id,
+		displayName: row.display_name,
+		status: row.status,
+		runtime: row.runtime,
+		shadowRemaining: row.shadow_remaining,
+		versionNumber: row.version,
+		definition: parseDefinition(JSON.parse(row.definition_json)),
+		queued: row.queued,
+		createdAt: row.created_at
+	}));
+}
+
+/** One agent, if it is in the user's workspace. */
+export async function getAgentForUser(db: D1Database, agentId: string, userId: string): Promise<AgentRecord> {
+	const { agent } = await requireAgentForUser(db, agentId, userId);
+	return agent;
+}
+
+/**
+ * Addresses this user may let an agent send as: their own, or every human's
+ * in the workspace if they are an admin. The same rule `createAgent` enforces.
+ */
+export async function sendAsChoices(db: D1Database, userId: string): Promise<string[]> {
+	const human = await humanPrincipalForUser(db, userId);
+	const owned = await liveWorkspaceAddresses(db, human.workspace_id);
+	return [...owned]
+		.filter(([, owner]) => human.is_admin === 1 || owner === human.user_id)
+		.map(([address]) => address)
+		.sort();
+}
+
+/** The kill switch: pause every agent in the workspace at once (A10). Returns how many were running. */
+export async function pauseAllAgents(db: D1Database, userId: string): Promise<number> {
+	const human = await humanPrincipalForUser(db, userId);
+	const result = await db
+		.prepare(
+			`UPDATE agents SET status = 'paused'
+			 WHERE status != 'paused'
+			   AND principal_id IN (SELECT id FROM principals WHERE workspace_id = ? AND kind = 'agent')`
+		)
+		.bind(human.workspace_id)
+		.run();
+	return result.meta.changes ?? 0;
+}

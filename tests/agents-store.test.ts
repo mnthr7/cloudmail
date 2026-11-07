@@ -11,7 +11,11 @@ import {
 	decideAction,
 	expireActions,
 	getAgent,
+	getAgentForUser,
+	listAgents,
 	listQueuedActions,
+	pauseAllAgents,
+	sendAsChoices,
 	markExecuted,
 	proposeAction,
 	setAgentStatus,
@@ -503,5 +507,94 @@ describe('the Needs your OK queue', () => {
 		await expect(setAgentStatus(db, { agentId: agent.id, byUserId: 'nobody', status: 'active' })).rejects.toBeInstanceOf(
 			NotAllowedError
 		);
+	});
+});
+
+describe('the Staff page', () => {
+	const email = { capability: 'send_email', fromAddress: 'billing@acme.com', recipients: ['client@globex.com'] };
+
+	test('lists every agent in the workspace with what is waiting for a human', async () => {
+		const { db } = open();
+		const agent = await activeAgent(db);
+		await createAgent(db, { ownerUserId: 'u1', displayName: 'Scout', definition: { ...billing, scope: { sendAs: [], recipients: { kind: 'thread' } } } });
+		const now = new Date('2026-11-07T12:00:00Z');
+		await proposeAction(db, { agentId: agent.id, proposal: email, payload: {}, threadParticipants: ['client@globex.com'] }, now);
+		await proposeAction(
+			db,
+			{
+				agentId: agent.id,
+				proposal: email,
+				payload: {},
+				threadParticipants: ['client@globex.com'],
+				expiresAt: new Date('2026-11-07T12:30:00Z')
+			},
+			now
+		);
+
+		const agents = await listAgents(db, 'u1', new Date('2026-11-07T13:00:00Z'));
+		expect(agents.map((item) => [item.displayName, item.status, item.queued])).toEqual([
+			['Billing', 'active', 1],
+			['Scout', 'shadow', 0]
+		]);
+		expect(agents[0].versionNumber).toBe(1);
+		expect(agents[0].definition.scope.sendAs).toEqual(['billing@acme.com']);
+	});
+
+	test("does not show another workspace's agents", async () => {
+		const { sqlite, db } = open();
+		await activeAgent(db);
+		sqlite.run(`INSERT INTO workspaces (id, name) VALUES ('w2', 'Other')`);
+		addUser(sqlite, 'u2', 'Priya', ['priya@acme.com']);
+		sqlite.run(`UPDATE principals SET workspace_id = 'w2' WHERE user_id = 'u2'`);
+		expect(await listAgents(db, 'u2')).toEqual([]);
+	});
+
+	test('send-as choices are your own addresses, or everyone\'s for an admin', async () => {
+		const { sqlite, db } = open();
+		addUser(sqlite, 'u2', 'Priya', ['priya@acme.com']);
+		addUser(sqlite, 'u3', 'Root', ['root@acme.com'], true);
+		expect(await sendAsChoices(db, 'u2')).toEqual(['priya@acme.com']);
+		expect(await sendAsChoices(db, 'u3')).toEqual([
+			'billing@acme.com',
+			'priya@acme.com',
+			'root@acme.com',
+			'sada@acme.com'
+		]);
+	});
+
+	test('pause all stops every agent, and their proposals are refused', async () => {
+		const { db } = open();
+		const agent = await activeAgent(db);
+		await createAgent(db, { ownerUserId: 'u1', displayName: 'Scout', definition: billing });
+
+		expect(await pauseAllAgents(db, 'u1')).toBe(2);
+		expect(await pauseAllAgents(db, 'u1')).toBe(0);
+		expect((await listAgents(db, 'u1')).every((item) => item.status === 'paused')).toBe(true);
+		const { decision } = await proposeAction(db, { agentId: agent.id, proposal: reply, payload: {}, threadParticipants: ['client@globex.com'] });
+		expect(decision).toEqual({ outcome: 'reject', reason: 'agent_paused' });
+	});
+
+	test('pause all only reaches your own workspace', async () => {
+		const { sqlite, db } = open();
+		const agent = await activeAgent(db);
+		sqlite.run(`INSERT INTO workspaces (id, name) VALUES ('w2', 'Other')`);
+		addUser(sqlite, 'u2', 'Priya', ['priya@acme.com']);
+		sqlite.run(`UPDATE principals SET workspace_id = 'w2' WHERE user_id = 'u2'`);
+
+		expect(await pauseAllAgents(db, 'u2')).toBe(0);
+		expect((await getAgent(db, agent.id))?.status).toBe('active');
+	});
+
+	test('an agent is only visible to humans in its workspace', async () => {
+		const { sqlite, db } = open();
+		const agent = await activeAgent(db);
+		expect((await getAgentForUser(db, agent.id, 'u1')).displayName).toBe('Billing');
+
+		sqlite.run(`INSERT INTO workspaces (id, name) VALUES ('w2', 'Other')`);
+		addUser(sqlite, 'u2', 'Priya', ['priya@acme.com']);
+		sqlite.run(`UPDATE principals SET workspace_id = 'w2' WHERE user_id = 'u2'`);
+		await expect(getAgentForUser(db, agent.id, 'u2')).rejects.toBeInstanceOf(AgentNotFoundError);
+		await expect(getAgentForUser(db, agent.id, 'nobody')).rejects.toBeInstanceOf(NotAllowedError);
+		await expect(pauseAllAgents(db, 'nobody')).rejects.toBeInstanceOf(NotAllowedError);
 	});
 });

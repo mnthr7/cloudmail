@@ -78,19 +78,23 @@ jobs:
           tier=$(jq -r .tier "$RUNNER_TEMP/tier.json")
           why="files"
 
-          # Who wrote each commit, and whether GitHub verified its signature. The
-          # API lists at most 250, so a longer pull request counts as unknown.
-          # author.login comes from the commit email, which anyone who can push
-          # could fake; GitHub signs Dependabot's commits, so those must verify.
+          # Per commit: author, whether the signature verified, and who signed it as
+          # committer. The API lists at most 250, so a longer pull request counts as
+          # unknown. author.login comes from the commit email, which anyone who can
+          # push could fake, and "verified" only means someone's key signed it.
+          # Dependabot's commits are signed by GitHub itself (committer web-flow),
+          # so those must be verified and committed by web-flow.
           gh api --paginate "repos/$REPO/pulls/$PR/commits" \
-            --jq '.[] | (.author.login // "!unknown") + " " + (.commit.verification.verified | tostring)' \
+            --jq '.[] | (.author.login // "!unknown") + " " + (.commit.verification.verified | tostring)
+                  + " " + (.committer.login // "!unknown")' \
             > "$RUNNER_TEMP/authors.txt"
           commits=$(grep -c '' "$RUNNER_TEMP/authors.txt" || true)
-          # only_by LOGIN [signed]: every commit is by LOGIN (and, with "signed", verified).
+          # only_by LOGIN [signed]: every commit is by LOGIN (and, with "signed",
+          # verified and signed by GitHub as web-flow).
           only_by() {
             [ "$commits" -gt 0 ] && [ "$commits" -lt 250 ] || return 1
             awk -v want="$1" -v signed="${2:-}" \
-              '$1 != want || (signed == "signed" && $2 != "true") { bad = 1 } END { exit bad }' \
+              '$1 != want || (signed == "signed" && ($2 != "true" || $3 != "web-flow")) { bad = 1 } END { exit bad }' \
               "$RUNNER_TEMP/authors.txt"
           }
           [ "$TRIGGERING_ACTOR" = "$ACTOR" ] || ACTOR="!rerun-by-$TRIGGERING_ACTOR"

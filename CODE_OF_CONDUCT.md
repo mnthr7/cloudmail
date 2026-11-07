@@ -9,8 +9,9 @@ issues, pull requests, discussions, or any other project space.
 
 ## Reporting
 
-If someone's behaviour concerns you, contact the maintainer privately
-(@mnthr7 on GitHub) instead of replying in public. Reports are kept confidential.
+If someone's behaviour concerns you, email the maintainer privately at
+[conduct@qurelay.com](mailto:conduct@qurelay.com) instead of replying in public.
+Reports are kept confidential.
 
 Maintainers may edit or remove comments, close threads, or block contributors
 who break this code, following the Covenant's enforcement guidelines.

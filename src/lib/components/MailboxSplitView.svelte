@@ -6,6 +6,8 @@
 	import MailboxView from './MailboxView.svelte';
 	import OrganizeMenu from './OrganizeMenu.svelte';
 	import AskAgentForm from './AskAgentForm.svelte';
+	import SuggestedReplies from './SuggestedReplies.svelte';
+	import { withSuggestion, writtenText, type SuggestionRef, type SuggestionView } from '#lib/agents/suggestions.ts';
 	import Icon from './Icon.svelte';
 	import ThreadMessage from './ThreadMessage.svelte';
 	import RichTextEditor from './RichTextEditor.svelte';
@@ -136,6 +138,7 @@
 
 	onDestroy(() => {
 		clearAutosaveTimer();
+		if (suggestPoll) clearTimeout(suggestPoll);
 	});
 	/** Threads removed optimistically; hidden from the list until the server agrees. */
 	let hiddenIds = $state<string[]>([]);
@@ -205,11 +208,95 @@
 	let askOpen = $state(false);
 	const askAgents = $derived<Array<{ id: string; name: string }>>(threadData?.agents ?? []);
 
+	// Suggested replies: the open set for this thread, which one a reply started from,
+	// and a one-click request that waits for the agent to answer.
+	const suggestion = $derived<SuggestionView | null>(threadData?.suggestion ?? null);
+	let suggestionRef = $state<SuggestionRef | null>(null);
+	let suggestWaiting = $state(false);
+	let suggestPoll: ReturnType<typeof setTimeout> | null = null;
+	const hasInbound = $derived(
+		(threadData?.messages ?? []).some((message: { direction: string }) => message.direction === 'inbound')
+	);
+
+	function stopSuggestPoll() {
+		if (suggestPoll) clearTimeout(suggestPoll);
+		suggestPoll = null;
+		suggestWaiting = false;
+	}
+
+	$effect(() => {
+		if (!composer) suggestionRef = null;
+	});
+
+	async function useSuggestion(index: number, sendNow: boolean) {
+		const option = suggestion?.options[index];
+		if (!suggestion || !option) return;
+		if (composer !== 'reply') openComposer('reply');
+		if (composer !== 'reply') return;
+		replyHtml = withSuggestion(replyHtml, option.body);
+		suggestionRef = { id: suggestion.id, index };
+		if (sendNow) {
+			await tick();
+			await sendReply(new Event('submit'));
+		} else {
+			void focusReplyComposer();
+		}
+	}
+
+	async function dismissSuggestion() {
+		if (!suggestion) return;
+		const id = suggestion.id;
+		threadData = { ...threadData, suggestion: null };
+		await fetch(`/api/agents/suggestions/${id}`, { method: 'DELETE' }).catch(() => undefined);
+	}
+
+	async function requestSuggestions() {
+		const agent = askAgents[0];
+		if (!agent || !latest || !threadId) return;
+		const forThread = threadId;
+		const res = await fetch(`/api/agents/${agent.id}/ask`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ emailId: latest.id, suggest: true })
+		}).catch(() => null);
+		if (!res?.ok) {
+			const body = await res?.json().catch(() => null);
+			showToast(
+				body?.error === 'paused'
+					? `${agent.name} is paused. Resume it on the Staff page first.`
+					: body?.error === 'drafting'
+						? `${agent.name} isn't allowed to draft replies. Turn drafting on in its settings.`
+						: "Couldn't ask for replies.",
+				{ kind: 'error' }
+			);
+			return;
+		}
+		suggestWaiting = true;
+		let tries = 0;
+		const check = async () => {
+			if (threadId !== forThread) return stopSuggestPoll();
+			const next = await fetch(mailApiUrl(forThread)).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+			if (threadId !== forThread) return stopSuggestPoll();
+			if (next?.suggestion) {
+				threadData = { ...threadData, suggestion: next.suggestion };
+				return stopSuggestPoll();
+			}
+			if (++tries >= 24) {
+				stopSuggestPoll();
+				showToast(`${agent.name} hasn't answered yet. Check the Staff page for what happened.`);
+				return;
+			}
+			suggestPoll = setTimeout(check, 10_000);
+		};
+		suggestPoll = setTimeout(check, 15_000);
+	}
+
 	async function loadThread(id: string) {
 		const requestThreadId = id;
 		const opening = restoredThreadId !== requestThreadId;
 		if (opening) {
 			askOpen = false;
+			stopSuggestPoll();
 			clearAutosaveTimer();
 			edited = false;
 			clearPreviousDraft();
@@ -541,7 +628,10 @@
 					fromAddressId: selected?.addressId ?? undefined,
 					fromAddress: selected?.address,
 					...archive ? { archive: true } : { archive: false },
-					attachments: replyAttachments
+					attachments: replyAttachments,
+					...(suggestionRef && composer === 'reply'
+						? { suggestion: { ...suggestionRef, text: writtenText(replyHtml) } }
+						: {})
 				})
 			});
 			const body = await res.json();
@@ -552,6 +642,9 @@
 
 			const queuedId = typeof body.id === 'string' ? body.id : '';
 			const sendAt = typeof body.sendAt === 'string' ? body.sendAt : '';
+			// Any reply closes the open suggestions: one was used, or the user wrote their own.
+			if (threadData?.suggestion && composer !== 'forward') threadData = { ...threadData, suggestion: null };
+			suggestionRef = null;
 			if (replyDraftId && replyDraftId !== queuedId) {
 				await fetch(`/api/drafts/${replyDraftId}`, { method: 'DELETE' });
 			}
@@ -799,6 +892,16 @@
 						{#if askOpen && latest && askAgents.length > 0}
 							<AskAgentForm agents={askAgents} emailId={latest.id} onClose={() => (askOpen = false)} />
 						{/if}
+
+						<SuggestedReplies
+							{suggestion}
+							agentName={hasInbound ? (askAgents[0]?.name ?? null) : null}
+							waiting={suggestWaiting}
+							busy={sending}
+							onUse={useSuggestion}
+							onDismiss={dismissSuggestion}
+							onRequest={requestSuggestions}
+						/>
 					</div>
 
 					{#if composer}

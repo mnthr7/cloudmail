@@ -17,6 +17,7 @@
 		type AgentModel
 	} from '#lib/agents/definition.ts';
 	import type { AgentStatus } from '#lib/agents/policy.ts';
+	import { estimateRunMicros, formatMicros, MODEL_NOTES, TYPICAL_RUN } from '#lib/agents/models.ts';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
@@ -307,6 +308,28 @@
 		}
 	}
 
+	/** Tokens a run uses: this agent's own average once it has run, a typical run before that. */
+	const runProfile = $derived(
+		editingId && data.usage[editingId]
+			? { ...data.usage[editingId], measured: true }
+			: { ...TYPICAL_RUN, runs: 0, measured: false }
+	);
+	/** Mail a month to the addresses ticked under "Wakes up for". An address can't double-count one email much. */
+	const monthlyMail = $derived(draft.watch.reduce((sum, address) => sum + (data.volume[address] ?? 0), 0));
+
+	function suggestionLine(agentId: string): string {
+		const rows = data.suggestions.filter((row) => row.agentId === agentId);
+		if (!rows.length) return '';
+		const total = (key: 'suggested' | 'sent' | 'asWritten' | 'edited' | 'dismissed' | 'ownReply' | 'noReply') =>
+			rows.reduce((sum, row) => sum + row[key], 0);
+		const parts = [`Suggested replies on ${total('suggested')} threads`];
+		if (total('sent')) parts.push(`you sent ${total('sent')} (${total('asWritten')} as written, ${total('edited')} edited)`);
+		if (total('ownReply')) parts.push(`wrote your own on ${total('ownReply')}`);
+		if (total('dismissed')) parts.push(`dismissed ${total('dismissed')}`);
+		if (total('noReply')) parts.push(`${total('noReply')} needed no reply`);
+		return `${parts.join(' · ')} in the last 30 days`;
+	}
+
 	function dollars(micros: number): string {
 		return `$${(micros / 1_000_000).toFixed(2)}`;
 	}
@@ -515,20 +538,35 @@
 
 			<fieldset class="group">
 				<legend>Model and budget</legend>
-				<div class="model-row">
-					<label class="field">
-						<span>Model</span>
-						<select class="text-input" bind:value={draft.model}>
-							{#each AGENT_MODELS as model (model)}
-								<option value={model}>{AGENT_MODEL_LABELS[model]}</option>
-							{/each}
-						</select>
-					</label>
-					<label class="field">
-						<span>Monthly budget (USD)</span>
-						<input class="text-input" inputmode="decimal" bind:value={draft.budget} aria-label="Monthly budget in dollars" />
-					</label>
+				<div class="model-picker" role="radiogroup" aria-label="Model">
+					{#each AGENT_MODELS as model (model)}
+						{@const perRun = estimateRunMicros(model, runProfile)}
+						<label class="model-option" class:model-chosen={draft.model === model}>
+							<input type="radio" name="model" value={model} bind:group={draft.model} />
+							<span class="model-text">
+								<span class="model-name">{AGENT_MODEL_LABELS[model]}</span>
+								<span class="model-note">{MODEL_NOTES[model]}</span>
+							</span>
+							<span class="model-cost">
+								<span>≈ {formatMicros(perRun)} per email</span>
+								{#if monthlyMail > 0}
+									<span class="model-month">≈ {dollars(perRun * monthlyMail)} a month</span>
+								{/if}
+							</span>
+						</label>
+					{/each}
 				</div>
+				<p class="card-hint">
+					{runProfile.measured
+						? `Based on this agent's last ${runProfile.runs} ${runProfile.runs === 1 ? 'run' : 'runs'}`
+						: 'Based on a typical email and three suggested replies'}{monthlyMail > 0
+						? `, and the ${monthlyMail} emails the addresses it watches got in the last 30 days`
+						: ''}. Asking it on a thread costs about the same per ask.
+				</p>
+				<label class="field budget-field">
+					<span>Monthly budget (USD)</span>
+					<input class="text-input" inputmode="decimal" bind:value={draft.budget} aria-label="Monthly budget in dollars" />
+				</label>
 				<p class="card-hint">Reaching the budget pauses the agent until next month or until you raise it.</p>
 			</fieldset>
 
@@ -730,6 +768,9 @@
 								data.spend[agent.id] ?? 0
 							)} of {dollars(agent.definition.monthlyBudgetCents * 10_000)} this month
 						</p>
+						{#if suggestionLine(agent.id)}
+							<p class="item-sub">{suggestionLine(agent.id)}</p>
+						{/if}
 						<div class="item-actions">
 							{#if agent.canManage}
 								<button type="button" class="btn-ghost text-xs" onclick={() => openEdit(agent.id)}>
@@ -782,10 +823,69 @@
 </div>
 
 <style>
-	.model-row {
-		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+	.model-picker {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+
+	.model-option {
+		display: flex;
+		align-items: center;
 		gap: 0.75rem;
+		padding: 0.625rem 0.875rem;
+		border-radius: 0.625rem;
+		cursor: pointer;
+		box-shadow: inset 0 0 0 1px var(--color-line);
+	}
+
+	.model-option:hover {
+		background: var(--color-surface-muted);
+	}
+
+	.model-chosen {
+		box-shadow: inset 0 0 0 1.5px var(--color-text);
+	}
+
+	.model-text {
+		display: flex;
+		flex: 1;
+		min-width: 0;
+		flex-direction: column;
+	}
+
+	.model-name {
+		font-size: 0.875rem;
+		font-weight: 600;
+	}
+
+	.model-note,
+	.model-month {
+		font-size: 0.75rem;
+		color: var(--color-text-secondary);
+	}
+
+	.model-cost {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-end;
+		font-size: 0.8125rem;
+		white-space: nowrap;
+	}
+
+	.budget-field {
+		max-width: 14rem;
+		margin-top: 0.75rem;
+	}
+
+	@media (max-width: 520px) {
+		.model-option {
+			flex-wrap: wrap;
+		}
+
+		.model-cost {
+			align-items: flex-start;
+		}
 	}
 
 	.chosen {

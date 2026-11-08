@@ -7,6 +7,9 @@
 	import ThreadMessage from '#lib/components/ThreadMessage.svelte';
 	import OrganizeMenu from '#lib/components/OrganizeMenu.svelte';
 	import AskAgentForm from '#lib/components/AskAgentForm.svelte';
+	import SuggestedReplies from '#lib/components/SuggestedReplies.svelte';
+	import { textToHtml, writtenText, type SuggestionRef } from '#lib/agents/suggestions.ts';
+	import { onDestroy, tick } from 'svelte';
 	import { showToast } from '#lib/toast.ts';
 	import { htmlToPlainText, isHtmlEmpty } from '#lib/utils/html.ts';
 	import {
@@ -26,6 +29,77 @@
 	let error = $state('');
 
 	let askOpen = $state(false);
+
+	// Suggested replies: which one the reply box started from, and a one-click request.
+	let suggestionRef = $state<SuggestionRef | null>(null);
+	let suggestWaiting = $state(false);
+	let suggestPoll: ReturnType<typeof setTimeout> | null = null;
+	onDestroy(() => {
+		if (suggestPoll) clearTimeout(suggestPoll);
+	});
+	$effect(() => {
+		if (!replyOpen) suggestionRef = null;
+	});
+	$effect(() => {
+		if (data.suggestion && suggestPoll) {
+			clearTimeout(suggestPoll);
+			suggestPoll = null;
+			suggestWaiting = false;
+		}
+	});
+
+	async function useSuggestion(index: number, sendNow: boolean) {
+		const option = data.suggestion?.options[index];
+		if (!data.suggestion || !option) return;
+		replyOpen = true;
+		replyHtml = textToHtml(option.body);
+		suggestionRef = { id: data.suggestion.id, index };
+		if (sendNow) {
+			await tick();
+			await sendReply(new SubmitEvent('submit'));
+		}
+	}
+
+	async function dismissSuggestion() {
+		if (!data.suggestion) return;
+		await fetch(`/api/agents/suggestions/${data.suggestion.id}`, { method: 'DELETE' }).catch(() => undefined);
+		await invalidateAll();
+	}
+
+	async function requestSuggestions() {
+		const agent = data.agents[0];
+		if (!agent || !latest) return;
+		const res = await fetch(`/api/agents/${agent.id}/ask`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ emailId: latest.id, suggest: true })
+		}).catch(() => null);
+		if (!res?.ok) {
+			const body = await res?.json().catch(() => null);
+			showToast(
+				body?.error === 'paused'
+					? `${agent.name} is paused. Resume it on the Staff page first.`
+					: body?.error === 'drafting'
+						? `${agent.name} isn't allowed to draft replies. Turn drafting on in its settings.`
+						: "Couldn't ask for replies.",
+				{ kind: 'error' }
+			);
+			return;
+		}
+		suggestWaiting = true;
+		let tries = 0;
+		const check = async () => {
+			await invalidateAll();
+			if (data.suggestion || ++tries >= 24) {
+				suggestWaiting = false;
+				suggestPoll = null;
+				if (!data.suggestion) showToast(`${agent.name} hasn't answered yet. Check the Staff page for what happened.`);
+				return;
+			}
+			suggestPoll = setTimeout(check, 10_000);
+		};
+		suggestPoll = setTimeout(check, 15_000);
+	}
 
 	const messages = $derived(data.messages);
 	const latest = $derived(messages[messages.length - 1]);
@@ -192,7 +266,8 @@
 					fromAddress: selected?.address,
 					html: replyHtml,
 					text: htmlToPlainText(replyHtml),
-					attachments: replyAttachments
+					attachments: replyAttachments,
+					...(suggestionRef ? { suggestion: { ...suggestionRef, text: writtenText(replyHtml) } } : {})
 				})
 			});
 			const body = await res.json();
@@ -204,6 +279,7 @@
 			replyHtml = '';
 			replyAttachments = [];
 			replyOpen = false;
+			suggestionRef = null;
 			// The sent reply is now part of this conversation.
 			await invalidateAll();
 		} catch {
@@ -357,6 +433,16 @@
 		{#if askOpen && latest && data.agents.length > 0}
 			<AskAgentForm agents={data.agents} emailId={latest.id} onClose={() => (askOpen = false)} />
 		{/if}
+
+		<SuggestedReplies
+			suggestion={data.suggestion}
+			agentName={messages.some((message) => message.direction === 'inbound') ? (data.agents[0]?.name ?? null) : null}
+			waiting={suggestWaiting}
+			busy={sending}
+			onUse={useSuggestion}
+			onDismiss={dismissSuggestion}
+			onRequest={requestSuggestions}
+		/>
 
 		{#if replyOpen}
 			<form class="reply-section" onsubmit={sendReply}>

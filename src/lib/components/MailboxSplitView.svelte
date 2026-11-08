@@ -5,6 +5,7 @@
 	import { goto, invalidateAll } from '$app/navigation';
 	import MailboxView from './MailboxView.svelte';
 	import OrganizeMenu from './OrganizeMenu.svelte';
+	import AskAgentForm from './AskAgentForm.svelte';
 	import Icon from './Icon.svelte';
 	import ThreadMessage from './ThreadMessage.svelte';
 	import RichTextEditor from './RichTextEditor.svelte';
@@ -201,10 +202,14 @@
 		replyHtml = '';
 	}
 
+	let askOpen = $state(false);
+	const askAgents = $derived<Array<{ id: string; name: string }>>(threadData?.agents ?? []);
+
 	async function loadThread(id: string) {
 		const requestThreadId = id;
 		const opening = restoredThreadId !== requestThreadId;
 		if (opening) {
+			askOpen = false;
 			clearAutosaveTimer();
 			edited = false;
 			clearPreviousDraft();
@@ -686,6 +691,13 @@
 							/>
 						{/if}
 
+						{#if askAgents.length > 0}
+							<button type="button" class="btn-ghost" onclick={() => (askOpen = !askOpen)}>
+								<Icon name="robot-2-line" size={16} />
+								{askOpen ? 'Close' : 'Ask an agent'}
+							</button>
+						{/if}
+
 						{#if showReplyAll}
 							<button type="button" class="btn-ghost" onclick={() => openComposer('reply-all')}>
 								<Icon name="reply-all-line" size={16} />
@@ -783,6 +795,10 @@
 								/>
 							{/each}
 						</div>
+
+						{#if askOpen && latest && askAgents.length > 0}
+							<AskAgentForm agents={askAgents} emailId={latest.id} onClose={() => (askOpen = false)} />
+						{/if}
 					</div>
 
 					{#if composer}

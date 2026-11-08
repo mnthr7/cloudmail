@@ -9,6 +9,7 @@ import {
 	setEmailFlags
 } from '#lib/server/mail-store.ts';
 import { isMailCategory } from '#lib/organizing/categories.ts';
+import { askableAgents } from '#lib/server/agent-runs-store.ts';
 import {
 	OrganizingActionError,
 	applyConversationAction,
@@ -78,7 +79,8 @@ export const GET: RequestHandler = async ({ params, locals, platform, url }) => 
 			isMuted: stored?.is_muted ?? false,
 			isImportant: stored?.is_important ?? false,
 			category: stored?.category ?? 'primary',
-			labels: stored?.labels ?? []
+			labels: stored?.labels ?? [],
+			agents: []
 		});
 	}
 
@@ -117,6 +119,9 @@ export const GET: RequestHandler = async ({ params, locals, platform, url }) => 
 			status: string;
 		}>();
 
+	// Agents this user can hand the thread to, for the reader's "Ask an agent".
+	const agents = await askableAgents(db, locals.user.id).catch(() => []);
+
 	return json({
 		threadId,
 		subject: displaySubject(messages[0]?.subject ?? email.subject),
@@ -126,7 +131,8 @@ export const GET: RequestHandler = async ({ params, locals, platform, url }) => 
 		isMuted: email.is_muted === 1,
 		isImportant: email.is_important === 1,
 		category: isMailCategory(email.category) ? email.category : 'primary',
-		labels
+		labels,
+		agents: agents.map((agent) => ({ id: agent.id, name: agent.name }))
 	});
 };
 

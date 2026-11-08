@@ -10,9 +10,26 @@ import {
 
 /**
  * What an agent is allowed to see and do, stored as one version of its
- * definition (docs/specs/agent-staff-platform.md, A3). Triggers, memory and
- * budget join this shape in later phases.
+ * definition (docs/specs/agent-staff-platform.md, A3). Memory joins this shape
+ * in a later phase.
  */
+
+/** Models an agent can run on. The first is the default. */
+export const AGENT_MODELS = ['claude-opus-5-5', 'claude-sonnet-5-5'] as const;
+export type AgentModel = (typeof AGENT_MODELS)[number];
+
+export const AGENT_MODEL_LABELS: Record<AgentModel, string> = {
+	'claude-opus-5-5': 'Claude Opus 5.5',
+	'claude-sonnet-5-5': 'Claude Sonnet 5.5'
+};
+
+/** A new agent's monthly spend cap, in cents. Reaching it pauses the agent. */
+export const DEFAULT_MONTHLY_BUDGET_CENTS = 1000;
+export const MAX_MONTHLY_BUDGET_CENTS = 100_000;
+
+export function isAgentModel(value: unknown): value is AgentModel {
+	return typeof value === 'string' && (AGENT_MODELS as readonly string[]).includes(value);
+}
 
 export type CapabilitySetting = {
 	level: AutonomyLevel;
@@ -32,10 +49,20 @@ export type AgentScope = {
 	recipients: RecipientScope;
 };
 
+/** When the agent wakes up (A5). Asking it on a thread always works. */
+export type AgentTriggers = {
+	/** New mail to any of these addresses starts a run. */
+	watch: string[];
+};
+
 export type AgentDefinition = {
 	job: string;
 	capabilities: Partial<Record<Capability, CapabilitySetting>>;
 	scope: AgentScope;
+	triggers: AgentTriggers;
+	model: AgentModel;
+	/** Most it may spend on model calls per calendar month (UTC), in cents. */
+	monthlyBudgetCents: number;
 };
 
 export const MAX_JOB_LENGTH = 8000;
@@ -44,8 +71,13 @@ const MAX_DAILY_LIMIT = 10_000;
 export class AgentDefinitionError extends Error {
 	readonly status = 400;
 
-	/** `send_as`: an address the person hiring the agent doesn't own (checked by the store). */
-	constructor(readonly code: 'job' | 'capability' | 'level' | 'limit' | 'scope' | 'send_as') {
+	/**
+	 * `send_as` / `watch`: an address the person hiring the agent doesn't own
+	 * (checked by the store). `trigger`, `model`, `budget`: malformed fields.
+	 */
+	constructor(
+		readonly code: 'job' | 'capability' | 'level' | 'limit' | 'scope' | 'send_as' | 'watch' | 'trigger' | 'model' | 'budget'
+	) {
 		super(code);
 		this.name = 'AgentDefinitionError';
 	}
@@ -58,6 +90,30 @@ export function defaultDefinition(job: string): AgentDefinition {
 		capabilities[capability] = { level: CAPABILITY_TRAITS[capability].defaultLevel };
 	}
 	return parseDefinition({ job, capabilities, scope: { sendAs: [], recipients: { kind: 'thread' } } });
+}
+
+/** Older stored versions predate triggers, model and budget; they get the defaults. */
+function parseTriggers(value: unknown): AgentTriggers {
+	if (value === undefined || value === null) return { watch: [] };
+	if (typeof value !== 'object') throw new AgentDefinitionError('trigger');
+	const raw = value as Record<string, unknown>;
+	const watch = raw.watch === undefined ? [] : Array.isArray(raw.watch) ? raw.watch.map(normalizeAddress) : null;
+	if (!watch || watch.some((address) => address === null)) throw new AgentDefinitionError('trigger');
+	return { watch: [...new Set(watch as string[])] };
+}
+
+function parseModel(value: unknown): AgentModel {
+	if (value === undefined || value === null) return AGENT_MODELS[0];
+	if (!isAgentModel(value)) throw new AgentDefinitionError('model');
+	return value;
+}
+
+function parseBudget(value: unknown): number {
+	if (value === undefined || value === null) return DEFAULT_MONTHLY_BUDGET_CENTS;
+	if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > MAX_MONTHLY_BUDGET_CENTS) {
+		throw new AgentDefinitionError('budget');
+	}
+	return value;
 }
 
 /**
@@ -81,7 +137,14 @@ export function parseDefinition(input: unknown): AgentDefinition {
 		capabilities[name] = parseSetting(setting);
 	}
 
-	return { job, capabilities, scope: parseScope(raw.scope) };
+	return {
+		job,
+		capabilities,
+		scope: parseScope(raw.scope),
+		triggers: parseTriggers(raw.triggers),
+		model: parseModel(raw.model),
+		monthlyBudgetCents: parseBudget(raw.monthlyBudgetCents)
+	};
 }
 
 function parseSetting(value: unknown): CapabilitySetting {

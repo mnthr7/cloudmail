@@ -36,7 +36,7 @@ import {
 	toProposal,
 	verifiedContext
 } from '../src/lib/server/agent-brain';
-import { runDueAgents, type MessagesClient } from '../src/lib/server/agent-runner';
+import { runDueAgents, type MessagesClient, type RunClients } from '../src/lib/server/agent-runner';
 import type { ThreadMessage } from '../src/lib/types';
 
 const MIGRATIONS = path.join(import.meta.dir, '../migrations');
@@ -176,6 +176,11 @@ function fakeClient(script: Array<Scripted | Error>) {
 		}
 	};
 	return { client, requests };
+}
+
+/** Every run is in the default workspace, which has a working key. */
+function only(client: MessagesClient): RunClients {
+	return { workspaces: ['default'], clientFor: async () => client };
 }
 
 function toolUse(name: string, input: Record<string, unknown>, id = `tu_${name}`) {
@@ -383,7 +388,7 @@ describe('running agents', () => {
 			{ content: [text('Drafted a reply about the shipping date.')] }
 		]);
 
-		expect(await runDueAgents(db, client, { now: () => NOW })).toBe(1);
+		expect(await runDueAgents(db, only(client), { now: () => NOW })).toBe(1);
 
 		const action = sqlite
 			.query(`SELECT capability, status, run_id IS NOT NULL AS has_run, payload_json FROM agent_actions`)
@@ -417,7 +422,7 @@ describe('running agents', () => {
 		expect((await listRecentRuns(db, 'u1'))[0]).toMatchObject({ subject: 'Help with my order', status: 'done' });
 
 		// Nothing left to run.
-		expect(await runDueAgents(db, fakeClient([]).client, { now: () => NOW })).toBe(0);
+		expect(await runDueAgents(db, only(fakeClient([]).client), { now: () => NOW })).toBe(0);
 	});
 
 	test('a reply to a stranger is refused, and the model is told so', async () => {
@@ -439,7 +444,7 @@ describe('running agents', () => {
 			},
 			{ content: [text('Could not send.')] }
 		]);
-		await runDueAgents(db, client, { now: () => NOW });
+		await runDueAgents(db, only(client), { now: () => NOW });
 		expect(sqlite.query(`SELECT status, policy_reason FROM agent_actions`).get()).toEqual({
 			status: 'rejected',
 			policy_reason: 'recipient_out_of_scope'
@@ -458,7 +463,7 @@ describe('running agents', () => {
 		);
 		await enqueueMailRuns(db, 'u1', addMail(sqlite, {}), {}, NOW);
 		const { client, requests } = fakeClient([]);
-		await runDueAgents(db, client, { now: () => NOW });
+		await runDueAgents(db, only(client), { now: () => NOW });
 		expect(requests).toHaveLength(0);
 		expect(sqlite.query(`SELECT outcome FROM agent_runs WHERE id != 'old'`).get()).toEqual({ outcome: 'budget_reached' });
 		expect(sqlite.query(`SELECT status FROM agents`).get()).toEqual({ status: 'paused' });
@@ -471,16 +476,16 @@ describe('running agents', () => {
 		const overloaded = () => new Anthropic.InternalServerError(529, { type: 'error' }, 'Overloaded', new Headers());
 		const { client } = fakeClient([overloaded(), overloaded(), overloaded()]);
 
-		await runDueAgents(db, client, { now: () => NOW });
+		await runDueAgents(db, only(client), { now: () => NOW });
 		expect(sqlite.query(`SELECT status, attempts FROM agent_runs`).get()).toEqual({ status: 'pending', attempts: 1 });
-		await runDueAgents(db, client, { now: () => NOW });
-		await runDueAgents(db, client, { now: () => NOW });
+		await runDueAgents(db, only(client), { now: () => NOW });
+		await runDueAgents(db, only(client), { now: () => NOW });
 		expect(sqlite.query(`SELECT status, attempts, outcome FROM agent_runs`).get()).toEqual({
 			status: 'failed',
 			attempts: 3,
 			outcome: 'api_error_529'
 		});
-		expect(await runDueAgents(db, client, { now: () => NOW })).toBe(0);
+		expect(await runDueAgents(db, only(client), { now: () => NOW })).toBe(0);
 	});
 
 	test('a run that was paused before it started does nothing', async () => {
@@ -489,7 +494,7 @@ describe('running agents', () => {
 		await enqueueMailRuns(db, 'u1', addMail(sqlite, {}), {}, NOW);
 		await setAgentStatus(db, { agentId: agent.id, byUserId: 'u1', status: 'paused' });
 		const { client, requests } = fakeClient([]);
-		await runDueAgents(db, client, { now: () => NOW });
+		await runDueAgents(db, only(client), { now: () => NOW });
 		expect(requests).toHaveLength(0);
 		expect(sqlite.query(`SELECT status, outcome FROM agent_runs`).get()).toEqual({ status: 'skipped', outcome: 'paused' });
 	});
@@ -500,7 +505,7 @@ describe('running agents', () => {
 		const id = addMail(sqlite, { to: 'sada@acme.com' });
 		await enqueueAskRun(db, { agentId: agent.id, byUserId: 'u1', emailId: id, request: 'Offer two times next week' }, NOW);
 		const { client, requests } = fakeClient([{ content: [text('Nothing needed.')] }]);
-		await runDueAgents(db, client, { now: () => NOW });
+		await runDueAgents(db, only(client), { now: () => NOW });
 		const prompt = JSON.stringify(requests[0].messages);
 		expect(prompt).toContain('Sada asked you to help with this thread');
 		expect(prompt).toContain('Offer two times next week');
@@ -554,7 +559,7 @@ describe('what a run may see and spend', () => {
 		await enqueueMailRuns(db, 'u1', addMail(sqlite, {}), {}, NOW);
 		const note = (n: number) => ({ content: [toolUse('write_note', { note: `note ${n}`, reason: 'r' }, `tu_${n}`)] });
 		const { client, requests } = fakeClient([note(1), note(2), note(3), note(4)]);
-		await runDueAgents(db, client, { now: () => NOW });
+		await runDueAgents(db, only(client), { now: () => NOW });
 		// 8,000 micro-dollars a call against a 10,000 cap: the third call never happens.
 		expect(requests).toHaveLength(2);
 		expect(sqlite.query(`SELECT outcome, cost_micros FROM agent_runs`).get()).toEqual({
@@ -572,7 +577,7 @@ describe('what a run may see and spend', () => {
 			{ content: [toolUse('write_note', { note: 'n', reason: 'r' })] },
 			new Anthropic.BadRequestError(400, { type: 'error' }, 'Bad request', new Headers())
 		]);
-		await runDueAgents(db, client, { now: () => NOW });
+		await runDueAgents(db, only(client), { now: () => NOW });
 		expect(sqlite.query(`SELECT status, cost_micros FROM agent_runs`).get()).toEqual({ status: 'failed', cost_micros: 8000 });
 	});
 
@@ -586,7 +591,7 @@ describe('what a run may see and spend', () => {
 			{ content: [toolUse('organize', { action: 'add_label', label: 'Orders', reason: 'Order question.' })] },
 			{ content: [text('Labeled it.')] }
 		]);
-		await runDueAgents(db, client, { now: () => NOW });
+		await runDueAgents(db, only(client), { now: () => NOW });
 
 		const mine = await listQueuedActions(db, 'u1', NOW);
 		expect(mine[0]).toMatchObject({ hidden: false, canApprove: true, reason: 'Order question.' });
@@ -609,7 +614,7 @@ describe('what a run may see and spend', () => {
 			{ content: [toolUse('organize', { action: 'archive', label: '', reason: 'Done.' })] },
 			{ content: [text('Archived.')] }
 		]);
-		await runDueAgents(db, client, { now: () => NOW });
+		await runDueAgents(db, only(client), { now: () => NOW });
 		// Deleting the email removes its run, which clears run_id on the action.
 		sqlite.run(`DELETE FROM emails WHERE id = ?`, [id]);
 		expect(sqlite.query(`SELECT run_id FROM agent_actions`).get()).toEqual({ run_id: null });
@@ -620,5 +625,63 @@ describe('what a run may see and spend', () => {
 			decideAction(db, { actionId: theirs[0].id, byUserId: 'u2', decision: 'approve' }, NOW)
 		).rejects.toBeInstanceOf(NotAllowedError);
 		expect((await listShadowActions(db, 'u2')).every((action) => action.hidden)).toBe(true);
+	});
+});
+
+describe('runs and the workspace key', () => {
+	test('without a working key, runs are not claimed and keep waiting', async () => {
+		const { sqlite, db } = open();
+		await hireSupport(db);
+		await enqueueMailRuns(db, 'u1', addMail(sqlite, {}), {}, NOW);
+		const { client, requests } = fakeClient([]);
+
+		expect(await runDueAgents(db, { workspaces: [], clientFor: async () => client }, { now: () => NOW })).toBe(0);
+		expect(requests).toHaveLength(0);
+		expect(sqlite.query(`SELECT status, attempts FROM agent_runs`).get()).toEqual({ status: 'pending', attempts: 0 });
+	});
+
+	test('a key that will not open puts the run back without using an attempt', async () => {
+		const { sqlite, db } = open();
+		await hireSupport(db);
+		await enqueueMailRuns(db, 'u1', addMail(sqlite, {}), {}, NOW);
+
+		expect(await runDueAgents(db, { workspaces: ['default'], clientFor: async () => null }, { now: () => NOW })).toBe(1);
+		expect(sqlite.query(`SELECT status, outcome, attempts FROM agent_runs`).get()).toEqual({
+			status: 'pending',
+			outcome: 'no_key',
+			attempts: 0
+		});
+	});
+
+	test('a key the provider turns down pauses the workspace, and its runs wait', async () => {
+		const { sqlite, db } = open();
+		await hireSupport(db);
+		await enqueueMailRuns(db, 'u1', addMail(sqlite, {}), {}, NOW);
+		await enqueueMailRuns(db, 'u1', addMail(sqlite, { subject: 'Second question' }), {}, NOW);
+		const rejection = new Anthropic.AuthenticationError(401, undefined, 'invalid x-api-key', new Headers());
+		const { client, requests } = fakeClient([rejection, rejection]);
+		const rejected: string[] = [];
+
+		const claimed = await runDueAgents(
+			db,
+			{
+				workspaces: ['default'],
+				clientFor: async () => client,
+				keyRejected: async (workspaceId) => {
+					rejected.push(workspaceId);
+				}
+			},
+			{ now: () => NOW }
+		);
+
+		expect(claimed).toBe(2);
+		// The second run never reached the provider once the key was turned down.
+		expect(requests).toHaveLength(1);
+		expect(rejected).toEqual(['default']);
+		const runs = sqlite.query(`SELECT status, outcome, attempts FROM agent_runs ORDER BY created_at`).all();
+		expect(runs).toEqual([
+			{ status: 'pending', outcome: 'api_key_invalid', attempts: 0 },
+			{ status: 'pending', outcome: 'no_key', attempts: 0 }
+		]);
 	});
 });

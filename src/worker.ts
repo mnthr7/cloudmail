@@ -9,7 +9,10 @@ import { scanPending } from './lib/server/attachment-scan';
 import { getEmailProvider } from './lib/server/context';
 import type { EmailProvider } from './lib/server/email-provider';
 import { expireActions } from './lib/server/agents-store';
-import { anthropicClient, runDueAgents } from './lib/server/agent-runner';
+import { runDueAgents } from './lib/server/agent-runner';
+import { loadProviderKey, markProviderKeyRejected, workspacesWithWorkingKey } from './lib/server/ai-provider-store';
+import { clientFor } from './lib/server/ai-providers';
+import { importMasterKey } from './lib/server/secret-box';
 import { deliverDue } from './lib/server/outbox-schedule';
 import { createVirusTotal } from './lib/server/virus-total';
 // Renamed from `_worker.js` by `scripts/wrap-cloudflare-worker.mjs` after `vite build`.
@@ -110,10 +113,29 @@ export default {
 	}
 };
 
-/** Agents only run once an Anthropic API key is set. Until then, their runs wait. */
+/**
+ * Agents run on their workspace's own provider key, which an admin sets on the
+ * Admin page. Workspaces without one keep their runs waiting.
+ */
 async function runAgents(env: Env): Promise<void> {
-	if (!env.ANTHROPIC_API_KEY || env.DEMO_MODE === 'true') return;
-	await runDueAgents(env.DB, anthropicClient(env.ANTHROPIC_API_KEY));
+	if (!env.AI_KEY_ENCRYPTION_KEY || env.DEMO_MODE === 'true') return;
+	const masterKey = await importMasterKey(env.AI_KEY_ENCRYPTION_KEY);
+	const workspaces = await workspacesWithWorkingKey(env.DB, 'anthropic');
+	if (workspaces.length === 0) return;
+	await runDueAgents(env.DB, {
+		workspaces,
+		async clientFor(workspaceId) {
+			try {
+				const apiKey = await loadProviderKey(env.DB, masterKey, workspaceId, 'anthropic');
+				return apiKey ? clientFor('anthropic', apiKey) : null;
+			} catch (error) {
+				// Most likely AI_KEY_ENCRYPTION_KEY changed since the key was saved.
+				console.error('Could not open the workspace AI key', workspaceId, error);
+				return null;
+			}
+		},
+		keyRejected: (workspaceId) => markProviderKeyRejected(env.DB, workspaceId, 'anthropic')
+	});
 }
 
 async function scanDueAttachments(env: Env): Promise<void> {

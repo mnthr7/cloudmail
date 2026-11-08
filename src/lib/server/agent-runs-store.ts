@@ -171,7 +171,14 @@ export async function enqueueAskRun(
  * `running` by a tick that was cut off is claimed again; after the last
  * attempt it is marked failed instead.
  */
-export async function claimRuns(db: D1Database, limit: number, now = new Date()): Promise<AgentRun[]> {
+/** Claims due runs, only in the given workspaces (those with a working provider key). */
+export async function claimRuns(
+	db: D1Database,
+	limit: number,
+	now = new Date(),
+	workspaceIds: string[] = []
+): Promise<AgentRun[]> {
+	if (workspaceIds.length === 0) return [];
 	const stale = new Date(now.getTime() - STALE_RUN_MS).toISOString();
 	await db
 		.prepare(
@@ -187,14 +194,26 @@ export async function claimRuns(db: D1Database, limit: number, now = new Date())
 			 WHERE id IN (
 			   SELECT id FROM agent_runs
 			   WHERE (status = 'pending' OR (status = 'running' AND started_at < ?)) AND attempts < ?
+			     AND workspace_id IN (SELECT value FROM json_each(?))
 			   ORDER BY created_at ASC LIMIT ?
 			 )
 			 RETURNING id, workspace_id, agent_principal_id, mailbox_user_id, email_id, trigger_kind, trigger_ref,
 			           request, requested_by_principal_id, status, attempts, created_at`
 		)
-		.bind(now.toISOString(), stale, MAX_RUN_ATTEMPTS, limit)
+		.bind(now.toISOString(), stale, MAX_RUN_ATTEMPTS, JSON.stringify(workspaceIds), limit)
 		.all<AgentRun>();
 	return results;
+}
+
+/** Puts a claimed run back to wait, without counting the attempt: it never reached the model. */
+export async function requeueRun(db: D1Database, runId: string, outcome: string): Promise<void> {
+	await db
+		.prepare(
+			`UPDATE agent_runs SET status = 'pending', outcome = ?, attempts = MAX(attempts - 1, 0), finished_at = NULL
+			 WHERE id = ?`
+		)
+		.bind(outcome, runId)
+		.run();
 }
 
 export type RunUsage = { model: string; inputTokens: number; outputTokens: number; costMicros: number };

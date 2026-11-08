@@ -290,7 +290,7 @@ bun run deploy
 
 | Setting | Where | What it does |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | `wrangler secret put` | Turns agents on. Agents read threads and propose replies, labels and notes through Claude; each has a monthly budget on the Staff page. Without a key, agents don't run and their work waits. |
+| `AI_KEY_ENCRYPTION_KEY` | `openssl rand -base64 32 \| wrangler secret put AI_KEY_ENCRYPTION_KEY` | Lets admins connect an AI provider on the Admin page, which turns agents on. Each workspace brings its own Anthropic key; it's checked when saved and stored encrypted under this secret, and never shown again. Agents read threads and propose replies, labels and notes; each has a monthly budget on the Staff page. Without this secret or a saved key, agents don't run and their work waits. Changing the secret makes saved keys unreadable, so admins would need to save them again. |
 | `VIRUSTOTAL_API_KEY` | `wrangler secret put` | Scans incoming attachments. A free key works: the once-a-minute cron stays within the public rate limit. Without a key, attachments are not scanned and stay downloadable. |
 | `PATH_REDIRECT_FROM` / `PATH_REDIRECT_TO` | `vars` | Redirects a path on another host to the mail host. For example, `example.com/mail` → `mail.example.com`. |
 | `SETUP_TOKEN` | `wrangler secret put` | **Recommended for public URLs.** Until the first admin exists, whoever opens `/setup` can create the admin account. With this set, setup also asks for the token. |

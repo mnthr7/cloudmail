@@ -22,8 +22,9 @@ RESEND_WEBHOOK_SECRET=whsec_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
 # Attachment scanning (https://www.virustotal.com/gui/my-apikey). Without it, attachments are not scanned.
 # VIRUSTOTAL_API_KEY=
 
-# Optional: turns agents on (Staff page). Without it, agent runs wait in the queue.
-# ANTHROPIC_API_KEY=
+# Optional: lets admins save an AI provider key on the Admin page, which turns agents on.
+# Encrypts those keys in the database. Generate one with `openssl rand -base64 32`.
+# AI_KEY_ENCRYPTION_KEY=
 
 # Read-only demo with sample data: set it on the command instead,
 # `DEMO_MODE=true bun run dev`. It has no effect in this file.

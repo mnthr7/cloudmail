@@ -12,8 +12,8 @@ declare global {
 		RESEND_API_KEY: string;
 		RESEND_WEBHOOK_SECRET: string;
 		VIRUSTOTAL_API_KEY?: string;
-		/** Turns agents on. Without it, runs wait in the queue. */
-		ANTHROPIC_API_KEY?: string;
+		/** Encrypts workspace AI provider keys stored in D1. 32 random bytes, base64. */
+		AI_KEY_ENCRYPTION_KEY?: string;
 		DEMO_MODE?: string;
 		PATH_REDIRECT_FROM?: string;
 		PATH_REDIRECT_TO?: string;

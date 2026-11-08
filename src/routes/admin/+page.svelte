@@ -1,6 +1,7 @@
 <script lang="ts">
 	import Icon from '#lib/components/Icon.svelte';
 	import AddressField from '#lib/components/AddressField.svelte';
+	import { AI_PROVIDER_INFO, AI_PROVIDERS, type AiProvider } from '#lib/agents/providers.ts';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
@@ -93,6 +94,55 @@
 			return;
 		}
 		window.location.reload();
+	}
+
+	let aiProvider = $state<AiProvider>('anthropic');
+	let aiKey = $state('');
+	let aiSaving = $state(false);
+	let aiError = $state('');
+	let replacingKey = $state(false);
+
+	const savedKey = $derived(data.ai.providers.find((row) => row.provider === aiProvider) ?? null);
+
+	function formatDate(iso: string) {
+		return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+	}
+
+	async function saveAiKey(event: SubmitEvent) {
+		event.preventDefault();
+		aiError = '';
+		aiSaving = true;
+		try {
+			const res = await fetch('/api/admin/ai-provider', {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ provider: aiProvider, apiKey: aiKey })
+			});
+			const body = await res.json().catch(() => ({}));
+			if (!res.ok) {
+				aiError = body.message ?? body.error ?? 'Could not save the key';
+				return;
+			}
+			aiKey = '';
+			window.location.reload();
+		} catch {
+			aiError = 'Network error';
+		} finally {
+			aiSaving = false;
+		}
+	}
+
+	async function removeAiKey() {
+		const label = AI_PROVIDER_INFO[aiProvider].label;
+		if (!confirm(`Remove the ${label} key? Agents stop running until a new key is saved.`)) return;
+		aiError = '';
+		const res = await fetch('/api/admin/ai-provider', {
+			method: 'DELETE',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ provider: aiProvider })
+		});
+		if (res.ok) window.location.reload();
+		else aiError = 'Could not remove the key';
 	}
 
 	async function disconnect(domainId: string, domainName: string) {
@@ -230,6 +280,84 @@
 		{/if}
 
 		{#if domainError}<p class="error">{domainError}</p>{/if}
+	</section>
+
+	<section class="surface-lg admin-card" id="ai">
+		<h2><Icon name="key-2-line" size={18} /> AI provider</h2>
+		<p class="card-hint">
+			Agents on the Staff page run on this workspace's own key, billed to your provider account. The key is
+			checked when you save it, stored encrypted, and never shown again.
+		</p>
+
+		{#if data.ai.demo}
+			<p class="card-hint mt-4">Agents are not part of the demo.</p>
+		{:else if !data.ai.encryptionReady}
+			<div class="surface-lg banner mt-4">
+				<Icon name="information-line" size={16} />
+				<span>
+					This server can't store keys yet. Whoever deploys it needs to set an encryption secret once:
+					<code>openssl rand -base64 32 | wrangler secret put AI_KEY_ENCRYPTION_KEY</code>
+				</span>
+			</div>
+		{:else}
+			{#if AI_PROVIDERS.length > 1}
+				<select bind:value={aiProvider} class="admin-input mt-4" aria-label="Provider">
+					{#each AI_PROVIDERS as provider (provider)}
+						<option value={provider}>{AI_PROVIDER_INFO[provider].label}</option>
+					{/each}
+				</select>
+			{/if}
+
+			{#if savedKey && !replacingKey}
+				<div class="user-row mt-2">
+					<div class="min-w-0 flex-1">
+						<p class="user-name">
+							{AI_PROVIDER_INFO[savedKey.provider].label} · ••••{savedKey.hint}
+						</p>
+						<p class="user-email">
+							Saved {formatDate(savedKey.updatedAt)}{savedKey.setBy ? ` by ${savedKey.setBy}` : ''}
+						</p>
+						{#if savedKey.rejectedAt}
+							<p class="error">
+								{AI_PROVIDER_INFO[savedKey.provider].label} turned this key down on
+								{formatDate(savedKey.rejectedAt)}. Agents are waiting until you save a working key.
+							</p>
+						{/if}
+					</div>
+					<button type="button" class="btn-ghost" onclick={() => (replacingKey = true)}>Replace</button>
+					<button type="button" class="btn-ghost" onclick={removeAiKey}>Remove</button>
+				</div>
+			{:else}
+				<form class="mt-4 space-y-3" onsubmit={saveAiKey}>
+					<input
+						type="password"
+						bind:value={aiKey}
+						required
+						autocomplete="off"
+						spellcheck="false"
+						placeholder="{AI_PROVIDER_INFO[aiProvider].label} API key"
+						aria-label="{AI_PROVIDER_INFO[aiProvider].label} API key"
+						class="admin-input"
+					/>
+					<p class="card-hint">
+						Create one at <a href={AI_PROVIDER_INFO[aiProvider].keysUrl} target="_blank" rel="noreferrer"
+							>{new URL(AI_PROVIDER_INFO[aiProvider].keysUrl).host}</a
+						>.
+					</p>
+					<div class="flex gap-2">
+						<button type="submit" disabled={aiSaving || !aiKey} class="btn-primary">
+							{aiSaving ? 'Checking…' : 'Save key'}
+						</button>
+						{#if savedKey}
+							<button type="button" class="btn-ghost" onclick={() => ((replacingKey = false), (aiKey = ''))}>
+								Cancel
+							</button>
+						{/if}
+					</div>
+				</form>
+			{/if}
+			{#if aiError}<p class="error">{aiError}</p>{/if}
+		{/if}
 	</section>
 
 	<div class="admin-grid">
@@ -552,6 +680,11 @@
 		font-weight: 500;
 		color: var(--color-text);
 		background: var(--color-surface-muted);
+	}
+
+	.banner code {
+		font-size: 0.75rem;
+		word-break: break-all;
 	}
 
 	.error {

@@ -6,6 +6,7 @@
 	import FromAddressSelect from '#lib/components/FromAddressSelect.svelte';
 	import ThreadMessage from '#lib/components/ThreadMessage.svelte';
 	import OrganizeMenu from '#lib/components/OrganizeMenu.svelte';
+	import AskAgentForm from '#lib/components/AskAgentForm.svelte';
 	import { showToast } from '#lib/toast.ts';
 	import { htmlToPlainText, isHtmlEmpty } from '#lib/utils/html.ts';
 	import {
@@ -25,48 +26,6 @@
 	let error = $state('');
 
 	let askOpen = $state(false);
-	let askAgentId = $state('');
-	let askText = $state('');
-	let asking = $state(false);
-	let askError = $state('');
-	const askAgent = $derived(askAgentId || data.agents[0]?.id || '');
-
-	const ASK_ERRORS: Record<string, string> = {
-		request: 'Say what you need, up to 2,000 characters.',
-		paused: 'That agent is paused. Resume it on the Staff page first.',
-		email: 'This message is no longer in your mailbox.'
-	};
-
-	/** Hands this thread to an agent with a request. It runs within a minute and only proposes. */
-	async function askForHelp(event: SubmitEvent) {
-		event.preventDefault();
-		if (!latest || !askAgent || !askText.trim()) return;
-		asking = true;
-		askError = '';
-		try {
-			const res = await fetch(`/api/agents/${askAgent}/ask`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ emailId: latest.id, request: askText })
-			});
-			const body = await res.json().catch(() => null);
-			if (!res.ok) {
-				askError =
-					res.status === 403
-						? 'Only its owner or an admin can give it work.'
-						: (ASK_ERRORS[body?.error] ?? 'Could not ask the agent.');
-				return;
-			}
-			const name = data.agents.find((agent) => agent.id === askAgent)?.name ?? 'The agent';
-			showToast(`${name} will look at this within a minute. What it proposes shows up on the Staff page.`);
-			askText = '';
-			askOpen = false;
-		} catch {
-			askError = 'Network error';
-		} finally {
-			asking = false;
-		}
-	}
 
 	const messages = $derived(data.messages);
 	const latest = $derived(messages[messages.length - 1]);
@@ -395,42 +354,8 @@
 			{/each}
 		</div>
 
-		{#if askOpen && data.agents.length > 0}
-			<form class="reply-section ask-section" onsubmit={askForHelp}>
-				<div class="ask-head">
-					<label class="ask-agent">
-						<span>Ask</span>
-						<select
-							class="text-input"
-							value={askAgent}
-							onchange={(event) => (askAgentId = event.currentTarget.value)}
-						>
-							{#each data.agents as agent (agent.id)}
-								<option value={agent.id}>{agent.name}</option>
-							{/each}
-						</select>
-					</label>
-					<span class="ask-hint">It reads this thread and proposes what to do. Nothing is sent without your OK.</span>
-				</div>
-				<textarea
-					class="text-input"
-					rows="3"
-					maxlength="2000"
-					bind:value={askText}
-					placeholder="Draft a reply that offers two times next week"
-					aria-label="What you need"
-				></textarea>
-				{#if askError}
-					<p class="reply-status">{askError}</p>
-				{/if}
-				<div class="reply-actions">
-					<button type="button" class="btn-ghost" onclick={() => (askOpen = false)}>Cancel</button>
-					<button type="submit" class="btn-primary" disabled={asking || !askText.trim()}>
-						<Icon name="robot-2-line" size={16} />
-						{asking ? 'Asking…' : 'Ask'}
-					</button>
-				</div>
-			</form>
+		{#if askOpen && latest && data.agents.length > 0}
+			<AskAgentForm agents={data.agents} emailId={latest.id} onClose={() => (askOpen = false)} />
 		{/if}
 
 		{#if replyOpen}
@@ -546,35 +471,6 @@
 		box-shadow: inset 0 1px 0 var(--color-line);
 	}
 
-	.ask-section {
-		display: flex;
-		flex-direction: column;
-		gap: 0.6rem;
-	}
-
-	.ask-head {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		gap: 0.5rem 0.75rem;
-	}
-
-	.ask-agent {
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-		font-size: 0.875rem;
-		font-weight: 600;
-	}
-
-	.ask-hint {
-		font-size: 0.8rem;
-		color: var(--color-text-secondary);
-	}
-
-	.ask-section .reply-actions {
-		justify-content: flex-end;
-	}
 
 	.reply-to {
 		margin-bottom: 0.625rem;

@@ -7,6 +7,8 @@ import {
 	providerLoadError
 } from '#lib/server/context.ts';
 import { listAllAddresses, listUnroutedEmails } from '#lib/server/domains.ts';
+import { providerStatusForUser, type ProviderStatus } from '#lib/server/ai-provider-store.ts';
+import { DEMO_MODE } from '#lib/server/demo.ts';
 
 export const load: PageServerLoad = async ({ locals, platform }) => {
 	if (!locals.user?.is_admin) {
@@ -23,15 +25,19 @@ export const load: PageServerLoad = async ({ locals, platform }) => {
 			available: [],
 			unrouted: [],
 			providerKind,
+			ai: { providers: [] as ProviderStatus[], encryptionReady: false, demo: DEMO_MODE },
 			loadError: 'Database unavailable'
 		};
 	}
 
-	const [users, addresses, unrouted] = await Promise.all([
+	const [users, addresses, unrouted, providers] = await Promise.all([
 		listUsers(db),
 		listAllAddresses(db),
-		listUnroutedEmails(db, 25)
+		listUnroutedEmails(db, 25),
+		providerStatusForUser(db, locals.user.id).catch(() => [] as ProviderStatus[])
 	]);
+	// Only whether the secret is set reaches the page, never its value.
+	const ai = { providers, encryptionReady: Boolean(platform?.env.AI_KEY_ENCRYPTION_KEY), demo: DEMO_MODE };
 
 	try {
 		const available = await listAvailableDomains(
@@ -46,6 +52,7 @@ export const load: PageServerLoad = async ({ locals, platform }) => {
 			domains: locals.domains,
 			available,
 			providerKind,
+			ai,
 			loadError: null
 		};
 	} catch (err) {
@@ -56,6 +63,7 @@ export const load: PageServerLoad = async ({ locals, platform }) => {
 			domains: locals.domains,
 			available: [],
 			providerKind,
+			ai,
 			loadError: providerLoadError(providerKind, err)
 		};
 	}

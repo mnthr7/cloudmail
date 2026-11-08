@@ -385,12 +385,22 @@
 		</div>
 	{/if}
 
-	{#if !data.demo && !data.agentsEnabled}
-		<div class="surface-lg banner">
-			<Icon name="information-line" size={16} />
+	{#if !data.demo && data.aiKey !== 'ready'}
+		<div class="surface-lg banner" role={data.aiKey === 'rejected' ? 'alert' : undefined}>
+			<Icon name={data.aiKey === 'rejected' ? 'error-warning-line' : 'information-line'} size={16} />
 			<span>
-				Agents aren't connected to an AI model yet, so they don't run. Add an Anthropic API key to turn
-				them on. Anything they're asked to do waits until then.
+				{#if data.aiKey === 'rejected'}
+					Anthropic turned down this workspace's API key, so agents have stopped running.
+				{:else}
+					Agents aren't connected to an AI model yet, so they don't run.
+				{/if}
+				{#if data.isAdmin}
+					<a href="/admin#ai">{data.aiKey === 'rejected' ? 'Save a working key' : 'Add an API key'}</a> to
+					turn them on.
+				{:else}
+					Ask an admin to add an API key on the Admin page.
+				{/if}
+				Anything they're asked to do waits until then.
 			</span>
 		</div>
 	{/if}

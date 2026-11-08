@@ -18,6 +18,7 @@ import {
 	finishRun,
 	MAX_RUN_ATTEMPTS,
 	pauseForBudget,
+	requeueRun,
 	runHasProposals,
 	spentThisMonth,
 	type AgentRun,
@@ -37,10 +38,16 @@ export type MessagesClient = {
 	create(params: Anthropic.Beta.MessageCreateParamsNonStreaming): Promise<Anthropic.Beta.BetaMessage>;
 };
 
-export function anthropicClient(apiKey: string): MessagesClient {
-	const client = new Anthropic({ apiKey, maxRetries: 2 });
-	return { create: (params) => client.beta.messages.create(params) };
-}
+/**
+ * Where runs get their model client: each workspace uses its own provider key.
+ * `workspaces` lists those with a working key; runs elsewhere stay waiting.
+ */
+export type RunClients = {
+	workspaces: string[];
+	clientFor(workspaceId: string): Promise<MessagesClient | null>;
+	/** The provider turned the workspace's key down. */
+	keyRejected?(workspaceId: string): Promise<void>;
+};
 
 /** Model calls per run. Enough to react to a refusal and finish, not enough to wander. */
 const MAX_TURNS = 4;
@@ -66,25 +73,40 @@ function retryable(error: unknown): boolean {
 	return error instanceof Anthropic.APIError && typeof error.status === 'number' && error.status >= 500;
 }
 
+function keyRejected(error: unknown): boolean {
+	return error instanceof Anthropic.AuthenticationError || error instanceof Anthropic.PermissionDeniedError;
+}
+
 export async function runDueAgents(
 	db: D1Database,
-	client: MessagesClient,
+	clients: RunClients,
 	options: { limit?: number; now?: () => Date } = {}
 ): Promise<number> {
 	const now = options.now ?? (() => new Date());
-	const runs = await claimRuns(db, options.limit ?? RUNS_PER_TICK, now());
+	const runs = await claimRuns(db, options.limit ?? RUNS_PER_TICK, now(), clients.workspaces);
+	// One client per workspace per tick. Null once a workspace's key is missing or turned down.
+	const cache = new Map<string, MessagesClient | null>();
 	for (const run of runs) {
+		if (!cache.has(run.workspace_id)) cache.set(run.workspace_id, await clients.clientFor(run.workspace_id));
+		const client = cache.get(run.workspace_id);
+		if (!client) {
+			await requeueRun(db, run.id, 'no_key');
+			continue;
+		}
 		try {
 			await runOne(db, client, run, now);
 		} catch (error) {
+			if (keyRejected(error)) {
+				// Not the run's fault: it waits until an admin saves a working key.
+				console.error('AI provider turned down the workspace key', run.workspace_id);
+				cache.set(run.workspace_id, null);
+				await clients.keyRejected?.(run.workspace_id);
+				await requeueRun(db, run.id, 'api_key_invalid');
+				continue;
+			}
 			console.error('Agent run failed', run.id, error);
 			const again = retryable(error) && run.attempts < MAX_RUN_ATTEMPTS;
-			const outcome =
-				error instanceof Anthropic.AuthenticationError
-					? 'api_key_invalid'
-					: error instanceof Anthropic.APIError
-						? `api_error_${error.status ?? 'connection'}`
-						: 'error';
+			const outcome = error instanceof Anthropic.APIError ? `api_error_${error.status ?? 'connection'}` : 'error';
 			await finishRun(db, run.id, { status: again ? 'pending' : 'failed', outcome }, now());
 		}
 	}

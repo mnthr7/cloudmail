@@ -73,8 +73,21 @@ function retryable(error: unknown): boolean {
 	return error instanceof Anthropic.APIError && typeof error.status === 'number' && error.status >= 500;
 }
 
+/**
+ * Only a 401 means the key itself is bad. A 403 can be about one request (a
+ * model or feature the account can't use), so it fails that run, not the workspace.
+ */
 function keyRejected(error: unknown): boolean {
-	return error instanceof Anthropic.AuthenticationError || error instanceof Anthropic.PermissionDeniedError;
+	return error instanceof Anthropic.AuthenticationError;
+}
+
+/** What the provider said, for the run's outcome and the logs. Never includes the key. */
+function describeError(error: unknown): string {
+	if (error instanceof Anthropic.APIError) {
+		const type = (error.error as { error?: { type?: string } } | undefined)?.error?.type;
+		return `api_error_${error.status ?? 'connection'}${type ? ` ${type}` : ''}: ${error.message}`;
+	}
+	return error instanceof Error ? `error: ${error.message}` : 'error';
 }
 
 export async function runDueAgents(
@@ -98,15 +111,15 @@ export async function runDueAgents(
 		} catch (error) {
 			if (keyRejected(error)) {
 				// Not the run's fault: it waits until an admin saves a working key.
-				console.error('AI provider turned down the workspace key', run.workspace_id);
+				console.error('AI provider turned down the workspace key', run.workspace_id, describeError(error));
 				cache.set(run.workspace_id, null);
 				await clients.keyRejected?.(run.workspace_id);
 				await requeueRun(db, run.id, 'api_key_invalid');
 				continue;
 			}
-			console.error('Agent run failed', run.id, error);
+			const outcome = describeError(error);
+			console.error('Agent run failed', run.id, outcome);
 			const again = retryable(error) && run.attempts < MAX_RUN_ATTEMPTS;
-			const outcome = error instanceof Anthropic.APIError ? `api_error_${error.status ?? 'connection'}` : 'error';
 			await finishRun(db, run.id, { status: again ? 'pending' : 'failed', outcome }, now());
 		}
 	}

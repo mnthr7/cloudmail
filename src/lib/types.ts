@@ -174,6 +174,8 @@ export type ThreadSummary = {
 	snoozed_until: string | null;
 	is_muted: boolean;
 	labels: { id: string; name: string; color: string }[];
+	/** How many replies an agent suggested and the user hasn't acted on. */
+	suggested_replies?: number;
 	created_at: string;
 };
 

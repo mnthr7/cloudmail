@@ -1,4 +1,5 @@
 import type { D1Database, R2Bucket } from '@cloudflare/workers-types';
+import { openSuggestionCounts } from './reply-suggestions-store.ts';
 import { MAILBOX_PAGE_SIZE } from '#lib/constants.ts';
 import { MAX_BODY_BYTES } from './constants';
 import { stripQuotedText } from '#lib/utils/quotes.ts';
@@ -385,6 +386,13 @@ export async function listMailbox(
 		.map((threadId) => byThread.get(threadId))
 		.filter((group): group is ThreadMessageRow[] => Boolean(group?.length))
 		.map((group) => toThreadSummary(group, labelsByThread.get(group[0].thread_id) ?? []));
+
+	// Replies an agent has suggested and the user hasn't acted on yet. Never blocks the list.
+	const suggested = await openSuggestionCounts(db, userId, threadIds).catch(() => new Map<string, number>());
+	for (const thread of threads) {
+		const count = suggested.get(thread.thread_id);
+		if (count) thread.suggested_replies = count;
+	}
 
 	return { threads, total, page, pageCount, pageSize };
 }

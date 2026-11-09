@@ -1,14 +1,17 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { D1Database } from '@cloudflare/workers-types';
 import type { PolicyDecision } from '#lib/agents/policy.ts';
+import { supportsServerFallback } from '#lib/agents/models.ts';
 import { getAgent, liveWorkspaceAddresses, proposeAction } from './agents-store.ts';
 import {
 	buildUserMessage,
 	costMicros,
 	systemPrompt,
 	threadParticipants,
+	SUGGEST_TOOL,
 	toolsFor,
 	toProposal,
+	toSuggestion,
 	verifiedContext,
 	type RunTrigger
 } from './agent-brain.ts';
@@ -25,6 +28,7 @@ import {
 	type RunUsage
 } from './agent-runs-store.ts';
 import { getEmailForUser, listThreadMessages } from './mail-store.ts';
+import { saveSuggestions } from './reply-suggestions-store.ts';
 
 /**
  * Carries out agent runs (docs/specs/agent-staff-platform.md, §8.2): loads the
@@ -144,16 +148,6 @@ async function runOne(db: D1Database, client: MessagesClient, run: AgentRun, now
 		return skip('budget_reached');
 	}
 
-	const tools = toolsFor(definition);
-	if (tools.length === 0) return skip('no_tools');
-
-	const email = await getEmailForUser(db, run.mailbox_user_id, run.email_id);
-	if (!email || email.deleted_at) return skip('email_gone');
-	const thread = await listThreadMessages(db, run.mailbox_user_id, email);
-	// New mail only sees the part of the thread it provably belongs to.
-	const messages = verifiedContext(thread, email, run.trigger_kind);
-	if (messages.length === 0) return skip('email_gone');
-
 	let trigger: RunTrigger = { kind: 'mail' };
 	if (run.trigger_kind === 'ask') {
 		const asker = run.requested_by_principal_id
@@ -162,8 +156,20 @@ async function runOne(db: D1Database, client: MessagesClient, run: AgentRun, now
 					.bind(run.requested_by_principal_id)
 					.first<{ display_name: string | null }>()
 			: null;
-		trigger = { kind: 'ask', request: run.request ?? '', requestedBy: asker?.display_name || 'The founder' };
+		const requestedBy = asker?.display_name || 'The founder';
+		// An ask without a request is a request for reply options.
+		trigger = run.request ? { kind: 'ask', request: run.request, requestedBy } : { kind: 'suggest', requestedBy };
 	}
+
+	const tools = toolsFor(definition, trigger.kind);
+	if (tools.length === 0) return skip('no_tools');
+
+	const email = await getEmailForUser(db, run.mailbox_user_id, run.email_id);
+	if (!email || email.deleted_at) return skip('email_gone');
+	const thread = await listThreadMessages(db, run.mailbox_user_id, email);
+	// New mail only sees the part of the thread it provably belongs to.
+	const messages = verifiedContext(thread, email, run.trigger_kind);
+	if (messages.length === 0) return skip('email_gone');
 
 	const founderAddresses = [...(await liveWorkspaceAddresses(db, agent.workspaceId)).keys()];
 	const participants = threadParticipants(messages);
@@ -188,6 +194,7 @@ async function runOne(db: D1Database, client: MessagesClient, run: AgentRun, now
 	let summary = '';
 	let outcome = 'turn_limit';
 	let proposals = 0;
+	let suggested = false;
 
 	for (let turn = 0; turn < MAX_TURNS; turn++) {
 		// Checked before every call, not only at the start, so one run can't run far past the cap.
@@ -205,8 +212,10 @@ async function runOne(db: D1Database, client: MessagesClient, run: AgentRun, now
 			tool_choice: { type: 'auto' },
 			output_config: { effort: 'medium' },
 			// A declined request is retried on the model Anthropic recommends for it.
-			betas: ['server-side-fallback-2026-07-01'],
-			fallbacks: 'default'
+			// Haiku has no server-side fallback, and a request asking for one fails.
+			...(supportsServerFallback(definition.model)
+				? { betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' as const }
+				: {})
 		});
 		// Saved at once, so a failure later in the run can't make this call free.
 		const usage: RunUsage = {
@@ -237,15 +246,66 @@ async function runOne(db: D1Database, client: MessagesClient, run: AgentRun, now
 			(block): block is Anthropic.Beta.BetaToolUseBlock => block.type === 'tool_use'
 		);
 		if (calls.length === 0) {
-			outcome = response.stop_reason === 'max_tokens' ? 'max_tokens' : proposals ? 'proposed' : 'nothing_to_do';
+			outcome =
+				response.stop_reason === 'max_tokens'
+					? 'max_tokens'
+					: proposals
+						? 'proposed'
+						: suggested
+							? 'suggested'
+							: 'nothing_to_do';
 			break;
 		}
 
 		// Append the whole response unchanged, so thinking blocks stay valid for the next turn.
 		conversation.push({ role: 'assistant', content: response.content });
 		const results: Anthropic.Beta.BetaToolResultBlockParam[] = [];
+		let suggestedThisTurn = 0;
 		for (const call of calls) {
-			const proposal = toProposal(call.name, call.input, {
+			if (call.name === SUGGEST_TOOL.name && tools.includes(SUGGEST_TOOL)) {
+				const suggestion = toSuggestion(call.input);
+				if (!suggestion) {
+					results.push({
+						type: 'tool_result',
+						tool_use_id: call.id,
+						is_error: true,
+						content: 'Give the intent, whether a reply is needed, and at least one complete reply when it is.'
+					});
+					continue;
+				}
+				await saveSuggestions(
+					db,
+					{
+						workspaceId: agent.workspaceId,
+						agentId: agent.id,
+						runId: run.id,
+						mailboxUserId: run.mailbox_user_id,
+						emailId: run.email_id,
+						threadId,
+						intent: suggestion.intent,
+						replyNeeded: suggestion.replyNeeded,
+						options: suggestion.options,
+						model: definition.model
+					},
+					now()
+				);
+				suggested = true;
+				suggestedThisTurn++;
+				summary = suggestion.replyNeeded
+					? `Suggested ${suggestion.options.length} ${suggestion.options.length === 1 ? 'reply' : 'replies'}: ${suggestion.intent}`
+					: `No reply needed: ${suggestion.intent}`;
+				results.push({
+					type: 'tool_result',
+					tool_use_id: call.id,
+					content: suggestion.replyNeeded
+						? 'Saved. The founder sees these on the thread and picks one, edits it, or ignores them.'
+						: 'Saved. The founder sees that no reply is needed.'
+				});
+				continue;
+			}
+			// Only the tools offered this run count, whatever the model calls.
+			const offered = tools.some((tool) => tool.name === call.name);
+			const proposal = offered && toProposal(call.name, call.input, {
 				threadId,
 				emailId: latest.id,
 				subject: latest.subject
@@ -279,6 +339,11 @@ async function runOne(db: D1Database, client: MessagesClient, run: AgentRun, now
 			);
 			proposals++;
 			results.push({ type: 'tool_result', tool_use_id: call.id, content: describe(result.decision) });
+		}
+		// Suggesting was the whole job this turn: another call would only cost money to say so.
+		if (suggestedThisTurn === calls.length) {
+			outcome = 'suggested';
+			break;
 		}
 		conversation.push({ role: 'user', content: results });
 	}

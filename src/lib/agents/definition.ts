@@ -15,12 +15,13 @@ import {
  */
 
 /** Models an agent can run on. The first is the default. */
-export const AGENT_MODELS = ['claude-opus-5-5', 'claude-sonnet-5-5'] as const;
+export const AGENT_MODELS = ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'] as const;
 export type AgentModel = (typeof AGENT_MODELS)[number];
 
 export const AGENT_MODEL_LABELS: Record<AgentModel, string> = {
 	'claude-opus-5-5': 'Claude Opus 5.5',
-	'claude-sonnet-5-5': 'Claude Sonnet 5.5'
+	'claude-sonnet-5-5': 'Claude Sonnet 5.5',
+	'claude-haiku-5-5': 'Claude Haiku 5.5'
 };
 
 /** A new agent's monthly spend cap, in cents. Reaching it pauses the agent. */

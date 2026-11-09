@@ -37,6 +37,17 @@ import {
 	verifiedContext
 } from '../src/lib/server/agent-brain';
 import { runDueAgents, type MessagesClient, type RunClients } from '../src/lib/server/agent-runner';
+import { toSuggestion } from '../src/lib/server/agent-brain';
+import {
+	dismissSuggestion,
+	editRatio,
+	openSuggestion,
+	openSuggestionCounts,
+	recordReplyForSuggestions,
+	suggestionStats
+} from '../src/lib/server/reply-suggestions-store';
+import { costMicros, estimateRunMicros, formatMicros, supportsServerFallback } from '../src/lib/agents/models';
+import { textToHtml, withSuggestion, writtenText } from '../src/lib/agents/suggestions';
 import type { ThreadMessage } from '../src/lib/types';
 
 const MIGRATIONS = path.join(import.meta.dir, '../migrations');
@@ -241,7 +252,19 @@ describe('the agent brain', () => {
 		const definition = supportDefinition();
 		definition.capabilities.send_reply = { level: 'off' };
 		definition.capabilities.organize = { level: 'approve' };
-		expect(toolsFor(definition).map((tool) => tool.name)).toEqual(['draft_reply', 'organize', 'write_note']);
+		expect(toolsFor(definition).map((tool) => tool.name)).toEqual([
+			'draft_reply',
+			'organize',
+			'write_note',
+			'suggest_replies'
+		]);
+		// New mail gets suggestions, not drafts or sends; a reply request gets only suggestions.
+		expect(toolsFor(definition, 'mail').map((tool) => tool.name)).toEqual(['suggest_replies', 'organize', 'write_note']);
+		expect(toolsFor(definition, 'suggest').map((tool) => tool.name)).toEqual(['suggest_replies']);
+		// Without drafting, nothing is suggested, and new mail falls back to the other tools.
+		definition.capabilities.draft_reply = { level: 'off' };
+		expect(toolsFor(definition, 'suggest')).toEqual([]);
+		expect(toolsFor(definition, 'mail').map((tool) => tool.name)).toEqual(['organize', 'write_note']);
 	});
 
 	test('tool calls become proposals, and malformed ones are dropped', () => {
@@ -382,7 +405,7 @@ describe('running agents', () => {
 	test('a shadow agent drafts a reply: recorded, not carried out, and costed', async () => {
 		const { sqlite, db } = open();
 		const agent = await hireSupport(db);
-		await enqueueMailRuns(db, 'u1', addMail(sqlite, {}), {}, NOW);
+		await enqueueAskRun(db, { agentId: agent.id, byUserId: 'u1', emailId: addMail(sqlite, {}), request: 'Draft a reply' }, NOW);
 		const { client, requests } = fakeClient([
 			{ content: [toolUse('draft_reply', { body: 'Hi Pat, it ships Monday. — Support', reason: 'Answers the question.' })] },
 			{ content: [text('Drafted a reply about the shipping date.')] }
@@ -429,7 +452,7 @@ describe('running agents', () => {
 		const { sqlite, db } = open();
 		const agent = await hireSupport(db);
 		await setAgentStatus(db, { agentId: agent.id, byUserId: 'u1', status: 'active' });
-		await enqueueMailRuns(db, 'u1', addMail(sqlite, {}), {}, NOW);
+		await enqueueAskRun(db, { agentId: agent.id, byUserId: 'u1', emailId: addMail(sqlite, {}), request: 'Reply to this' }, NOW);
 		const { client, requests } = fakeClient([
 			{
 				content: [
@@ -716,3 +739,260 @@ describe('runs and the workspace key', () => {
 		]);
 	});
 });
+
+const THREE_REPLIES = {
+	intent: 'Pat wants to know when order #123 ships.',
+	reply_needed: true,
+	options: [
+		{ label: 'Give the date', body: 'Hi Pat,\n\nIt ships Monday.\n\nThanks,' },
+		{ label: 'Ask for details', body: 'Hi Pat,\n\nCould you send the email you ordered with?\n\nThanks,' },
+		{ label: 'Apologize for the delay', body: 'Hi Pat,\n\nSorry for the wait. I am checking now.\n\nThanks,' }
+	]
+};
+
+describe('suggested replies', () => {
+	test('new mail gets two or three replies in one call, kept for the mailbox owner only', async () => {
+		const { sqlite, db } = open();
+		addUser(sqlite, 'u2', 'Kim', ['kim@acme.com']);
+		const agent = await hireSupport(db, { model: 'claude-haiku-5-5' });
+		const mail = addMail(sqlite, {});
+		await enqueueMailRuns(db, 'u1', mail, {}, NOW);
+		const { client, requests } = fakeClient([{ content: [toolUse('suggest_replies', THREE_REPLIES)] }]);
+
+		await runDueAgents(db, only(client), { now: () => NOW });
+
+		// Suggesting was the whole job, so there was no second call to say so.
+		expect(requests).toHaveLength(1);
+		expect(requests[0].tools?.map((tool) => ('name' in tool ? tool.name : ''))).toEqual([
+			'suggest_replies',
+			'organize',
+			'write_note'
+		]);
+		expect(JSON.stringify(requests[0].messages)).toContain('Call suggest_replies once');
+		// Haiku has no server-side fallback, so the request doesn't ask for one.
+		expect(requests[0].model).toBe('claude-haiku-5-5');
+		expect('fallbacks' in requests[0]).toBe(false);
+		expect('betas' in requests[0]).toBe(false);
+
+		expect(sqlite.query(`SELECT status, outcome, summary FROM agent_runs`).get()).toEqual({
+			status: 'done',
+			outcome: 'suggested',
+			summary: 'Suggested 3 replies: Pat wants to know when order #123 ships.'
+		});
+		const suggestion = await openSuggestion(db, 'u1', mail);
+		expect(suggestion).toMatchObject({ agentName: 'Support', replyNeeded: true, emailId: mail });
+		expect(suggestion?.options.map((option) => option.label)).toEqual([
+			'Give the date',
+			'Ask for details',
+			'Apologize for the delay'
+		]);
+		expect(await openSuggestionCounts(db, 'u1', [mail, 'other'])).toEqual(new Map([[mail, 3]]));
+		// Nobody else sees them, or can dismiss them.
+		expect(await openSuggestion(db, 'u2', mail)).toBeNull();
+		await expect(dismissSuggestion(db, 'u2', suggestion!.id)).rejects.toThrow();
+		// Suggestions don't use up shadow proposals.
+		expect(sqlite.query(`SELECT COUNT(*) AS n FROM agent_actions`).get()).toEqual({ n: 0 });
+		expect((await listRecentRuns(db, 'u1'))[0]).toMatchObject({ status: 'done' });
+		expect(agent.id).toBeString();
+	});
+
+	test('a tool the run did not offer is refused, even one the agent has', async () => {
+		const { sqlite, db } = open();
+		await hireSupport(db);
+		await enqueueMailRuns(db, 'u1', addMail(sqlite, {}), {}, NOW);
+		const { client, requests } = fakeClient([
+			{ content: [toolUse('send_reply', { from: 'support@acme.com', to: ['pat@customer.com'], cc: [], body: 'Hi', reason: 'r' })] },
+			{ content: [text('Stopped.')] }
+		]);
+		await runDueAgents(db, only(client), { now: () => NOW });
+		expect(sqlite.query(`SELECT COUNT(*) AS n FROM agent_actions`).get()).toEqual({ n: 0 });
+		expect(JSON.stringify(requests[1].messages)).toContain('used a tool you do not have');
+	});
+
+	test('a suggest_replies call is checked before it is kept', () => {
+		expect(toSuggestion({ intent: 'x', reply_needed: true, options: [] })).toBeNull();
+		expect(toSuggestion({ intent: '', reply_needed: false, options: [] })).toBeNull();
+		expect(toSuggestion({ intent: 'x', reply_needed: 'yes', options: [] })).toBeNull();
+		expect(toSuggestion({ intent: 'Receipt', reply_needed: false, options: THREE_REPLIES.options })).toEqual({
+			intent: 'Receipt',
+			replyNeeded: false,
+			options: []
+		});
+		const many = toSuggestion({
+			intent: 'x',
+			reply_needed: true,
+			options: [...THREE_REPLIES.options, { label: 'Fourth', body: 'Four' }, { label: '', body: 'no label' }]
+		});
+		expect(many?.options).toHaveLength(3);
+	});
+
+	test('asking for replies uses the newest message from someone else, and asking twice runs once', async () => {
+		const { sqlite, db } = open();
+		const agent = await hireSupport(db);
+		const theirs = addMail(sqlite, { thread: 't1' });
+		const mine = addMail(sqlite, { thread: 't1', direction: 'outbound', from: 'support@acme.com', to: 'pat@customer.com' });
+
+		const first = await enqueueAskRun(db, { agentId: agent.id, byUserId: 'u1', emailId: mine, request: null }, NOW);
+		const again = await enqueueAskRun(db, { agentId: agent.id, byUserId: 'u1', emailId: mine, request: null }, NOW);
+		expect(again).toBe(first);
+		expect(sqlite.query(`SELECT email_id, request FROM agent_runs`).all()).toEqual([{ email_id: theirs, request: null }]);
+
+		const { client, requests } = fakeClient([{ content: [toolUse('suggest_replies', THREE_REPLIES)] }]);
+		await runDueAgents(db, only(client), { now: () => NOW });
+		expect(requests[0].tools?.map((tool) => ('name' in tool ? tool.name : ''))).toEqual(['suggest_replies']);
+		expect(JSON.stringify(requests[0].messages)).toContain('wants reply options');
+		expect(await openSuggestion(db, 'u1', 't1')).toMatchObject({ emailId: theirs });
+
+		// An agent without drafting can't be asked for replies.
+		const quiet = await hireSupport(db, {}, 'Quiet');
+		await updateDraftingOff(sqlite, quiet.id);
+		await expect(
+			enqueueAskRun(db, { agentId: quiet.id, byUserId: 'u1', emailId: mine, request: null }, NOW)
+		).rejects.toMatchObject({ code: 'drafting' });
+	});
+
+	test('what the owner does with suggestions is recorded and counted', async () => {
+		const { sqlite, db } = open();
+		const agent = await hireSupport(db);
+		const since = new Date(NOW.getTime() - 86_400_000);
+		const later = new Date(NOW.getTime() + 60_000);
+		const suggest = async (thread: string) => {
+			const mail = addMail(sqlite, { thread });
+			await enqueueMailRuns(db, 'u1', mail, {}, NOW);
+			await runDueAgents(db, only(fakeClient([{ content: [toolUse('suggest_replies', THREE_REPLIES)] }]).client), {
+				now: () => NOW
+			});
+			return (await openSuggestion(db, 'u1', thread))!;
+		};
+		const sent = (thread: string) => {
+			const id = addMail(sqlite, { thread, direction: 'outbound', from: 'support@acme.com', to: 'pat@customer.com' });
+			sqlite.run(`UPDATE emails SET status = 'queued' WHERE id = ?`, [id]);
+			return id;
+		};
+
+		// Sent as written.
+		const a = await suggest('ta');
+		await recordReplyForSuggestions(db, 'u1', {
+			threadId: 'ta',
+			sentEmailId: sent('ta'),
+			suggestion: { id: a.id, index: 0, text: 'Hi Pat, It ships Monday. Thanks,' }
+		}, later);
+		// Edited before sending.
+		const b = await suggest('tb');
+		await recordReplyForSuggestions(db, 'u1', {
+			threadId: 'tb',
+			sentEmailId: sent('tb'),
+			suggestion: { id: b.id, index: 1, text: 'Hi Pat, could you send me your order number please? Thanks,' }
+		}, later);
+		// Wrote their own.
+		await suggest('tc');
+		await recordReplyForSuggestions(db, 'u1', { threadId: 'tc', sentEmailId: sent('tc') }, later);
+		// Dismissed.
+		const d = await suggest('td');
+		await dismissSuggestion(db, 'u1', d.id, later);
+		// Sent, then undone back to a draft: not counted as sent.
+		const e = await suggest('te');
+		const undone = sent('te');
+		await recordReplyForSuggestions(db, 'u1', {
+			threadId: 'te',
+			sentEmailId: undone,
+			suggestion: { id: e.id, index: 2, text: THREE_REPLIES.options[2].body }
+		}, later);
+		sqlite.run(`UPDATE emails SET status = 'draft' WHERE id = ?`, [undone]);
+
+		const rows = sqlite
+			.query(`SELECT thread_id, status, chosen_index, edit_ratio > 0.05 AS edited FROM reply_suggestions ORDER BY thread_id`)
+			.all();
+		expect(rows).toEqual([
+			{ thread_id: 'ta', status: 'sent', chosen_index: 0, edited: 0 },
+			{ thread_id: 'tb', status: 'sent', chosen_index: 1, edited: 1 },
+			{ thread_id: 'tc', status: 'dismissed', chosen_index: null, edited: null },
+			{ thread_id: 'td', status: 'dismissed', chosen_index: null, edited: null },
+			{ thread_id: 'te', status: 'sent', chosen_index: 2, edited: 0 }
+		]);
+		const [stats] = await suggestionStats(db, 'u1', since);
+		expect(stats).toMatchObject({
+			agentId: agent.id,
+			model: 'claude-opus-5-5',
+			suggested: 5,
+			sent: 2,
+			asWritten: 1,
+			edited: 1,
+			ownReply: 1,
+			dismissed: 1,
+			noReply: 0
+		});
+		// A suggestion can't be used twice.
+		await expect(
+			recordReplyForSuggestions(db, 'u1', { threadId: 'ta', sentEmailId: null as never, suggestion: { id: a.id, index: 0, text: 'x' } })
+		).rejects.toThrow();
+	});
+
+	test('a newer set replaces the open one for the thread', async () => {
+		const { sqlite, db } = open();
+		await hireSupport(db);
+		const first = addMail(sqlite, { thread: 't1' });
+		await enqueueMailRuns(db, 'u1', first, {}, NOW);
+		await runDueAgents(db, only(fakeClient([{ content: [toolUse('suggest_replies', THREE_REPLIES)] }]).client), {
+			now: () => NOW
+		});
+		const second = addMail(sqlite, { thread: 't1' });
+		await enqueueMailRuns(db, 'u1', second, {}, NOW);
+		await runDueAgents(
+			db,
+			only(fakeClient([{ content: [toolUse('suggest_replies', { intent: 'Receipt', reply_needed: false, options: [] })] }]).client),
+			{ now: () => NOW }
+		);
+		expect(sqlite.query(`SELECT status FROM reply_suggestions ORDER BY created_at, status`).all()).toEqual([
+			{ status: 'open' },
+			{ status: 'replaced' }
+		]);
+		expect(await openSuggestion(db, 'u1', 't1')).toMatchObject({ replyNeeded: false, emailId: second, options: [] });
+		// A "no reply needed" set doesn't mark the thread in the inbox.
+		expect(await openSuggestionCounts(db, 'u1', ['t1'])).toEqual(new Map());
+	});
+
+	test('edit ratio counts words kept, not punctuation or line breaks', () => {
+		expect(editRatio('Hi Pat,\n\nIt ships Monday.', 'Hi Pat, it ships Monday')).toBe(0);
+		expect(editRatio('Hi Pat, it ships Monday.', 'Hi Pat, it ships Tuesday.')).toBe(0.2);
+		expect(editRatio('Hi Pat', 'Completely different words here')).toBe(1);
+		expect(editRatio('', '')).toBe(0);
+	});
+
+	test('a suggestion fills the reply box above the signature and quote', () => {
+		const composer = '<p><br></p><div data-qm-signature="1">— Sada</div><blockquote>old</blockquote>';
+		const filled = withSuggestion(composer, 'Hi <Pat>,\n\nIt ships\nMonday.');
+		expect(filled).toBe(
+			'<p>Hi &lt;Pat&gt;,</p><p>It ships<br>Monday.</p><div data-qm-signature="1">— Sada</div><blockquote>old</blockquote>'
+		);
+		expect(writtenText(filled)).not.toContain('Sada');
+		expect(writtenText(filled)).toContain('It ships');
+		expect(textToHtml('One')).toBe('<p>One</p>');
+	});
+});
+
+describe('model prices', () => {
+	test('each model is priced, Haiku has a long-prompt rate, and only Haiku lacks a fallback', () => {
+		const usage = { input_tokens: 5000, output_tokens: 1500 };
+		expect(costMicros('claude-opus-5-5', usage)).toBe(50_000);
+		expect(costMicros('claude-sonnet-5-5', usage)).toBe(25_000);
+		expect(costMicros('claude-haiku-5-5', usage)).toBe(1250);
+		expect(costMicros('claude-haiku-5-5', { input_tokens: 200_000, output_tokens: 0 })).toBe(100_000);
+		expect(estimateRunMicros('claude-haiku-5-5', { inputTokens: 5000, outputTokens: 1500 })).toBe(1250);
+		expect(formatMicros(1250)).toBe('0.1¢');
+		expect(formatMicros(400)).toBe('0.04¢');
+		expect(formatMicros(25_000)).toBe('2.5¢');
+		expect(formatMicros(2_500_000)).toBe('$2.50');
+		expect(supportsServerFallback('claude-haiku-5-5')).toBe(false);
+		expect(supportsServerFallback('claude-sonnet-5-5')).toBe(true);
+	});
+});
+
+async function updateDraftingOff(sqlite: Database, agentId: string) {
+	const row = sqlite
+		.query(`SELECT v.id, v.definition_json FROM agent_versions v JOIN agents a ON a.current_version_id = v.id WHERE a.principal_id = ?`)
+		.get(agentId) as { id: string; definition_json: string };
+	const definition = JSON.parse(row.definition_json);
+	definition.capabilities.draft_reply = { level: 'off' };
+	sqlite.run(`UPDATE agent_versions SET definition_json = ? WHERE id = ?`, [JSON.stringify(definition), row.id]);
+}

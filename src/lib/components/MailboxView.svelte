@@ -769,6 +769,15 @@
 									{#if view === 'sent' && thread.status}
 										<DeliveryStatus status={thread.status} />
 									{/if}
+									{#if thread.suggested_replies}
+										<span
+											class="suggested-tag"
+											title="{thread.suggested_replies} suggested {thread.suggested_replies === 1 ? 'reply' : 'replies'}"
+										>
+											<Icon name="sparkling-2-line" size={12} />
+											{thread.suggested_replies}
+										</span>
+									{/if}
 									{#if thread.has_attachments}
 										<Icon name="attachment-2" size={14} />
 									{/if}
@@ -804,6 +813,15 @@
 								<span class="indicators">
 									{#if view === 'sent' && thread.status}
 										<DeliveryStatus status={thread.status} />
+									{/if}
+									{#if thread.suggested_replies}
+										<span
+											class="suggested-tag"
+											title="{thread.suggested_replies} suggested {thread.suggested_replies === 1 ? 'reply' : 'replies'}"
+										>
+											<Icon name="sparkling-2-line" size={12} />
+											{thread.suggested_replies}
+										</span>
 									{/if}
 									{#if thread.has_attachments}
 										<Icon name="attachment-2" size={14} />
@@ -1577,5 +1595,17 @@
 		.title {
 			font-size: 0.9375rem;
 		}
+	}
+
+	.suggested-tag {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.125rem;
+		padding: 0.0625rem 0.375rem;
+		border-radius: 9999px;
+		font-size: 0.6875rem;
+		font-weight: 600;
+		color: var(--color-text-secondary);
+		background: var(--color-surface-muted);
 	}
 </style>

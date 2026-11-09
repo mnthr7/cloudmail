@@ -123,7 +123,7 @@ export async function enqueueMailRuns(
 export class AskError extends Error {
 	readonly status = 400;
 
-	constructor(readonly code: 'request' | 'email' | 'paused') {
+	constructor(readonly code: 'request' | 'email' | 'paused' | 'drafting') {
 		super(code);
 		this.name = 'AskError';
 	}
@@ -136,7 +136,8 @@ export class AskError extends Error {
  */
 export async function enqueueAskRun(
 	db: D1Database,
-	input: { agentId: string; byUserId: string; emailId: string; request: string },
+	/** `request` null asks for reply options to the newest message someone else sent. */
+	input: { agentId: string; byUserId: string; emailId: string; request: string | null },
 	now = new Date()
 ): Promise<string> {
 	const [agent, human] = await Promise.all([getAgent(db, input.agentId), humanPrincipalForUser(db, input.byUserId)]);
@@ -144,14 +145,39 @@ export async function enqueueAskRun(
 	if (!canManage(agent, human)) throw new NotAllowedError();
 	if (agent.status === 'paused') throw new AskError('paused');
 
-	const request = input.request.trim();
-	if (!request || request.length > MAX_REQUEST_LENGTH) throw new AskError('request');
+	const request = input.request === null ? null : input.request.trim();
+	if (request !== null && (!request || request.length > MAX_REQUEST_LENGTH)) throw new AskError('request');
 
-	const email = await db
-		.prepare(`SELECT id FROM emails WHERE id = ? AND user_id = ? AND deleted_at IS NULL`)
+	const opened = await db
+		.prepare(`SELECT id, COALESCE(thread_id, id) AS thread_id FROM emails WHERE id = ? AND user_id = ? AND deleted_at IS NULL`)
 		.bind(input.emailId, input.byUserId)
-		.first<{ id: string }>();
-	if (!email) throw new AskError('email');
+		.first<{ id: string; thread_id: string }>();
+	if (!opened) throw new AskError('email');
+
+	let email: { id: string } = opened;
+	if (request === null) {
+		if (agent.version.definition.capabilities.draft_reply?.level === 'off') throw new AskError('drafting');
+		const inbound = await db
+			.prepare(
+				`SELECT id FROM emails
+				 WHERE user_id = ? AND COALESCE(thread_id, id) = ? AND direction = 'inbound' AND deleted_at IS NULL
+				 ORDER BY datetime(created_at) DESC LIMIT 1`
+			)
+			.bind(input.byUserId, opened.thread_id)
+			.first<{ id: string }>();
+		if (!inbound) throw new AskError('email');
+		email = inbound;
+		// Asking twice before the first run starts doesn't pay for two.
+		const waiting = await db
+			.prepare(
+				`SELECT id FROM agent_runs
+				 WHERE agent_principal_id = ? AND email_id = ? AND trigger_kind = 'ask' AND request IS NULL
+				   AND status IN ('pending', 'running')`
+			)
+			.bind(agent.id, email.id)
+			.first<{ id: string }>();
+		if (waiting) return waiting.id;
+	}
 
 	const id = crypto.randomUUID();
 	await db
@@ -288,7 +314,13 @@ export async function pauseForBudget(db: D1Database, agentId: string): Promise<v
 
 /** Whether the run already recorded proposals, so a retry doesn't propose them twice. */
 export async function runHasProposals(db: D1Database, runId: string): Promise<boolean> {
-	const row = await db.prepare(`SELECT 1 AS found FROM agent_actions WHERE run_id = ? LIMIT 1`).bind(runId).first();
+	const row = await db
+		.prepare(
+			`SELECT 1 AS found FROM agent_actions WHERE run_id = ?
+			 UNION ALL SELECT 1 FROM reply_suggestions WHERE run_id = ? LIMIT 1`
+		)
+		.bind(runId, runId)
+		.first();
 	return !!row;
 }
 
@@ -456,4 +488,53 @@ export async function askableAgents(
 	return results
 		.filter((row) => canManage({ ownerPrincipalId: row.owner_principal_id }, human))
 		.map((row) => ({ id: row.id, name: row.display_name, status: row.status }));
+}
+
+/** What an agent's finished runs used on average, for cost estimates. Only agents with runs appear. */
+export async function runUsageByAgent(
+	db: D1Database,
+	userId: string,
+	since: Date
+): Promise<Record<string, { inputTokens: number; outputTokens: number; runs: number }>> {
+	const human = await humanPrincipalForUser(db, userId);
+	const { results } = await db
+		.prepare(
+			`SELECT agent_principal_id, AVG(input_tokens) AS input, AVG(output_tokens) AS output, COUNT(*) AS runs
+			 FROM agent_runs
+			 WHERE workspace_id = ? AND status = 'done' AND input_tokens > 0 AND created_at >= ?
+			 GROUP BY agent_principal_id`
+		)
+		.bind(human.workspace_id, since.toISOString())
+		.all<{ agent_principal_id: string; input: number; output: number; runs: number }>();
+	return Object.fromEntries(
+		results.map((row) => [
+			row.agent_principal_id,
+			{ inputTokens: Math.round(row.input), outputTokens: Math.round(row.output), runs: row.runs }
+		])
+	);
+}
+
+/** Mail the user received at each of these addresses since a date, to estimate what watching one costs. */
+export async function inboundVolume(
+	db: D1Database,
+	userId: string,
+	addresses: string[],
+	since: Date
+): Promise<Record<string, number>> {
+	const counts: Record<string, number> = {};
+	await Promise.all(
+		addresses.slice(0, 50).map(async (address) => {
+			const pattern = `%${address.toLowerCase().replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+			const row = await db
+				.prepare(
+					`SELECT COUNT(*) AS n FROM emails
+					 WHERE user_id = ? AND direction = 'inbound' AND deleted_at IS NULL AND created_at >= ?
+					   AND (lower(to_addr) LIKE ? ESCAPE '\\' OR lower(COALESCE(cc_addr, '')) LIKE ? ESCAPE '\\')`
+				)
+				.bind(userId, since.toISOString(), pattern, pattern)
+				.first<{ n: number }>();
+			counts[address] = row?.n ?? 0;
+		})
+	);
+	return counts;
 }

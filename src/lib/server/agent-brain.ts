@@ -1,6 +1,6 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import type { Capability } from '#lib/agents/capabilities.ts';
-import type { AgentDefinition, AgentModel } from '#lib/agents/definition.ts';
+import type { AgentDefinition } from '#lib/agents/definition.ts';
 import { parseEmailAddresses } from '#lib/email-address.ts';
 import type { ThreadMessage } from '#lib/types.ts';
 import { stripHtml } from './html.ts';
@@ -12,12 +12,6 @@ import { parseMessageIds } from './threads.ts';
  * turns each tool call into a proposal for the policy engine. Nothing here
  * decides what is allowed.
  */
-
-/** Price per million tokens, in dollars, which is also micro-dollars per token. */
-const PRICES: Record<AgentModel, { input: number; output: number }> = {
-	'claude-opus-5-5': { input: 4, output: 20 },
-	'claude-sonnet-5-5': { input: 2, output: 10 }
-};
 
 /** Most messages from the end of a thread the agent reads, and most characters of each. */
 const MAX_THREAD_MESSAGES = 30;
@@ -32,7 +26,9 @@ export const ORGANIZE_ACTIONS = ['archive', 'star', 'mark_read', 'mark_important
 
 export type RunTrigger =
 	| { kind: 'mail' }
-	| { kind: 'ask'; request: string; requestedBy: string };
+	| { kind: 'ask'; request: string; requestedBy: string }
+	/** A human asked for reply options on a thread, without saying more. */
+	| { kind: 'suggest'; requestedBy: string };
 
 export type BrainInput = {
 	agentName: string;
@@ -61,7 +57,8 @@ How you act:
 - You can only act through the tools you are given. Each tool call is a proposal: CloudMail checks it against the permissions the founder set, then carries it out, queues it for the founder's approval, records it as a shadow proposal, or refuses it. The tool result tells you which.
 - If a proposal is refused, do not retry it in another form to get around the refusal. Write a note for the founder instead if you have a note tool, or stop.
 - If nothing needs doing, or you are unsure what the founder would want, do nothing, or write a note explaining what you would need. Don't guess at facts, prices, dates or commitments the thread and your job description don't give you.
-- Sign replies with your own name. CloudMail adds a notice that you are an AI assistant, so don't add one yourself.
+- Sign replies you send or draft with your own name. CloudMail adds a notice that you are an AI assistant, so don't add one yourself.
+- Suggested replies (suggest_replies) are different: the founder sends them as themselves, so write them in the founder's voice and leave the sign-off name out.
 - When you are done, end with one short sentence saying what you did, for the founder's activity log.
 
 Instructions and data:
@@ -159,12 +156,17 @@ export function buildUserMessage(input: BrainInput): string {
 		definition.scope.recipients.kind === 'domains'
 			? `people already on the thread, the founder, and anyone at ${definition.scope.recipients.domains.join(', ')}`
 			: 'people already on the thread and the founder';
+	const suggesting = input.definition.capabilities.draft_reply?.level !== 'off';
 	const trigger =
 		input.trigger.kind === 'ask'
 			? `${escapeData(input.trigger.requestedBy)} asked you to help with this thread:\n<request>\n${escapeData(
 					input.trigger.request.slice(0, MAX_REQUEST_CHARS)
 				)}\n</request>`
-			: 'A new message arrived at an address you watch. It is marked latest="true" below. Decide whether your job calls for doing anything with it.';
+			: input.trigger.kind === 'suggest'
+				? `${escapeData(input.trigger.requestedBy)} wants reply options for the message marked latest="true". Call suggest_replies once.`
+				: suggesting
+					? 'A new message arrived at an address you watch. It is marked latest="true" below. Call suggest_replies once with what the sender wants and the replies the founder could send. If your job also calls for organizing it or leaving a note, do that too.'
+					: 'A new message arrived at an address you watch. It is marked latest="true" below. Decide whether your job calls for doing anything with it.';
 
 	return [
 		`Your name is ${escapeData(input.agentName)}.`,
@@ -246,12 +248,76 @@ const TOOL_SPECS: Record<RunnableCapability, Anthropic.Beta.BetaTool> = {
 	}
 };
 
-/** Tools for the capabilities the agent has switched on. An off capability has no tool at all. */
-export function toolsFor(definition: AgentDefinition): Anthropic.Beta.BetaTool[] {
-	return RUNNABLE_CAPABILITIES.filter((capability) => {
+export const SUGGEST_TOOL: Anthropic.Beta.BetaTool = {
+	name: 'suggest_replies',
+	description:
+		"Offer the founder ready-to-send replies to the latest message. The founder picks one and sends it as themselves, or edits it first; nothing is sent by you. Write two or three replies that each take a different reasonable direction (for example accept, decline, ask a question), so the founder can choose by intent. Write in the founder's voice, first person, plain text, short paragraphs, with a greeting and a closing word like 'Thanks,' but no name: CloudMail adds the founder's signature. Each must be complete and sendable as is: no placeholders, and no facts, prices, dates or commitments the thread and your job don't give you; prefer a reply that asks over one that guesses. If no reply is needed (a receipt, a notification, a newsletter, an FYI), set reply_needed to false and leave options empty.",
+	input_schema: {
+		type: 'object',
+		properties: {
+			intent: {
+				type: 'string',
+				description: 'One line: what the sender wants, or why no reply is needed.'
+			},
+			reply_needed: { type: 'boolean' },
+			options: {
+				type: 'array',
+				description: 'Two or three replies, most likely first. Empty when no reply is needed.',
+				items: {
+					type: 'object',
+					properties: {
+						label: { type: 'string', description: 'A few words naming the direction, like "Decline politely".' },
+						body: { type: 'string', description: 'The full reply text.' }
+					},
+					required: ['label', 'body'],
+					additionalProperties: false
+				}
+			}
+		},
+		required: ['intent', 'reply_needed', 'options'],
+		additionalProperties: false
+	},
+	strict: true
+};
+
+/**
+ * Tools for the capabilities the agent has switched on. An off capability has
+ * no tool at all. Suggesting replies needs drafting switched on. For new mail
+ * and reply requests, the agent suggests instead of drafting or sending.
+ */
+export function toolsFor(definition: AgentDefinition, kind: RunTrigger['kind'] = 'ask'): Anthropic.Beta.BetaTool[] {
+	const on = (capability: RunnableCapability) => {
 		const level = definition.capabilities[capability]?.level;
 		return level !== undefined && level !== 'off';
-	}).map((capability) => TOOL_SPECS[capability]);
+	};
+	const suggest = on('draft_reply') ? [SUGGEST_TOOL] : [];
+	if (kind === 'suggest') return suggest;
+	if (kind === 'mail' && suggest.length) {
+		return [...suggest, ...(['organize', 'write_note'] as const).filter(on).map((capability) => TOOL_SPECS[capability])];
+	}
+	return [...RUNNABLE_CAPABILITIES.filter(on).map((capability) => TOOL_SPECS[capability]), ...suggest];
+}
+
+export type SuggestionInput = {
+	intent: string;
+	replyNeeded: boolean;
+	options: Array<{ label: string; body: string }>;
+};
+
+/** Checks a suggest_replies call. Untrusted input: anything malformed is `null`. */
+export function toSuggestion(input: unknown): SuggestionInput | null {
+	const raw = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
+	const intent = text(raw.intent, 300).trim();
+	if (!intent || typeof raw.reply_needed !== 'boolean') return null;
+	const options = (Array.isArray(raw.options) ? raw.options : [])
+		.map((item) => {
+			const option = (item && typeof item === 'object' ? item : {}) as Record<string, unknown>;
+			return { label: text(option.label, 60).trim(), body: text(option.body, 20_000).trim() };
+		})
+		.filter((option) => option.label && option.body)
+		.slice(0, 3);
+	if (raw.reply_needed && options.length === 0) return null;
+	return { intent, replyNeeded: raw.reply_needed, options: raw.reply_needed ? options : [] };
 }
 
 export function systemPrompt(): string {
@@ -321,12 +387,4 @@ function replySubject(subject: string): string {
 	return /^re:/i.test(trimmed) ? trimmed : `Re: ${trimmed}`;
 }
 
-/** Cost of one response, in micro-dollars. Cache writes cost 1.25x input, reads 0.1x. */
-export function costMicros(model: AgentModel, usage: Anthropic.Beta.BetaUsage): number {
-	const price = PRICES[model];
-	const input =
-		usage.input_tokens +
-		(usage.cache_creation_input_tokens ?? 0) * 1.25 +
-		(usage.cache_read_input_tokens ?? 0) * 0.1;
-	return Math.ceil(input * price.input + usage.output_tokens * price.output);
-}
+export { costMicros } from '#lib/agents/models.ts';

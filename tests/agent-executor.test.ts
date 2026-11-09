@@ -5,7 +5,13 @@ import type { D1Database } from '@cloudflare/workers-types';
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { defaultDefinition, type AgentDefinition } from '../src/lib/agents/definition';
-import { createAgent, decideAction, proposeAction, setAgentStatus } from '../src/lib/server/agents-store';
+import {
+	createAgent,
+	decideAction,
+	proposeAction,
+	setAgentStatus,
+	updateAgentDefinition
+} from '../src/lib/server/agents-store';
 import {
 	MAX_AGENT_MESSAGES_WITHOUT_HUMAN,
 	MAX_SENDS_PER_RECIPIENT_PER_DAY,
@@ -276,6 +282,43 @@ describe('carrying out agent actions', () => {
 		expect(await executePending(db, NOW)).toBe(0);
 	});
 
+	test('the decision is made again against the agent as it is now', async () => {
+		const { sqlite, db } = open();
+		const agent = await hire(db);
+
+		// Back in shadow mode: nothing runs.
+		const first = addMail(sqlite, {});
+		const shadowed = await proposeReply(db, agent.id, first, first);
+		await setAgentStatus(db, { agentId: agent.id, byUserId: 'u1', status: 'shadow' });
+		expect(await executeAction(db, shadowed.actionId, NOW)).toEqual({ status: 'failed', error: 'agent_in_shadow' });
+		await setAgentStatus(db, { agentId: agent.id, byUserId: 'u1', status: 'active' });
+
+		// Sending turned down to "ask me first": what was allowed on its own no longer runs.
+		const second = addMail(sqlite, {});
+		const auto = await proposeReply(db, agent.id, second, second);
+		await updateAgentDefinition(db, {
+			agentId: agent.id,
+			byUserId: 'u1',
+			definition: autoSender({ send_reply: { level: 'approve' } })
+		});
+		await setAgentStatus(db, { agentId: agent.id, byUserId: 'u1', status: 'active' });
+		expect(await executeAction(db, auto.actionId, NOW)).toEqual({ status: 'failed', error: 'needs_approval' });
+
+		// The send-as address taken away: refused outright.
+		const third = addMail(sqlite, {});
+		const queued = await proposeReply(db, agent.id, third, third);
+		await decideAction(db, { actionId: queued.actionId, byUserId: 'u1', decision: 'approve' }, NOW);
+		const narrowed = autoSender({ send_reply: { level: 'approve' } });
+		await updateAgentDefinition(db, {
+			agentId: agent.id,
+			byUserId: 'u1',
+			definition: { ...narrowed, scope: { ...narrowed.scope, sendAs: [] } }
+		});
+		await setAgentStatus(db, { agentId: agent.id, byUserId: 'u1', status: 'active' });
+		expect(await executeAction(db, queued.actionId, NOW)).toEqual({ status: 'failed', error: 'send_as_out_of_scope' });
+		expect((sqlite.query(`SELECT COUNT(*) AS n FROM emails WHERE direction = 'outbound'`).get() as { n: number }).n).toBe(0);
+	});
+
 	test('the cron finishes an allowed action whose request was cut off', async () => {
 		const { sqlite, db } = open();
 		const agent = await hire(db);
@@ -329,14 +372,30 @@ describe('loop and runaway protection', () => {
 		expect(results).toEqual([...Array(MAX_SENDS_PER_RECIPIENT_PER_DAY).fill('executed'), 'blocked']);
 	});
 
+	test('sends being carried out at the same moment count toward the cap', async () => {
+		const { sqlite, db } = open();
+		const agent = await hire(db, autoSender({ send_reply: { level: 'auto', dailyLimit: 50 } }));
+		const ids: string[] = [];
+		for (let i = 0; i <= MAX_SENDS_PER_RECIPIENT_PER_DAY; i++) {
+			const email = addMail(sqlite, {});
+			ids.push((await proposeReply(db, agent.id, email, email)).actionId);
+		}
+		// Every other request has claimed its send and is mid-way through it.
+		for (const id of ids.slice(0, -1)) {
+			sqlite.run(`UPDATE agent_actions SET exec_claimed_at = ? WHERE id = ?`, [NOW.toISOString(), id]);
+		}
+		expect(await executeAction(db, ids.at(-1)!, NOW)).toEqual({ status: 'blocked', error: 'loop_recipient_flood' });
+	});
+
 	test(`a thread stops after ${MAX_AGENT_MESSAGES_WITHOUT_HUMAN} agent messages with nobody from our side`, async () => {
 		const { sqlite, db } = open();
 		const agent = await hire(db, autoSender({ send_reply: { level: 'auto', dailyLimit: 50 } }));
 		const first = addMail(sqlite, {});
 		const statuses: string[] = [];
 		for (let i = 0; i <= MAX_AGENT_MESSAGES_WITHOUT_HUMAN; i++) {
-			// Each to someone new, so the per-person guard stays out of the way.
+			// Each to someone new on the thread, so the per-person guard stays out of the way.
 			const to = [`person${i}@customer.com`];
+			addMail(sqlite, { thread: first, from: to[0] });
 			const { actionId } = await proposeAction(
 				db,
 				{
@@ -361,6 +420,7 @@ describe('loop and runaway protection', () => {
 			[first, new Date(NOW.getTime() + 60_000).toISOString()]
 		);
 		const to = ['someone@customer.com'];
+		addMail(sqlite, { thread: first, from: to[0] });
 		const { actionId } = await proposeAction(
 			db,
 			{
@@ -405,6 +465,7 @@ describe('taking a thread over', () => {
 		expect(activity.items.some((item) => item.kind === 'takeover')).toBe(true);
 
 		await handBackThread(db, 'u1', email);
+		addMail(sqlite, { thread: email, from: 'lee@customer.com' });
 		const again = await proposeReply(db, agent.id, email, email, ['lee@customer.com']);
 		expect((await executeAction(db, again.actionId, NOW)).status).toBe('executed');
 	});

@@ -115,7 +115,9 @@ export function verifiedContext(
  * it can see, and everyone on mail the workspace sent. The To and Cc lines of
  * incoming mail are left out, since whoever wrote that mail chose them.
  */
-export function threadParticipants(messages: ThreadMessage[]): string[] {
+export function threadParticipants(
+	messages: Array<Pick<ThreadMessage, 'direction' | 'from_addr' | 'to_addr' | 'cc_addr'>>
+): string[] {
 	const seen = new Set<string>();
 	for (const message of messages) {
 		const fields =

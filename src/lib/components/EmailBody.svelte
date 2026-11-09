@@ -1,5 +1,6 @@
 <script lang="ts">
-	import { buildEmailDocument, emailCss, isRichHtml } from '#lib/utils/email-html.ts';
+	import { buildEmailDocument, emailCss, isRichHtml, shadowEmailCss } from '#lib/utils/email-html.ts';
+	import { sanitizeInlineEmailHtml } from '#lib/security/email-html.ts';
 	import { foldQuotedHtml } from '#lib/utils/quotes.ts';
 	import { SKIN_FONTS, isSkin } from '#lib/skin.ts';
 	import { holdRemoteImages } from '#lib/security/images.ts';
@@ -34,7 +35,19 @@
 
 	const rich = $derived(richOverride ?? isRichHtml(html));
 	const gated = $derived(allowImages ? null : holdRemoteImages(html));
-	const srcdoc = $derived(buildEmailDocument(gated ? gated.html : html, { rich }));
+	/**
+	 * Written mail is shown in the page, in a shadow root, sanitized. Only a
+	 * designed message gets a frame, because only it needs its own <style> and
+	 * layout. On iOS a srcdoc frame inside the thread's scroller could stay
+	 * unpainted — header shown, body blank — and ordinary correspondence has no
+	 * use for a frame's isolation that sanitizing does not already give it.
+	 */
+	const inline = $derived(!rich);
+	const srcdoc = $derived(inline ? '' : buildEmailDocument(gated ? gated.html : html, { rich }));
+	const inlineHtml = $derived(
+		inline ? sanitizeInlineEmailHtml(gated ? gated.html : html, { remoteImages: allowImages }) : ''
+	);
+	let host = $state<HTMLDivElement | null>(null);
 
 	let pendingLink = $state<{ sentence: string; href: string } | null>(null);
 
@@ -69,6 +82,11 @@
 	}
 
 	function syncTheme() {
+		if (host) {
+			// The page already loads the skin's fonts, so a shadow root only needs the flags.
+			host.dataset.theme = document.documentElement.dataset.theme ?? 'light';
+			host.dataset.skin = document.documentElement.dataset.skin ?? 'classic';
+		}
 		const doc = frame?.contentDocument;
 		if (!doc) return;
 		doc.documentElement.dataset.theme = document.documentElement.dataset.theme ?? 'light';
@@ -120,11 +138,11 @@
 	let blankReported = false;
 
 	/** Visible words, or a visible image / embed. innerText skips display:none. */
-	function showsAnything(doc: Document): boolean {
-		const text = (doc.body.innerText ?? doc.body.textContent ?? '')
+	function showsAnything(body: HTMLElement): boolean {
+		const text = (body.innerText ?? body.textContent ?? '')
 			.replace(/[\s\u00a0\u200b-\u200f\u2060\u034f\ufeff\u00ad]+/g, '');
 		if (text) return true;
-		const media = Array.from(doc.body.querySelectorAll('img, video, svg, canvas, iframe, object, embed'));
+		const media = Array.from(body.querySelectorAll('img, video, svg, canvas, iframe, object, embed'));
 		return media.some((el) => {
 			const box = (el as HTMLElement).getBoundingClientRect();
 			return box.width > 2 && box.height > 2;
@@ -135,9 +153,17 @@
 		if (blankReported || !onBlank) return;
 		// A message that is only remote images looks empty while those URLs are held.
 		if (gated?.held) return;
+		const root = inline ? (host?.shadowRoot?.querySelector<HTMLElement>('.root') ?? null) : null;
+		if (inline) {
+			if (root && !showsAnything(root)) {
+				blankReported = true;
+				onBlank();
+			}
+			return;
+		}
 		const doc = frame?.contentDocument;
 		if (!doc?.body) return;
-		if (!showsAnything(doc)) {
+		if (!showsAnything(doc.body)) {
 			blankReported = true;
 			onBlank();
 		}
@@ -219,7 +245,38 @@
 	 * readable height and left to scroll rather than hidden.
 	 */
 	$effect(() => {
+		if (!host) return;
+		const shadow = host.shadowRoot ?? host.attachShadow({ mode: 'open' });
+		shadow.innerHTML = `<style>${shadowEmailCss()}</style><div class="root">${inlineHtml}</div>`;
+		const root = shadow.querySelector<HTMLElement>('.root');
+		if (!root) return;
+
+		blankReported = false;
+		for (const link of Array.from(root.querySelectorAll('a'))) {
+			link.setAttribute('target', '_blank');
+			link.setAttribute('rel', 'noopener noreferrer');
+		}
+		if (foldQuotes) foldQuotedHtml(root);
+		root.addEventListener('click', onFrameClick);
+		syncTheme();
+
+		theme?.disconnect();
+		theme = new MutationObserver(syncTheme);
+		theme.observe(document.documentElement, {
+			attributes: true,
+			attributeFilter: ['data-theme', 'data-skin']
+		});
+
+		const blankTimer = setTimeout(checkBlank, 400);
+		return () => {
+			clearTimeout(blankTimer);
+			root.removeEventListener('click', onFrameClick);
+		};
+	});
+
+	$effect(() => {
 		void srcdoc;
+		if (inline) return;
 		blankReported = false;
 
 		const doc = frame?.contentDocument;
@@ -250,6 +307,9 @@
 	});
 </script>
 
+{#if inline}
+	<div bind:this={host} class="inline"></div>
+{:else}
 <iframe
 	bind:this={frame}
 	class="frame"
@@ -262,6 +322,7 @@
 	onload={onLoad}
 	style:height={height ? `${height}px` : undefined}
 ></iframe>
+{/if}
 
 {#if pendingLink}
 	<LinkWarning

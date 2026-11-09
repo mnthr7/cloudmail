@@ -84,3 +84,41 @@ export function sanitizeEmailHtml(html: string, options: { remoteImages?: boolea
 		}
 	});
 }
+
+/**
+ * A message shown in the page itself rather than in a frame. Written mail on a
+ * phone renders here: iOS WebKit can leave a srcdoc frame inside the thread's
+ * scroller unpainted, which showed the header and a blank page below it.
+ *
+ * Same allow-list as above, plus `class` and `id` — quote folding finds Gmail,
+ * Yahoo and Outlook history by them, and rendered markdown wraps its tables in
+ * classed scrollers. They can only match the shadow root's own stylesheet. A
+ * whole document is cut down to its <body> first, so a <title> never surfaces
+ * as text.
+ */
+export function sanitizeInlineEmailHtml(
+	html: string,
+	options: { remoteImages?: boolean } = {}
+): string {
+	const body = /<body[^>]*>([\s\S]*)<\/body\s*>/i.exec(html)?.[1] ?? html;
+	const inline: sanitizeHtml.IOptions = {
+		...OPTIONS,
+		allowedAttributes: {
+			...(OPTIONS.allowedAttributes as Record<string, string[]>),
+			'*': ['style', 'align', 'dir', 'title', 'class', 'id'],
+			blockquote: ['type']
+		},
+		nonTextTags: ['script', 'style', 'textarea', 'option', 'noscript', 'title', 'head']
+	};
+	if (options.remoteImages ?? true) return sanitizeHtml(body, inline);
+	return sanitizeHtml(body, {
+		...inline,
+		transformTags: {
+			img: (tagName, attribs) => {
+				if (isInlineImage(attribs.src ?? '')) return { tagName, attribs };
+				const alt = attribs.alt?.trim();
+				return { tagName: 'span', attribs: {}, text: alt ? `[image: ${alt}]` : '[image]' };
+			}
+		}
+	});
+}

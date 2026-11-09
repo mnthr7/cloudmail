@@ -480,11 +480,13 @@ describe('running agents', () => {
 		expect(sqlite.query(`SELECT status, attempts FROM agent_runs`).get()).toEqual({ status: 'pending', attempts: 1 });
 		await runDueAgents(db, only(client), { now: () => NOW });
 		await runDueAgents(db, only(client), { now: () => NOW });
-		expect(sqlite.query(`SELECT status, attempts, outcome FROM agent_runs`).get()).toEqual({
-			status: 'failed',
-			attempts: 3,
-			outcome: 'api_error_529'
-		});
+		const failed = sqlite.query(`SELECT status, attempts, outcome FROM agent_runs`).get() as {
+			status: string;
+			attempts: number;
+			outcome: string;
+		};
+		expect(failed).toMatchObject({ status: 'failed', attempts: 3 });
+		expect(failed.outcome).toStartWith('api_error_529');
 		expect(await runDueAgents(db, only(client), { now: () => NOW })).toBe(0);
 	});
 
@@ -651,6 +653,35 @@ describe('runs and the workspace key', () => {
 			outcome: 'no_key',
 			attempts: 0
 		});
+	});
+
+	test('a 403 fails that run with the reason, and leaves the key alone', async () => {
+		const { sqlite, db } = open();
+		await hireSupport(db);
+		await enqueueMailRuns(db, 'u1', addMail(sqlite, {}), {}, NOW);
+		const denied = new Anthropic.PermissionDeniedError(
+			403,
+			{ type: 'error', error: { type: 'permission_error', message: 'Model not available' } },
+			undefined,
+			new Headers()
+		);
+		const rejected: string[] = [];
+		await runDueAgents(
+			db,
+			{
+				workspaces: ['default'],
+				clientFor: async () => fakeClient([denied]).client,
+				keyRejected: async (workspaceId) => {
+					rejected.push(workspaceId);
+				}
+			},
+			{ now: () => NOW }
+		);
+		expect(rejected).toEqual([]);
+		const run = sqlite.query(`SELECT status, outcome FROM agent_runs`).get() as { status: string; outcome: string };
+		expect(run.status).toBe('failed');
+		expect(run.outcome).toStartWith('api_error_403 permission_error');
+		expect(run.outcome).toContain('Model not available');
 	});
 
 	test('a key the provider turns down pauses the workspace, and its runs wait', async () => {

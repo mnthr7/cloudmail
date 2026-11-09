@@ -9,6 +9,7 @@
 		"build": "vite build && bun scripts/wrap-cloudflare-worker.mjs",
 		"preview": "bun run build && wrangler dev",
 		"deploy": "bun run build && wrangler deploy",
+		"deploy:live": "bash scripts/deploy-live.sh",
 		"db:migrate:local": "wrangler d1 migrations apply DB --local",
 		"db:migrate:remote": "wrangler d1 migrations apply DB --remote",
 		"prepare": "svelte-kit sync || echo ''",

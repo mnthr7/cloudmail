@@ -292,3 +292,19 @@ export function buildEmailDocument(html: string, options: { rich: boolean }): st
 <style>${emailCss(options.rich)}</style>
 </head><body>${html}</body></html>`;
 }
+
+/**
+ * The written-mail stylesheet aimed at a shadow root instead of a frame
+ * document: `:host` stands in for <html> (it carries data-theme and data-skin)
+ * and `.root` for <body>.
+ */
+export function shadowEmailCss(): string {
+	const css = (FRAME_CSS + PROSE_CSS + SIMPLE_CSS + SKIN_CSS)
+		.replace(/\/\*[\s\S]*?\*\//g, '')
+		.replace(/:root\[([^\]]+)\]/g, ':host([$1])')
+		.replace(/\bhtml:not\((\[[^\]]+\])\)/g, ':host(:not($1))')
+		.replace(/\bhtml, body\b/g, '.root')
+		.replace(/\bhtml(?=\s*\{)/g, '.root')
+		.replace(/\bbody(?=\s*[{*])/g, '.root');
+	return `:host { display: block; }\n${css}`;
+}

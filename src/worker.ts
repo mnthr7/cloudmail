@@ -10,6 +10,7 @@ import { getEmailProvider } from './lib/server/context';
 import type { EmailProvider } from './lib/server/email-provider';
 import { expireActions } from './lib/server/agents-store';
 import { runDueAgents } from './lib/server/agent-runner';
+import { executePending } from './lib/server/agent-executor';
 import { loadProviderKey, markProviderKeyRejected, workspacesWithWorkingKey } from './lib/server/ai-provider-store';
 import { clientFor } from './lib/server/ai-providers';
 import { importMasterKey } from './lib/server/secret-box';
@@ -91,12 +92,15 @@ export default {
 				(error) => console.error('Failed to deliver scheduled mail', error)
 			)
 		);
-		// Proposals nobody approved in time are never sent late (A7).
+		// Proposals nobody approved in time are never sent late (A7). Allowed
+		// actions whose request was cut off are finished, once.
 		ctx.waitUntil(
-			expireActions(env.DB).then(
-				() => undefined,
-				(error) => console.error('Failed to expire agent proposals', error)
-			)
+			expireActions(env.DB)
+				.then(() => (env.DEMO_MODE === 'true' ? 0 : executePending(env.DB)))
+				.then(
+					() => undefined,
+					(error) => console.error('Failed to expire or finish agent actions', error)
+				)
 		);
 		ctx.waitUntil(
 			runAgents(env).then(

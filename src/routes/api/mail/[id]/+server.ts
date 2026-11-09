@@ -10,6 +10,7 @@ import {
 } from '#lib/server/mail-store.ts';
 import { isMailCategory } from '#lib/organizing/categories.ts';
 import { askableAgents } from '#lib/server/agent-runs-store.ts';
+import { threadActivity, type ThreadActivity } from '#lib/server/thread-activity-store.ts';
 import { openSuggestion, recordReplyForSuggestions } from '#lib/server/reply-suggestions-store.ts';
 import {
 	OrganizingActionError,
@@ -84,7 +85,8 @@ export const GET: RequestHandler = async ({ params, locals, platform, url }) => 
 			category: stored?.category ?? 'primary',
 			labels: stored?.labels ?? [],
 			agents: [],
-			suggestion: null
+			suggestion: null,
+			activity: null
 		});
 	}
 
@@ -125,9 +127,10 @@ export const GET: RequestHandler = async ({ params, locals, platform, url }) => 
 
 	// Agents this user can hand the thread to, for the reader's "Ask an agent",
 	// and the replies one already suggested.
-	const [agents, suggestion] = await Promise.all([
+	const [agents, suggestion, activity] = await Promise.all([
 		askableAgents(db, locals.user.id).catch(() => []),
-		openSuggestion(db, locals.user.id, threadId).catch(() => null)
+		openSuggestion(db, locals.user.id, threadId).catch(() => null),
+		threadActivity(db, locals.user.id, threadId).catch((): ThreadActivity | null => null)
 	]);
 
 	return json({
@@ -141,7 +144,8 @@ export const GET: RequestHandler = async ({ params, locals, platform, url }) => 
 		category: isMailCategory(email.category) ? email.category : 'primary',
 		labels,
 		agents: agents.map((agent) => ({ id: agent.id, name: agent.name })),
-		suggestion
+		suggestion,
+		activity
 	});
 };
 

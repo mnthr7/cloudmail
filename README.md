@@ -286,6 +286,16 @@ bun run db:migrate:remote
 bun run deploy
 ```
 
+For a deployment with its own config (`wrangler.<name>.jsonc`), one command does
+it all from an up-to-date `main`: backs up the database, applies migrations,
+builds, deploys with the commit in the version message, and checks the site.
+It also warns when the version it replaces didn't come from this repo, which
+means another checkout is deploying to the same Worker.
+
+```bash
+bun run deploy:live <name>
+```
+
 ## Optional settings
 
 | Setting | Where | What it does |

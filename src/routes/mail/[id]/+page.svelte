@@ -8,6 +8,7 @@
 	import OrganizeMenu from '#lib/components/OrganizeMenu.svelte';
 	import AskAgentForm from '#lib/components/AskAgentForm.svelte';
 	import SuggestedReplies from '#lib/components/SuggestedReplies.svelte';
+	import AgentActivity from '#lib/components/AgentActivity.svelte';
 	import { textToHtml, writtenText, type SuggestionRef } from '#lib/agents/suggestions.ts';
 	import { onDestroy, tick } from 'svelte';
 	import { showToast } from '#lib/toast.ts';
@@ -433,6 +434,8 @@
 		{#if askOpen && latest && data.agents.length > 0}
 			<AskAgentForm agents={data.agents} emailId={latest.id} onClose={() => (askOpen = false)} />
 		{/if}
+
+		<AgentActivity activity={data.activity} emailId={latest?.id ?? null} hasAgents={data.agents.length > 0} />
 
 		<SuggestedReplies
 			suggestion={data.suggestion}

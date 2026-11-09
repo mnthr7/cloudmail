@@ -9,6 +9,7 @@ import {
 } from '#lib/server/mail-store.ts';
 import { displaySubject } from '#lib/server/threads.ts';
 import { askableAgents } from '#lib/server/agent-runs-store.ts';
+import { threadActivity, type ThreadActivity } from '#lib/server/thread-activity-store.ts';
 import { openSuggestion, type ReplySuggestion } from '#lib/server/reply-suggestions-store.ts';
 import { DEMO_MODE, DEMO_USER, generateDemoMessages, demoStore } from '#lib/server/demo.ts';
 
@@ -47,7 +48,8 @@ export const load: PageServerLoad = async ({ params, locals, platform, url }) =>
 			labels: stored?.labels ?? [],
 			messages: messages.map((message) => ({ ...message, is_read: true })),
 			agents: [] as Array<{ id: string; name: string }>,
-			suggestion: null as ReplySuggestion | null
+			suggestion: null as ReplySuggestion | null,
+			activity: null as ThreadActivity | null
 		};
 	}
 
@@ -67,9 +69,10 @@ export const load: PageServerLoad = async ({ params, locals, platform, url }) =>
 	const threadId = email.thread_id ?? email.id;
 	const labels = await listThreadLabels(platform.env.DB, locals.user.id, threadId);
 	// Agents this user may ask for help here. A lookup failure only hides the button.
-	const [agents, suggestion] = await Promise.all([
+	const [agents, suggestion, activity] = await Promise.all([
 		askableAgents(platform.env.DB, locals.user.id).catch(() => []),
-		openSuggestion(platform.env.DB, locals.user.id, threadId).catch(() => null)
+		openSuggestion(platform.env.DB, locals.user.id, threadId).catch(() => null),
+		threadActivity(platform.env.DB, locals.user.id, threadId).catch((): ThreadActivity | null => null)
 	]);
 
 	return {
@@ -86,6 +89,7 @@ export const load: PageServerLoad = async ({ params, locals, platform, url }) =>
 		labels,
 		messages: messages.map((message) => ({ ...message, is_read: true })),
 		agents: agents.map((agent) => ({ id: agent.id, name: agent.name })),
-		suggestion
+		suggestion,
+		activity
 	};
 };

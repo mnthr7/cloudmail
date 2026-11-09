@@ -1,8 +1,12 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
 import { caller, failure, readBody } from '#lib/server/agents-http.ts';
 import { decideAction } from '#lib/server/agents-store.ts';
+import { executeAction } from '#lib/server/agent-executor.ts';
 
-/** Approve or decline a queued proposal. 409 if it was already decided or has expired. */
+/**
+ * Approve or decline a queued proposal. 409 if it was already decided or has
+ * expired. Approving carries it out at once; `execution` says how that went.
+ */
 export const POST: RequestHandler = async ({ params, request, locals, platform }) => {
 	const who = caller(locals, platform, { write: true });
 	if ('response' in who) return who.response;
@@ -21,7 +25,8 @@ export const POST: RequestHandler = async ({ params, request, locals, platform }
 			decision,
 			note
 		});
-		return json({ status });
+		const execution = status === 'approved' ? await executeAction(who.db, params.id ?? '') : null;
+		return json({ status: execution?.status === 'executed' ? 'executed' : status, execution });
 	} catch (error) {
 		return failure(error);
 	}

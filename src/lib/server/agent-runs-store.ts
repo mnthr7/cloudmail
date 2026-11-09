@@ -1,4 +1,5 @@
 import type { D1Database } from '@cloudflare/workers-types';
+import { looksLikeAutoReply } from '#lib/agents/auto-reply.ts';
 import { parseDefinition } from '#lib/agents/definition.ts';
 import type { AgentStatus } from '#lib/agents/policy.ts';
 import { parseEmailAddresses } from '#lib/email-address.ts';
@@ -67,10 +68,12 @@ export async function enqueueMailRuns(
 	if (isAutomatedMail(headers)) return 0;
 
 	const email = await db
-		.prepare(`SELECT to_addr, cc_addr, direction FROM emails WHERE id = ? AND user_id = ?`)
+		.prepare(`SELECT to_addr, cc_addr, direction, subject FROM emails WHERE id = ? AND user_id = ?`)
 		.bind(emailId, userId)
-		.first<{ to_addr: string; cc_addr: string | null; direction: string }>();
+		.first<{ to_addr: string; cc_addr: string | null; direction: string; subject: string | null }>();
 	if (!email || email.direction !== 'inbound') return 0;
+	// Out-of-office notes and bounces don't always set the headers (A14).
+	if (looksLikeAutoReply(email.subject)) return 0;
 	const recipients = new Set(parseEmailAddresses([email.to_addr, email.cc_addr ?? '']).map((a) => a.toLowerCase()));
 
 	const human = await db

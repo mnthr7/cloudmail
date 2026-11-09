@@ -7,6 +7,7 @@
 	import OrganizeMenu from './OrganizeMenu.svelte';
 	import AskAgentForm from './AskAgentForm.svelte';
 	import SuggestedReplies from './SuggestedReplies.svelte';
+	import AgentActivity from './AgentActivity.svelte';
 	import { withSuggestion, writtenText, type SuggestionRef, type SuggestionView } from '#lib/agents/suggestions.ts';
 	import Icon from './Icon.svelte';
 	import ThreadMessage from './ThreadMessage.svelte';
@@ -892,6 +893,12 @@
 						{#if askOpen && latest && askAgents.length > 0}
 							<AskAgentForm agents={askAgents} emailId={latest.id} onClose={() => (askOpen = false)} />
 						{/if}
+
+						<AgentActivity
+							activity={threadData?.activity ?? null}
+							emailId={latest?.id ?? null}
+							hasAgents={askAgents.length > 0}
+						/>
 
 						<SuggestedReplies
 							{suggestion}

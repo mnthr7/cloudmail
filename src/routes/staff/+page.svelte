@@ -256,6 +256,14 @@
 				if (res.status === 403) listError = 'Only its owner or an admin can approve this.';
 				if (res.status !== 409) return;
 			}
+			const execution = body?.execution as { status: string; error?: string } | null | undefined;
+			if (execution && execution.status !== 'executed' && execution.status !== 'skipped') {
+				window.alert(
+					execution.status === 'blocked'
+						? `Approved, but loop protection stopped it (${execution.error}). There's a note on the thread.`
+						: `Approved, but it couldn't be done: ${execution.error}`
+				);
+			}
 			window.location.reload();
 		} catch {
 			listError = 'Network error';

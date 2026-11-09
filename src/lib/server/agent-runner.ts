@@ -29,12 +29,14 @@ import {
 } from './agent-runs-store.ts';
 import { getEmailForUser, listThreadMessages } from './mail-store.ts';
 import { saveSuggestions } from './reply-suggestions-store.ts';
+import { executeAction, type ExecuteResult } from './agent-executor.ts';
+import { isThreadTakenOver } from './thread-activity-store.ts';
 
 /**
  * Carries out agent runs (docs/specs/agent-staff-platform.md, §8.2): loads the
  * agent and the thread, asks the model, and sends every tool call through
- * `proposeAction`. A run only ever records proposals. Nothing here sends mail
- * or changes the mailbox.
+ * `proposeAction`. What the policy allows on its own is carried out at once
+ * by the executor; everything else waits for a human.
  */
 
 /** The one call the runner makes, so tests can stand in for the API. */
@@ -58,10 +60,14 @@ const MAX_TURNS = 4;
 /** Runs per cron tick. Each can take a minute or two, and ticks run every minute. */
 export const RUNS_PER_TICK = 2;
 
-function describe(decision: PolicyDecision): string {
+function describe(decision: PolicyDecision, executed?: ExecuteResult): string {
 	switch (decision.outcome) {
 		case 'execute':
-			return 'Allowed by your permissions and recorded.';
+			if (executed?.status === 'blocked') {
+				return `Stopped by loop protection (${executed.error}). The founder was told. Don't retry.`;
+			}
+			if (executed?.status === 'failed') return `Allowed, but it couldn't be done (${executed.error}).`;
+			return 'Done.';
 		case 'queue':
 			return "Queued for the founder's approval. Nothing has happened yet.";
 		case 'shadow':
@@ -175,6 +181,10 @@ async function runOne(db: D1Database, client: MessagesClient, run: AgentRun, now
 	const participants = threadParticipants(messages);
 	const threadId = email.thread_id ?? email.id;
 	const latest = messages[messages.length - 1];
+	// A thread the owner took over gets no new-mail work. Asking still works: that's the owner's own instruction.
+	if (run.trigger_kind === 'mail' && (await isThreadTakenOver(db, run.mailbox_user_id, threadId))) {
+		return skip('taken_over');
+	}
 
 	const conversation: Anthropic.Beta.BetaMessageParam[] = [
 		{
@@ -338,7 +348,9 @@ async function runOne(db: D1Database, client: MessagesClient, run: AgentRun, now
 				now()
 			);
 			proposals++;
-			results.push({ type: 'tool_result', tool_use_id: call.id, content: describe(result.decision) });
+			const executed =
+				result.decision.outcome === 'execute' ? await executeAction(db, result.actionId, now()) : undefined;
+			results.push({ type: 'tool_result', tool_use_id: call.id, content: describe(result.decision, executed) });
 		}
 		// Suggesting was the whole job this turn: another call would only cost money to say so.
 		if (suggestedThisTurn === calls.length) {

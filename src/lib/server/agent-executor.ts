@@ -4,7 +4,9 @@ import { LABEL_COLORS } from '#lib/organizing/labels.ts';
 import { threadReceivedAtAddresses } from '#lib/reply-from.ts';
 import { textToHtml } from '#lib/agents/suggestions.ts';
 import { replyRecipients } from '#lib/writing/recipients.ts';
-import type { AuthorizedAddresses } from '#lib/agents/policy.ts';
+import { authorize, type AuthorizedAddresses } from '#lib/agents/policy.ts';
+import { threadParticipants } from './agent-brain.ts';
+import { getAgent, liveWorkspaceAddresses, sendableForAuthor } from './agents-store.ts';
 import { getUserById } from './auth.ts';
 import { createLabel, listLabels } from './labels-store.ts';
 import {
@@ -49,6 +51,8 @@ type ClaimedAction = {
 	id: string;
 	workspace_id: string;
 	agent_principal_id: string;
+	/** approved (a human said yes) or auto_approved (the policy did). */
+	status: string;
 	capability: string;
 	thread_id: string | null;
 	payload_json: string;
@@ -90,7 +94,7 @@ export async function executeAction(db: D1Database, actionId: string, now = new 
 
 	const action = await db
 		.prepare(
-			`SELECT x.id, x.workspace_id, x.agent_principal_id, x.capability, x.thread_id, x.payload_json,
+			`SELECT x.id, x.workspace_id, x.agent_principal_id, x.status, x.capability, x.thread_id, x.payload_json,
 			        x.authorized_json, x.mailbox_user_id, x.decided_by_principal_id,
 			        p.display_name AS agent_name, a.status AS agent_status, r.trigger_kind
 			 FROM agent_actions x
@@ -151,7 +155,7 @@ function guardMessage(agent: string, code: string): string {
 }
 
 async function carryOut(db: D1Database, action: ClaimedAction, now: Date): Promise<string | null> {
-	// Pausing takes effect for actions in flight (A10).
+	// Pausing takes effect for actions in flight (A10). recheckPolicy repeats this with the full definition.
 	if (action.agent_status === 'paused') throw new StopError('agent_paused');
 	if (!action.mailbox_user_id || !action.thread_id) throw new StopError('no_thread');
 
@@ -169,6 +173,8 @@ async function carryOut(db: D1Database, action: ClaimedAction, now: Date): Promi
 	if (!email || email.deleted_at) throw new StopError('email_gone');
 	const threadId = email.thread_id ?? email.id;
 	if (threadId !== action.thread_id) throw new StopError('email_gone');
+	const thread = await listThreadMessages(db, user.id, email);
+	await recheckPolicy(db, action, thread.length ? thread : [email]);
 
 	switch (action.capability) {
 		case 'write_note': {
@@ -219,7 +225,6 @@ async function carryOut(db: D1Database, action: ClaimedAction, now: Date): Promi
 		case 'draft_reply': {
 			const body = typeof payload.body === 'string' ? payload.body.trim() : '';
 			if (!body) throw new StopError('empty');
-			const thread = await listThreadMessages(db, user.id, email);
 			const receivedAt = threadReceivedAtAddresses(thread.length ? thread : [email]);
 			let from;
 			try {
@@ -268,7 +273,6 @@ async function carryOut(db: D1Database, action: ClaimedAction, now: Date): Promi
 			const cc = pick(payload.cc).filter((address) => !to.includes(address));
 			if (to.length === 0) throw new StopError('not_authorized');
 
-			const thread = await listThreadMessages(db, user.id, email);
 			await loopGuard(db, action, [...to, ...cc], thread.length ? thread : [email], now);
 
 			const text = `${body}\n\n${disclosureFooter(action.agent_name, user.name)}`;
@@ -295,6 +299,48 @@ async function carryOut(db: D1Database, action: ClaimedAction, now: Date): Promi
 	}
 }
 
+/**
+ * The decision was made earlier: when it was proposed, or when a human
+ * approved it. Before anything happens it is made again against the agent as
+ * it is now, so pausing it, putting it back in shadow mode, turning a
+ * capability down, or narrowing what it may send from or to stops it at once.
+ */
+async function recheckPolicy(
+	db: D1Database,
+	action: ClaimedAction,
+	thread: Parameters<typeof threadParticipants>[0]
+): Promise<void> {
+	const agent = await getAgent(db, action.agent_principal_id);
+	if (!agent) throw new StopError('agent_gone');
+	if (agent.status === 'paused') throw new StopError('agent_paused');
+	if (agent.status !== 'active') throw new StopError('agent_in_shadow');
+
+	const authorized = action.authorized_json ? (JSON.parse(action.authorized_json) as AuthorizedAddresses) : null;
+	const addresses = await liveWorkspaceAddresses(db, agent.workspaceId);
+	const decision = authorize(
+		{
+			capability: action.capability,
+			fromAddress: authorized?.from ?? undefined,
+			recipients: authorized?.recipients ?? []
+		},
+		{
+			status: agent.status,
+			runtime: agent.runtime,
+			definition: agent.version.definition,
+			threadParticipants: threadParticipants(thread),
+			founderAddresses: [...addresses.keys()],
+			sendableAddresses: await sendableForAuthor(db, agent.workspaceId, addresses, agent.version.createdByPrincipalId),
+			// The daily limit was counted when it was proposed; take-over is checked separately.
+			usedToday: 0,
+			humanApprovals: Number.MAX_SAFE_INTEGER
+		}
+	);
+	if (decision.outcome === 'reject') throw new StopError(decision.reason);
+	// What the policy allowed on its own must still be allowed on its own.
+	if (action.status === 'auto_approved' && decision.outcome !== 'execute') throw new StopError('needs_approval');
+	if (decision.outcome === 'shadow') throw new StopError('agent_in_shadow');
+}
+
 async function ownAddresses(db: D1Database, userId: string): Promise<string[]> {
 	const { results } = await db
 		.prepare(`SELECT address FROM addresses WHERE user_id = ?`)
@@ -302,6 +348,14 @@ async function ownAddresses(db: D1Database, userId: string): Promise<string[]> {
 		.all<{ address: string }>();
 	return results.map((row) => row.address);
 }
+
+/**
+ * Sent since a time, or being sent right now by another request. Every action
+ * is claimed before this check runs, so two sends racing each other each count
+ * the other, and the one that would go over the cap is stopped. Binds two times.
+ */
+const SENT_OR_SENDING = `((status = 'executed' AND executed_at > ?)
+	OR (status IN ('approved', 'auto_approved') AND exec_error IS NULL AND exec_claimed_at > ?))`;
 
 /**
  * Loop and runaway protection (A14), checked right before anything is sent:
@@ -323,11 +377,11 @@ async function loopGuard(
 		const row = await db
 			.prepare(
 				`SELECT COUNT(*) AS n FROM agent_actions
-				 WHERE workspace_id = ? AND status = 'executed' AND capability IN ('send_reply', 'send_email')
-				   AND executed_at >= ?
+				 WHERE workspace_id = ? AND capability IN ('send_reply', 'send_email') AND id <> ?
+				   AND ${SENT_OR_SENDING}
 				   AND EXISTS (SELECT 1 FROM json_each(authorized_json, '$.recipients') WHERE value = ?)`
 			)
-			.bind(action.workspace_id, dayAgo, recipient)
+			.bind(action.workspace_id, action.id, dayAgo, dayAgo, recipient)
 			.first<{ n: number }>();
 		if ((row?.n ?? 0) >= MAX_SENDS_PER_RECIPIENT_PER_DAY) throw new StopError('loop_recipient_flood', true);
 	}
@@ -346,10 +400,10 @@ async function loopGuard(
 	const sent = await db
 		.prepare(
 			`SELECT COUNT(*) AS n FROM agent_actions
-			 WHERE mailbox_user_id = ? AND thread_id = ? AND status = 'executed'
-			   AND capability IN ('send_reply', 'send_email') AND executed_at > ?`
+			 WHERE mailbox_user_id = ? AND thread_id = ? AND id <> ?
+			   AND capability IN ('send_reply', 'send_email') AND ${SENT_OR_SENDING}`
 		)
-		.bind(action.mailbox_user_id, action.thread_id, since)
+		.bind(action.mailbox_user_id, action.thread_id, action.id, since, since)
 		.first<{ n: number }>();
 	if ((sent?.n ?? 0) >= MAX_AGENT_MESSAGES_WITHOUT_HUMAN) throw new StopError('loop_thread_runaway', true);
 }

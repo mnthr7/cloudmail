@@ -53,7 +53,10 @@ const FAILURES: Record<string, string> = {
 	agent_paused: 'the agent was paused',
 	thread_taken_over: 'you took this thread over',
 	email_gone: 'the message is gone',
-	approved_before_execution: 'it was approved before actions could run'
+	approved_before_execution: 'it was approved before actions could run',
+	agent_in_shadow: 'the agent is in shadow mode now',
+	needs_approval: 'its permissions changed, so it needs your OK now',
+	agent_gone: 'the agent was removed'
 };
 
 /** One plain line for a policy refusal or a failure code. */
@@ -61,5 +64,5 @@ export function explainDetail(state: ActivityState, detail: string | null): stri
 	if (!detail) return null;
 	if (state === 'refused') return REFUSALS[detail] ?? detail;
 	if (state === 'expired') return detail === 'thread_taken_over' ? 'you took this thread over' : null;
-	return FAILURES[detail] ?? detail;
+	return FAILURES[detail] ?? REFUSALS[detail] ?? detail;
 }

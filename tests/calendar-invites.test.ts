@@ -508,4 +508,61 @@ describe('invites others send you', () => {
 		await respondToInvite(db, provider, SADA, ['sada@acme.com'], (await invitesForEmails(db, 'u1', [update]))[update].id, 'TENTATIVE', NOW);
 		expect((await occurrencesInRange(db, [calendar], Date.parse('2026-11-15T00:00Z'), Date.parse('2026-11-20T00:00Z')))[0].myStatus).toBe('tentative');
 	});
+
+	test("a guest proposes a new time: their maybe counts, and you can accept or keep the time", async () => {
+		const { sqlite, db } = setup();
+		const { provider, sent } = fakeProvider();
+		const [calendar] = await ensureCalendars(db, 'u1', { name: 'Sada', timezone: CHICAGO });
+		const id = await createEvent(db, 'u1', { calendarId: calendar.id, title: 'Test', start: '2026-11-11T08:00', end: '2026-11-11T09:00' });
+		await replaceAttendees(db, id, readGuests(['sada.k@gmail.test', 'lee@globex.com'], []));
+		const { uid } = await seriesOf(db, 'u1', id);
+		// What Gmail sends for "Propose a new time".
+		const counter = (who: string, hour: string) =>
+			[
+				'BEGIN:VCALENDAR',
+				'METHOD:COUNTER',
+				'BEGIN:VEVENT',
+				`DTSTART;TZID=America/Chicago:20261111T${hour}0000`,
+				`DTEND;TZID=America/Chicago:20261111T${String(Number(hour) + 1).padStart(2, '0')}0000`,
+				`UID:${uid}`,
+				'SEQUENCE:0',
+				'ORGANIZER;CN=Sada:mailto:sada@acme.com',
+				`ATTENDEE;PARTSTAT=TENTATIVE;CN=Guest:mailto:${who}`,
+				'SUMMARY:Test',
+				'END:VEVENT',
+				'END:VCALENDAR'
+			].join('\r\n');
+
+		const proposal = inbound(sqlite, 'sada.k@gmail.test');
+		await recordCalendarMail(db, 'u1', proposal, [counter('sada.k@gmail.test', '09')], NOW);
+		expect((await listAttendees(db, id)).find((guest) => guest.email === 'sada.k@gmail.test')?.partstat).toBe('TENTATIVE');
+		const card = (await invitesForEmails(db, 'u1', [proposal]))[proposal];
+		expect(card).toMatchObject({ method: 'COUNTER', reply: { email: 'sada.k@gmail.test' } });
+		expect(card.when).toContain('9:00 AM – 10:00 AM');
+		expect(card.proposal?.current).toContain('8:00 AM – 9:00 AM');
+
+		// Accept: the event moves and every guest gets the update.
+		const accepted = await respondToInvite(db, provider, SADA, ['sada@acme.com'], card.id, 'ACCEPTED', NOW);
+		expect(accepted.replied).toBe(true);
+		const list = await occurrencesInRange(db, [calendar], Date.parse('2026-11-11T00:00Z'), Date.parse('2026-11-12T06:00Z'));
+		expect(list.map((item) => item.startLocal)).toEqual(['2026-11-11T09:00']);
+		expect(sent.at(-1)).toMatchObject({ subject: 'Updated invitation: Test', to: ['lee@globex.com', 'sada.k@gmail.test'] });
+
+		// Another proposal, kept: only the proposer hears back, with DECLINECOUNTER.
+		const second = inbound(sqlite, 'lee@globex.com');
+		await recordCalendarMail(db, 'u1', second, [counter('lee@globex.com', '15')], NOW);
+		const kept = await respondToInvite(db, provider, SADA, ['sada@acme.com'], (await invitesForEmails(db, 'u1', [second]))[second].id, 'DECLINED', NOW);
+		expect(kept.replied).toBe(true);
+		expect(sent.at(-1)).toMatchObject({ subject: 'New time declined: Test', to: ['lee@globex.com'] });
+		expect(icsOf(sent.at(-1)!)).toContain('METHOD:DECLINECOUNTER');
+		expect((await occurrencesInRange(db, [calendar], Date.parse('2026-11-11T00:00Z'), Date.parse('2026-11-12T06:00Z')))[0].startLocal).toBe('2026-11-11T09:00');
+
+		// Someone who isn't a guest can't move your event.
+		const stranger = inbound(sqlite, 'mallory@evil.com');
+		await recordCalendarMail(db, 'u1', stranger, [counter('mallory@evil.com', '03')], NOW);
+		await expect(
+			respondToInvite(db, provider, SADA, ['sada@acme.com'], (await invitesForEmails(db, 'u1', [stranger]))[stranger].id, 'ACCEPTED', NOW)
+		).rejects.toMatchObject({ code: 'conflict' });
+	});
 });
+

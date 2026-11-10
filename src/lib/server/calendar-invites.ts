@@ -1,5 +1,13 @@
 import type { D1Database } from '@cloudflare/workers-types';
-import { calendarFile, cleanPartstat, peopleLines, replyFile, type IcsEvent, type InviteAttendee } from '#lib/calendar/ics.ts';
+import {
+	calendarFile,
+	cleanPartstat,
+	declineCounterFile,
+	peopleLines,
+	replyFile,
+	type IcsEvent,
+	type InviteAttendee
+} from '#lib/calendar/ics.ts';
 import { groupByUid, parseCalendar, type ParsedAttendee, type ParsedEvent } from '#lib/calendar/ics-parse.ts';
 import { describeRule, parseRule } from '#lib/calendar/recurrence.ts';
 import { localToUtc, parseDate, parseLocal } from '#lib/calendar/time.ts';
@@ -14,6 +22,8 @@ import {
 	editedOccurrences,
 	ensureCalendars,
 	eventsByUid,
+	seriesOf,
+	updateEvent,
 	upsertImportedEvent,
 	type EventRow
 } from './calendar-store.ts';
@@ -331,9 +341,10 @@ export async function recordCalendarMail(
 				)
 				.run();
 
-			if (method === 'REPLY') {
-				// A guest answering your invite: only their own answer counts, and only
-				// from mail that isn't failing its sender checks.
+			if (method === 'REPLY' || method === 'COUNTER') {
+				// A guest answering your invite (or proposing a new time, which also carries
+				// their answer): only their own answer counts, and only from mail that isn't
+				// failing its sender checks. A proposal waits for you on its card.
 				const answer = main.attendees.find((attendee) => attendee.email === from);
 				if (!answer || !trusted) continue;
 				for (const event of await eventsByUid(db, userId, uid)) {
@@ -424,6 +435,9 @@ export async function respondToInvite(
 			security_json: string | null;
 		}>();
 	if (!invite) throw new CalendarError('missing');
+	if (invite.method === 'COUNTER') {
+		return respondToCounter(db, provider, user, invite, response === 'ACCEPTED' ? 'accept' : 'decline', now);
+	}
 	if (invite.method !== 'REQUEST' && invite.method !== 'PUBLISH') throw new CalendarError('occurrence');
 	const stored = JSON.parse(invite.event_json) as StoredInvite;
 	if (!stored.series) throw new CalendarError('occurrence');
@@ -514,6 +528,79 @@ export async function respondToInvite(
 	return { eventId, replied };
 }
 
+/**
+ * A guest proposed a new time for your event (COUNTER). Accepting moves the
+ * event (or just that occurrence) and sends every guest the update; declining
+ * tells the guest the time stays. Only a guest of the event, in mail that
+ * passes its sender checks, can propose.
+ */
+async function respondToCounter(
+	db: D1Database,
+	provider: EmailProvider | null,
+	user: User,
+	invite: { id: string; uid: string; event_json: string; from_addr: string; security_json: string | null },
+	decision: 'accept' | 'decline',
+	now: Date
+): Promise<{ eventId: string | null; replied: boolean }> {
+	const stored = JSON.parse(invite.event_json) as StoredInvite;
+	const proposed = stored.series ?? stored.edits[0];
+	const from = invite.from_addr.trim().toLowerCase();
+	const security = parseSecurity(invite.security_json);
+	if (!proposed || !security || security.verdict === 'phishing' || security.auth.dmarc === 'fail') {
+		throw new CalendarError('conflict');
+	}
+	const event = (await eventsByUid(db, user.id, invite.uid)).find((row) => !row.organizer_email);
+	if (!event) throw new CalendarError('missing');
+	const guest = (await listAttendees(db, event.id)).find((attendee) => attendee.email === from);
+	if (!guest) throw new CalendarError('conflict');
+
+	let replied = false;
+	if (decision === 'accept') {
+		const timing = { start: proposed.startLocal, end: proposed.endLocal, timezone: proposed.timezone, allDay: proposed.allDay };
+		// A proposal for one occurrence of a repeating event moves just that one.
+		await updateEvent(
+			db,
+			user.id,
+			event.id,
+			proposed.recurrenceLocal && event.rrule ? { ...timing, occurrence: proposed.recurrenceLocal } : timing,
+			now
+		);
+		if (provider) {
+			const result = await sendInvites(db, provider, user, await seriesOf(db, user.id, event.id));
+			replied = result.sent > 0 && !result.error;
+		}
+	} else if (provider) {
+		try {
+			const sender = await resolveFromAddress(db, user, null, event.send_from);
+			const ics = declineCounterFile({
+				uid: event.uid,
+				sequence: event.sequence,
+				title: event.title,
+				organizer: { email: sender.address, name: user.name || null },
+				attendee: { email: guest.email, name: guest.name },
+				start: { allDay: event.all_day === 1, local: event.start_local, timezone: event.timezone },
+				now
+			});
+			await sendOutboundEmail(provider, {
+				from: sender,
+				senderName: user.name,
+				to: [guest.email],
+				subject: `New time declined: ${event.title}`.slice(0, 250),
+				text: `${user.name || sender.address} is keeping the current time for "${event.title}".`,
+				attachments: [{ filename: 'invite.ics', type: 'text/calendar; method=DECLINECOUNTER; charset=UTF-8', content: base64(ics) }]
+			});
+			replied = true;
+		} catch (error) {
+			console.error('Could not send the declined proposal', invite.id, error);
+		}
+	}
+	await db
+		.prepare(`UPDATE calendar_invites SET response = ?, responded_at = ? WHERE id = ?`)
+		.bind(decision === 'accept' ? 'ACCEPTED' : 'DECLINED', now.toISOString(), invite.id)
+		.run();
+	return { eventId: event.id, replied };
+}
+
 // ---------------------------------------------------------------------------
 // What the reader shows
 
@@ -534,6 +621,7 @@ export async function invitesForEmails(db: D1Database, userId: string, emailIds:
 		.all<{
 			id: string;
 			email_id: string;
+			uid: string;
 			method: string;
 			event_json: string;
 			response: string | null;
@@ -550,7 +638,25 @@ export async function invitesForEmails(db: D1Database, userId: string, emailIds:
 		const main = stored.series ?? stored.edits[0];
 		if (!main || out[row.email_id]) continue;
 		const from = row.from_addr.trim().toLowerCase();
-		const answer = row.method === 'REPLY' ? stored.attendees.find((attendee) => attendee.email === from) : undefined;
+		const answer =
+			row.method === 'REPLY' || row.method === 'COUNTER'
+				? stored.attendees.find((attendee) => attendee.email === from)
+				: undefined;
+		let proposal: InviteView['proposal'] = null;
+		if (row.method === 'COUNTER') {
+			const mine = (await eventsByUid(db, userId, row.uid)).find((event) => !event.organizer_email);
+			proposal = {
+				current: mine
+					? describeWhen({
+							allDay: mine.all_day === 1,
+							startLocal: mine.start_local,
+							endLocal: mine.end_local,
+							timezone: mine.timezone,
+							rrule: mine.rrule
+						})
+					: null
+			};
+		}
 		out[row.email_id] = {
 			id: row.id,
 			method: row.method,
@@ -560,7 +666,8 @@ export async function invitesForEmails(db: D1Database, userId: string, emailIds:
 			organizer: stored.organizer,
 			response: row.response,
 			onCalendar: row.on_calendar === 1,
-			reply: answer ? { email: answer.email, name: answer.name, partstat: answer.partstat } : null
+			reply: answer ? { email: answer.email, name: answer.name, partstat: answer.partstat } : null,
+			proposal
 		};
 	}
 	return out;

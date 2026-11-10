@@ -51,6 +51,17 @@
 			}
 			response = value;
 			onCalendar = value !== 'DECLINED';
+			if (invite.method === 'COUNTER') {
+				note =
+					value === 'ACCEPTED'
+						? body?.replied
+							? 'Moved. Everyone got the update.'
+							: 'Moved on your calendar.'
+						: body?.replied
+							? 'Kept the current time. They were told.'
+							: 'Kept the current time.';
+				return;
+			}
 			note =
 				value === 'DECLINED'
 					? body?.replied
@@ -68,9 +79,35 @@
 </script>
 
 <section class="invite" class:cancelled={invite.method === 'CANCEL'} aria-label="Calendar invite">
-	<div class="icon"><Icon name={invite.method === 'CANCEL' ? 'calendar-close-line' : 'calendar-event-line'} size={20} /></div>
+	<div class="icon">
+		<Icon
+			name={invite.method === 'CANCEL'
+				? 'calendar-close-line'
+				: invite.method === 'COUNTER'
+					? 'calendar-schedule-line'
+					: 'calendar-event-line'}
+			size={20}
+		/>
+	</div>
 	<div class="details">
-		{#if invite.method === 'REPLY' && invite.reply}
+		{#if invite.method === 'COUNTER'}
+			<p class="title">
+				{invite.reply?.name || invite.reply?.email || 'A guest'} proposed a new time for "{invite.title}"
+			</p>
+			<p class="meta"><strong>Proposed:</strong>&nbsp;{invite.when}</p>
+			{#if invite.proposal?.current}<p class="meta">Currently: {invite.proposal.current}</p>{/if}
+			{#if current}
+				<p class="meta">{current === 'ACCEPTED' ? 'You moved it to the new time.' : 'You kept the current time.'}</p>
+			{:else if invite.proposal?.current}
+				<div class="choices">
+					<button type="button" class="choice" disabled={busy} onclick={() => answer('ACCEPTED')}>Accept new time</button>
+					<button type="button" class="choice" disabled={busy} onclick={() => answer('DECLINED')}>Keep current time</button>
+				</div>
+			{:else}
+				<p class="meta">That event isn't on your calendar anymore.</p>
+			{/if}
+			{#if note}<p class="meta" role="status">{note}</p>{/if}
+		{:else if invite.method === 'REPLY' && invite.reply}
 			<p class="title">
 				{invite.reply.name || invite.reply.email}
 				{REPLIES[invite.reply.partstat] ?? 'answered'}

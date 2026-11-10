@@ -28,6 +28,7 @@ import {
 	type EventRow
 } from './calendar-store.ts';
 import type { EmailProvider } from './email-provider.ts';
+import { setThreadColumns } from './organizing-store.ts';
 import { resolveFromAddress } from './outbox.ts';
 import { sendOutboundEmail } from './send-mail.ts';
 
@@ -309,9 +310,11 @@ export async function recordCalendarMail(
 	const zone = (calendars.find((calendar) => calendar.isDefault) ?? calendars[0])?.timezone ?? 'UTC';
 	const human = await humanPrincipalForUser(db, userId);
 
+	let needsAnswer = false;
 	for (const file of files.slice(0, 5)) {
 		const parsed = parseCalendar(file, zone);
 		const method = parsed.method ?? 'PUBLISH';
+		if ((method === 'REQUEST' || method === 'COUNTER') && parsed.events.length) needsAnswer = true;
 		for (const [uid, group] of groupByUid(parsed.events)) {
 			const main = group.series ?? group.edits[0];
 			if (!main) continue;
@@ -401,6 +404,11 @@ export async function recordCalendarMail(
 				}
 			}
 		}
+	}
+
+	// An invite or a proposed new time waits on you: keep it out of Updates, so it's seen.
+	if (needsAnswer && trusted) {
+		await setThreadColumns(db, userId, [emailId], { category: 'primary' });
 	}
 }
 

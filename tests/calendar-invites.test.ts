@@ -329,6 +329,7 @@ describe('sending invites for your events', () => {
 describe('invites others send you', () => {
 	function inbound(sqlite: Database, from: string, security = { spf: 'pass', dkim: 'pass', dmarc: 'pass' }) {
 		const id = addMail(sqlite, { from, to: 'sada@acme.com', subject: 'Invitation: Product sync' });
+		sqlite.run(`UPDATE emails SET category = 'updates' WHERE id = ?`, [id]);
 		sqlite.run(`UPDATE emails SET security_json = ? WHERE id = ?`, [
 			JSON.stringify({ auth: security, verdict: null, reasons: [] }),
 			id
@@ -343,6 +344,8 @@ describe('invites others send you', () => {
 		const email = inbound(sqlite, 'pat@customer.com');
 		await recordCalendarMail(db, 'u1', email, [GMAIL_INVITE], NOW);
 
+		// Something to answer goes to Primary, whatever the category guess was.
+		expect((sqlite.query(`SELECT category FROM emails WHERE id = ?`).get(email) as { category: string }).category).toBe('primary');
 		const cards = await invitesForEmails(db, 'u1', [email]);
 		expect(cards[email]).toMatchObject({ method: 'REQUEST', title: 'Product sync, weekly', response: null, onCalendar: false });
 		expect(cards[email].when).toContain('Wednesday, November 18, 2026, 2:00 PM – 2:30 PM (America/New York)');

@@ -45,6 +45,7 @@ export class CalendarError extends Error {
 			| 'range'
 			| 'guests'
 			| 'from'
+			| 'conflict'
 	) {
 		super(code);
 		this.name = 'CalendarError';
@@ -799,9 +800,14 @@ export async function upsertImportedEvent(
 	if (!timing) return null;
 	const at = now.toISOString();
 	const existing = await db
-		.prepare(`SELECT id FROM calendar_events WHERE calendar_id = ? AND uid = ? AND parent_id IS NULL`)
+		.prepare(`SELECT id, organizer_email FROM calendar_events WHERE calendar_id = ? AND uid = ? AND parent_id IS NULL`)
 		.bind(calendar.id, input.series.uid)
-		.first<{ id: string }>();
+		.first<{ id: string; organizer_email: string | null }>();
+	// An outside event may only replace a copy of the same organizer's event: never one
+	// of your own (no organizer), and never someone else's with a colliding UID.
+	if (existing && (!existing.organizer_email || existing.organizer_email !== (input.organizer?.email ?? null))) {
+		throw new CalendarError('conflict');
+	}
 	const id = existing?.id ?? crypto.randomUUID();
 	const values = [
 		input.series.sequence,

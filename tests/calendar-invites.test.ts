@@ -439,4 +439,49 @@ describe('invites others send you', () => {
 			describeWhen({ allDay: false, startLocal: '2026-11-10T09:00', endLocal: '2026-11-10T09:30', timezone: CHICAGO, rrule: 'FREQ=WEEKLY;BYDAY=TU' })
 		).toBe('Tuesday, November 10, 2026, 9:00 AM – 9:30 AM (America/Chicago). Every week on Tue');
 	});
+
+	test("an outsider's invite can't take over one of your own events, and odd RSVP values are cleaned", async () => {
+		const { sqlite, db } = setup();
+		const { provider } = fakeProvider();
+		const [calendar] = await ensureCalendars(db, 'u1', { name: 'Sada', timezone: CHICAGO });
+		const id = await createEvent(db, 'u1', { calendarId: calendar.id, title: 'Board meeting', start: '2026-11-18T10:00', end: '2026-11-18T11:00' });
+		const { uid } = await seriesOf(db, 'u1', id);
+		// The attacker reuses your event's UID.
+		const hijack = GMAIL_INVITE.replace('UID:abc123@google.com', `UID:${uid}`).replace('Product sync\\, weekly', 'Moved!');
+		const email = inbound(sqlite, 'pat@customer.com');
+		await recordCalendarMail(db, 'u1', email, [hijack], NOW);
+		const card = (await invitesForEmails(db, 'u1', [email]))[email];
+		await expect(respondToInvite(db, provider, SADA, ['sada@acme.com'], card.id, 'ACCEPTED', NOW)).rejects.toMatchObject({ code: 'conflict' });
+		const list = await occurrencesInRange(db, [calendar], Date.parse('2026-11-15T00:00Z'), Date.parse('2026-11-25T00:00Z'));
+		expect(list.map((item) => [item.title, item.organizer])).toEqual([['Board meeting', null]]);
+
+		// A guest's RSVP with a made-up status is stored as no answer, and failing DMARC doesn't count at all.
+		await replaceAttendees(db, id, readGuests(['pat@customer.com', 'lee@globex.com'], []));
+		const weird = replyFile({
+			uid,
+			sequence: 0,
+			title: 'x',
+			organizer: { email: 'sada@acme.com', name: null },
+			attendee: { email: 'pat@customer.com', name: null },
+			partstat: 'ACCEPTED',
+			start: { allDay: false, local: '2026-11-18T10:00', timezone: CHICAGO },
+			now: NOW
+		}).replace('PARTSTAT=ACCEPTED', 'PARTSTAT=ACCEPTED;X-EVIL=1');
+		await recordCalendarMail(db, 'u1', inbound(sqlite, 'pat@customer.com'), [weird.replace('PARTSTAT=ACCEPTED;X-EVIL=1', 'PARTSTAT="ACCEPTED:mailto:x"')], NOW);
+		const spoofed = replyFile({
+			uid,
+			sequence: 0,
+			title: 'x',
+			organizer: { email: 'sada@acme.com', name: null },
+			attendee: { email: 'lee@globex.com', name: null },
+			partstat: 'DECLINED',
+			start: { allDay: false, local: '2026-11-18T10:00', timezone: CHICAGO },
+			now: NOW
+		});
+		await recordCalendarMail(db, 'u1', inbound(sqlite, 'lee@globex.com', { spf: 'fail', dkim: 'none', dmarc: 'fail' }), [spoofed], NOW);
+		expect((await listAttendees(db, id)).map((guest) => [guest.email, guest.partstat])).toEqual([
+			['lee@globex.com', 'NEEDS-ACTION'],
+			['pat@customer.com', 'NEEDS-ACTION']
+		]);
+	});
 });

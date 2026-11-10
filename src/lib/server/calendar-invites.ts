@@ -1,5 +1,5 @@
 import type { D1Database } from '@cloudflare/workers-types';
-import { calendarFile, peopleLines, replyFile, type IcsEvent, type InviteAttendee } from '#lib/calendar/ics.ts';
+import { calendarFile, cleanPartstat, peopleLines, replyFile, type IcsEvent, type InviteAttendee } from '#lib/calendar/ics.ts';
 import { groupByUid, parseCalendar, type ParsedAttendee, type ParsedEvent } from '#lib/calendar/ics-parse.ts';
 import { describeRule, parseRule } from '#lib/calendar/recurrence.ts';
 import { localToUtc, parseDate, parseLocal } from '#lib/calendar/time.ts';
@@ -293,7 +293,8 @@ export async function recordCalendarMail(
 	const from = email.from_addr.trim().toLowerCase();
 	const security = parseSecurity(email.security_json);
 	// Mail that may not be from who it says can show a card, but never changes your calendar.
-	const trusted = security?.verdict !== 'phishing' && security?.auth.dmarc !== 'fail';
+	// Unchecked mail (no stored result) isn't trusted either.
+	const trusted = !!security && security.verdict !== 'phishing' && security.auth.dmarc !== 'fail';
 	const calendars = await ensureCalendars(db, userId, { name: 'Calendar', timezone: 'UTC' });
 	const zone = (calendars.find((calendar) => calendar.isDefault) ?? calendars[0])?.timezone ?? 'UTC';
 	const human = await humanPrincipalForUser(db, userId);
@@ -331,16 +332,17 @@ export async function recordCalendarMail(
 				.run();
 
 			if (method === 'REPLY') {
-				// A guest answering your invite: only their own answer counts.
+				// A guest answering your invite: only their own answer counts, and only
+				// from mail that isn't failing its sender checks.
 				const answer = main.attendees.find((attendee) => attendee.email === from);
-				if (!answer) continue;
+				if (!answer || !trusted) continue;
 				for (const event of await eventsByUid(db, userId, uid)) {
 					if (event.organizer_email) continue;
 					await db
 						.prepare(
 							`UPDATE calendar_attendees SET partstat = ?, responded_at = ? WHERE event_id = ? AND email = ?`
 						)
-						.bind(answer.partstat.slice(0, 20), now.toISOString(), event.id, from)
+						.bind(cleanPartstat(answer.partstat), now.toISOString(), event.id, from)
 						.run();
 				}
 				continue;

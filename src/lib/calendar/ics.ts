@@ -119,6 +119,19 @@ export function calendarFile(input: {
 }
 
 export type InvitePerson = { email: string; name: string | null };
+
+/** The answers a guest can give. Anything else is never written into a file. */
+export const PARTSTATS = ['NEEDS-ACTION', 'ACCEPTED', 'TENTATIVE', 'DECLINED', 'DELEGATED'] as const;
+
+export function cleanPartstat(value: unknown): (typeof PARTSTATS)[number] {
+	const upper = typeof value === 'string' ? value.trim().toUpperCase() : '';
+	return (PARTSTATS as readonly string[]).includes(upper) ? (upper as (typeof PARTSTATS)[number]) : 'NEEDS-ACTION';
+}
+
+/** An address safe to put after "mailto:" in a file: one bare address, nothing that ends the line or a parameter. */
+function cleanAddress(value: string): string {
+	return /^[^\s@:;,"<>]+@[^\s@:;,"<>]+$/.test(value) ? value : 'invalid@invalid';
+}
 export type InviteAttendee = InvitePerson & { partstat: string };
 
 function cn(name: string | null): string {
@@ -129,10 +142,10 @@ function cn(name: string | null): string {
 /** ORGANIZER and ATTENDEE lines for an invite or an update. */
 export function peopleLines(organizer: InvitePerson, attendees: InviteAttendee[]): string[] {
 	return [
-		`ORGANIZER${cn(organizer.name)}:mailto:${organizer.email}`,
+		`ORGANIZER${cn(organizer.name)}:mailto:${cleanAddress(organizer.email)}`,
 		...attendees.map(
 			(attendee) =>
-				`ATTENDEE${cn(attendee.name)};ROLE=REQ-PARTICIPANT;PARTSTAT=${attendee.partstat.toUpperCase()};RSVP=TRUE:mailto:${attendee.email}`
+				`ATTENDEE${cn(attendee.name)};ROLE=REQ-PARTICIPANT;PARTSTAT=${cleanPartstat(attendee.partstat)};RSVP=TRUE:mailto:${cleanAddress(attendee.email)}`
 		)
 	];
 }
@@ -166,8 +179,8 @@ export function replyFile(input: {
 		`DTSTAMP:${stamp}`,
 		start,
 		`SUMMARY:${escapeText(input.title)}`,
-		`ORGANIZER${cn(input.organizer.name)}:mailto:${input.organizer.email}`,
-		`ATTENDEE${cn(input.attendee.name)};PARTSTAT=${input.partstat}:mailto:${input.attendee.email}`,
+		`ORGANIZER${cn(input.organizer.name)}:mailto:${cleanAddress(input.organizer.email)}`,
+		`ATTENDEE${cn(input.attendee.name)};PARTSTAT=${cleanPartstat(input.partstat)}:mailto:${cleanAddress(input.attendee.email)}`,
 		'END:VEVENT',
 		'END:VCALENDAR'
 	];

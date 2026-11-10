@@ -43,7 +43,10 @@
 			});
 			const body = await res.json().catch(() => null);
 			if (!res.ok) {
-				note = "Couldn't save your answer. Try again.";
+				note =
+					body?.error === 'conflict'
+						? "This invite uses the same ID as another event on your calendar, so it wasn't added."
+						: "Couldn't save your answer. Try again.";
 				return;
 			}
 			response = value;

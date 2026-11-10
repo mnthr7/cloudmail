@@ -1,3 +1,4 @@
+import { cleanPartstat } from './ics';
 import { addDays, formatDate, formatLocal, isTimeZone, parseDate, utcToLocal } from './time';
 
 /**
@@ -272,7 +273,7 @@ export function parseCalendar(input: string, fallbackZone = 'UTC'): ParsedCalend
 		const attendees: ParsedAttendee[] = [];
 		for (const prop of props.filter((item) => item.name === 'ATTENDEE').slice(0, 200)) {
 			const who = person(prop);
-			if (who) attendees.push({ ...who, partstat: (prop.params.PARTSTAT ?? 'NEEDS-ACTION').toUpperCase(), role: prop.params.ROLE ?? null });
+			if (who) attendees.push({ ...who, partstat: cleanPartstat(prop.params.PARTSTAT), role: prop.params.ROLE?.slice(0, 40) ?? null });
 		}
 		const sequence = Number(props.find((prop) => prop.name === 'SEQUENCE')?.value ?? 0);
 		const rrule = props.find((prop) => prop.name === 'RRULE')?.value.trim().toUpperCase() ?? null;

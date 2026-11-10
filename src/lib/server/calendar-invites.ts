@@ -409,9 +409,20 @@ export async function respondToInvite(
 	now = new Date()
 ): Promise<{ eventId: string | null; replied: boolean }> {
 	const invite = await db
-		.prepare(`SELECT * FROM calendar_invites WHERE id = ? AND user_id = ?`)
+		.prepare(
+			`SELECT i.*, e.from_addr, e.security_json FROM calendar_invites i JOIN emails e ON e.id = i.email_id
+			 WHERE i.id = ? AND i.user_id = ?`
+		)
 		.bind(inviteId, user.id)
-		.first<{ id: string; email_id: string; uid: string; method: string; event_json: string }>();
+		.first<{
+			id: string;
+			email_id: string;
+			uid: string;
+			method: string;
+			event_json: string;
+			from_addr: string;
+			security_json: string | null;
+		}>();
 	if (!invite) throw new CalendarError('missing');
 	if (invite.method !== 'REQUEST' && invite.method !== 'PUBLISH') throw new CalendarError('occurrence');
 	const stored = JSON.parse(invite.event_json) as StoredInvite;
@@ -424,6 +435,19 @@ export async function respondToInvite(
 			if (event.organizer_email) await db.prepare(`DELETE FROM calendar_events WHERE id = ?`).bind(event.id).run();
 		}
 	} else {
+		// The organizer named in a file can be made up. Replacing an event already on your
+		// calendar takes mail that really comes from that organizer.
+		const existing = await eventsByUid(db, user.id, invite.uid);
+		if (existing.length) {
+			const security = parseSecurity(invite.security_json);
+			const verified =
+				!!security &&
+				security.verdict !== 'phishing' &&
+				security.auth.dmarc !== 'fail' &&
+				!!stored.organizer &&
+				invite.from_addr.trim().toLowerCase() === stored.organizer.email;
+			if (!verified) throw new CalendarError('conflict');
+		}
 		const calendars = await ensureCalendars(db, user.id, { name: user.name || 'Calendar', timezone: stored.series.timezone });
 		const calendar = calendars.find((item) => item.isDefault) ?? calendars[0];
 		eventId = await upsertImportedEvent(

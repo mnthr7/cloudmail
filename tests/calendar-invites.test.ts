@@ -484,4 +484,28 @@ describe('invites others send you', () => {
 			['pat@customer.com', 'NEEDS-ACTION']
 		]);
 	});
+
+	test("someone pretending to be the organizer can't replace a meeting you already accepted", async () => {
+		const { sqlite, db } = setup();
+		const { provider } = fakeProvider();
+		const [calendar] = await ensureCalendars(db, 'u1', { name: 'Sada', timezone: CHICAGO });
+		const real = inbound(sqlite, 'pat@customer.com');
+		await recordCalendarMail(db, 'u1', real, [GMAIL_INVITE], NOW);
+		await respondToInvite(db, provider, SADA, ['sada@acme.com'], (await invitesForEmails(db, 'u1', [real]))[real].id, 'ACCEPTED', NOW);
+
+		// Same UID and the file says Pat organizes it, but the mail is from someone else.
+		const fake = inbound(sqlite, 'mallory@evil.com');
+		await recordCalendarMail(db, 'u1', fake, [GMAIL_INVITE.replace(/T140000/g, 'T030000').replace('SEQUENCE:0', 'SEQUENCE:9')], NOW);
+		await expect(
+			respondToInvite(db, provider, SADA, ['sada@acme.com'], (await invitesForEmails(db, 'u1', [fake]))[fake].id, 'ACCEPTED', NOW)
+		).rejects.toMatchObject({ code: 'conflict' });
+		const list = await occurrencesInRange(db, [calendar], Date.parse('2026-11-15T00:00Z'), Date.parse('2026-11-20T00:00Z'));
+		expect(list.map((item) => item.startLocal)).toEqual(['2026-11-18T14:00']);
+
+		// The real organizer's own update still can be accepted again.
+		const update = inbound(sqlite, 'pat@customer.com');
+		await recordCalendarMail(db, 'u1', update, [GMAIL_INVITE.replace('SEQUENCE:0', 'SEQUENCE:1')], NOW);
+		await respondToInvite(db, provider, SADA, ['sada@acme.com'], (await invitesForEmails(db, 'u1', [update]))[update].id, 'TENTATIVE', NOW);
+		expect((await occurrencesInRange(db, [calendar], Date.parse('2026-11-15T00:00Z'), Date.parse('2026-11-20T00:00Z')))[0].myStatus).toBe('tentative');
+	});
 });

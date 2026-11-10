@@ -1,6 +1,10 @@
 import type { D1Database } from '@cloudflare/workers-types';
 import { looksLikeAutoReply } from '#lib/agents/auto-reply.ts';
 import { parseDefinition } from '#lib/agents/definition.ts';
+import { parseSecurity } from '#lib/security/phishing.ts';
+import { splitQuotedText } from '#lib/utils/quotes.ts';
+import { stripHtml } from './html.ts';
+import type { AgentDefinition } from '#lib/agents/definition.ts';
 import type { AgentStatus } from '#lib/agents/policy.ts';
 import { parseEmailAddresses } from '#lib/email-address.ts';
 import type { CategoryHeaders } from '#lib/organizing/categories.ts';
@@ -68,9 +72,21 @@ export async function enqueueMailRuns(
 	if (isAutomatedMail(headers)) return 0;
 
 	const email = await db
-		.prepare(`SELECT to_addr, cc_addr, direction, subject FROM emails WHERE id = ? AND user_id = ?`)
+		.prepare(
+			`SELECT from_addr, to_addr, cc_addr, direction, subject, body_text, body_html, security_json
+			 FROM emails WHERE id = ? AND user_id = ?`
+		)
 		.bind(emailId, userId)
-		.first<{ to_addr: string; cc_addr: string | null; direction: string; subject: string | null }>();
+		.first<{
+			from_addr: string;
+			to_addr: string;
+			cc_addr: string | null;
+			direction: string;
+			subject: string | null;
+			body_text: string | null;
+			body_html: string | null;
+			security_json: string | null;
+		}>();
 	if (!email || email.direction !== 'inbound') return 0;
 	// Out-of-office notes and bounces don't always set the headers (A14).
 	if (looksLikeAutoReply(email.subject)) return 0;
@@ -97,18 +113,44 @@ export async function enqueueMailRuns(
 
 	const workspaceAddresses = await liveWorkspaceAddresses(db, human.workspace_id);
 	for (const row of results) {
-		let watch: string[];
+		let definition: AgentDefinition;
 		try {
-			watch = parseDefinition(JSON.parse(row.definition_json)).triggers.watch;
+			definition = parseDefinition(JSON.parse(row.definition_json));
 		} catch {
 			continue;
 		}
+		const watch = definition.triggers.watch;
 		const matched = watch.filter((address) => recipients.has(address) && workspaceAddresses.get(address) === userId);
 		if (matched.length === 0) continue;
 		const sendable = new Set(
 			await sendableForAuthor(db, human.workspace_id, workspaceAddresses, row.created_by_principal_id)
 		);
 		if (!matched.some((address) => sendable.has(address))) continue;
+
+		if (definition.triggers.teamOnly) {
+			const ask = await teamRequest(db, human.workspace_id, workspaceAddresses, email, matched, row.id);
+			if (!ask) continue;
+			const result = await db
+				.prepare(
+					`INSERT OR IGNORE INTO agent_runs
+					 (id, workspace_id, agent_principal_id, mailbox_user_id, email_id, trigger_kind, trigger_ref,
+					  request, requested_by_principal_id, created_at)
+					 VALUES (?, ?, ?, ?, ?, 'ask', ?, ?, ?, ?)`
+				)
+				.bind(
+					crypto.randomUUID(),
+					human.workspace_id,
+					row.id,
+					userId,
+					emailId,
+					emailId,
+					ask.request,
+					ask.requestedBy,
+					now.toISOString()
+				)
+				.run();
+			return result.meta.changes ?? 0;
+		}
 
 		const result = await db
 			.prepare(
@@ -540,4 +582,94 @@ export async function inboundVolume(
 		})
 	);
 	return counts;
+}
+
+/** Mail that reached an agent that only works for the team (Sam). */
+type TeamMail = {
+	from_addr: string;
+	to_addr: string;
+	cc_addr: string | null;
+	subject: string | null;
+	body_text: string | null;
+	body_html: string | null;
+	security_json: string | null;
+};
+
+/**
+ * Whether this mail is a teammate handing an agent work, and if so what they
+ * asked. The sender must be a human's address in the workspace that no agent
+ * sends from (so one agent can't instruct another), the message must be
+ * signed by its domain (DKIM or DMARC pass, so it isn't a forgery), and the
+ * teammate must be allowed to direct this agent. What they wrote, above any
+ * forwarded or quoted part, is the request; the rest of the thread is data.
+ */
+async function teamRequest(
+	db: D1Database,
+	workspaceId: string,
+	workspaceAddresses: Map<string, string>,
+	email: TeamMail,
+	agentAddresses: string[],
+	agentId: string
+): Promise<{ request: string; requestedBy: string } | null> {
+	const from = email.from_addr.trim().toLowerCase();
+	const senderUserId = workspaceAddresses.get(from);
+	if (!senderUserId) return null;
+
+	const security = parseSecurity(email.security_json);
+	if (security?.auth.dkim !== 'pass' && security?.auth.dmarc !== 'pass') return null;
+
+	const agents = await db
+		.prepare(
+			`SELECT v.definition_json FROM principals p
+			 JOIN agents a ON a.principal_id = p.id
+			 JOIN agent_versions v ON v.id = a.current_version_id
+			 WHERE p.workspace_id = ? AND p.kind = 'agent'`
+		)
+		.bind(workspaceId)
+		.all<{ definition_json: string }>();
+	for (const row of agents.results) {
+		try {
+			const other = parseDefinition(JSON.parse(row.definition_json));
+			if ([...other.scope.sendAs, ...other.triggers.watch].includes(from)) return null;
+		} catch {
+			// An unreadable definition can't send.
+		}
+	}
+
+	const [agent, sender] = await Promise.all([getAgent(db, agentId), humanPrincipalForUser(db, senderUserId)]);
+	if (!agent || !canManage(agent, sender)) return null;
+
+	const text = (email.body_text?.trim() || (email.body_html ? stripHtml(email.body_html) : '')).trim();
+	const written = splitQuotedText(text).body.split(/^-{2,}\s*Forwarded message\s*-{2,}/im)[0]?.trim() ?? '';
+	const subject = email.subject?.trim() ?? '';
+	const to = parseEmailAddresses([email.to_addr]).map((address) => address.toLowerCase());
+	const direct = agentAddresses.some((address) => to.includes(address));
+	const request = (
+		direct
+			? `${written || '(no message)'}${subject ? `\n\n(Subject: ${subject})` : ''}`
+			: `I copied you on this message I sent. Help with whatever it needs from you.\n\n${written}`
+	).slice(0, MAX_REQUEST_LENGTH);
+	return { request, requestedBy: sender.id };
+}
+
+export type TaskPattern = { agentId: string; task: string; count: number };
+
+/**
+ * Kinds of task a generalist did at least `min` times since `since`, most
+ * frequent first: each is a candidate for its own specialist (A15).
+ */
+export async function taskPatterns(db: D1Database, userId: string, since: Date, min: number): Promise<TaskPattern[]> {
+	const human = await humanPrincipalForUser(db, userId);
+	const { results } = await db
+		.prepare(
+			`SELECT r.agent_principal_id AS agentId, r.task_label AS task, COUNT(*) AS count
+			 FROM agent_runs r JOIN principals p ON p.id = r.agent_principal_id
+			 WHERE p.workspace_id = ? AND r.task_label IS NOT NULL AND r.created_at >= ?
+			 GROUP BY r.agent_principal_id, r.task_label
+			 HAVING COUNT(*) >= ?
+			 ORDER BY count DESC`
+		)
+		.bind(human.workspace_id, since.toISOString(), min)
+		.all<TaskPattern>();
+	return results;
 }

@@ -29,7 +29,15 @@ export type ThreadActivityItem =
 			detail: string | null;
 			at: string;
 	  }
-	| { kind: 'note' | 'alert'; id: string; agentName: string | null; body: string; at: string }
+	| {
+			kind: 'note' | 'alert';
+			id: string;
+			/** Who wrote it: an agent, or a person on the team. */
+			agentName: string | null;
+			byHuman: boolean;
+			body: string;
+			at: string;
+	  }
 	| { kind: 'takeover'; by: string | null; at: string };
 
 export type ThreadActivity = { items: ThreadActivityItem[]; takenOver: boolean };

@@ -108,7 +108,10 @@ export function authorize(proposal: Proposal, context: PolicyContext): PolicyDec
 		return { outcome: 'shadow', reason: 'shadow_mode', addresses };
 	}
 
-	if (setting.level === 'approve') return { outcome: 'queue', reason: 'needs_approval', addresses };
+	// What an agent remembers shapes everything it does later, so a human always says yes first (A9, A11).
+	if (setting.level === 'approve' || capability === 'propose_memory') {
+		return { outcome: 'queue', reason: 'needs_approval', addresses };
+	}
 
 	if (
 		context.runtime === 'external' &&

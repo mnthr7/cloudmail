@@ -9,14 +9,65 @@
 	let {
 		activity,
 		emailId,
-		hasAgents = false
+		hasAgents = false,
+		agentNames = []
 	}: {
 		activity: ThreadActivity | null;
-		/** Any message in the thread, for the take-over route. */
+		/** Any message in the thread, for the take-over and note routes. */
 		emailId: string | null;
 		/** Agents exist in the workspace, so taking over means something. */
 		hasAgents?: boolean;
+		/** Agents this user can @mention, for the hint. */
+		agentNames?: string[];
 	} = $props();
+
+	let noteText = $state('');
+	let noteBusy = $state(false);
+	let noteMessage = $state('');
+
+	const MENTION_ERRORS: Record<string, string> = {
+		not_allowed: "isn't yours to direct",
+		full: 'already remembers 50 facts; remove some on the Staff page',
+		fact: 'can only remember a fact up to 300 characters',
+		paused: 'is paused',
+		request: 'needs a shorter note'
+	};
+
+	async function saveNote(event: SubmitEvent) {
+		event.preventDefault();
+		if (!emailId || noteBusy || !noteText.trim()) return;
+		noteBusy = true;
+		noteMessage = '';
+		error = '';
+		try {
+			const res = await fetch(`/api/mail/${emailId}/notes`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ body: noteText })
+			});
+			const body = await res.json().catch(() => null);
+			if (!res.ok || !body?.activity) {
+				error = 'Could not save the note.';
+				return;
+			}
+			override = body.activity;
+			noteText = '';
+			const mentions = (body.mentions ?? []) as Array<{ agent: string; outcome: string; error?: string }>;
+			noteMessage = mentions
+				.map((mention) =>
+					mention.outcome === 'asked'
+						? `${mention.agent} is on it.`
+						: mention.outcome === 'remembered'
+							? `${mention.agent} will remember that.`
+							: `${mention.agent} ${MENTION_ERRORS[mention.error ?? ''] ?? "couldn't take it"}.`
+				)
+				.join(' ');
+		} catch {
+			error = 'Network error';
+		} finally {
+			noteBusy = false;
+		}
+	}
 
 	let override = $state<ThreadActivity | null>(null);
 	let busy = $state(false);
@@ -141,10 +192,13 @@
 						<time datetime={item.at}>{when(item.at)}</time>
 					</li>
 				{:else if item.kind === 'note' || item.kind === 'alert'}
-					<li class="item note" class:alert={item.kind === 'alert'}>
+					<li class="item note" class:alert={item.kind === 'alert'} class:mine={item.byHuman}>
 						<Icon name={item.kind === 'alert' ? 'error-warning-line' : 'sticky-note-line'} size={15} />
 						<div class="body">
-							<p class="line"><strong>{item.agentName ?? 'Agent'}</strong> <span>{item.kind === 'alert' ? 'stopped itself' : 'left a note'}</span></p>
+							<p class="line">
+								<strong>{item.agentName ?? (item.byHuman ? 'You' : 'Agent')}</strong>
+								<span>{item.kind === 'alert' ? 'stopped itself' : item.byHuman ? 'wrote a note' : 'left a note'}</span>
+							</p>
 							<p class="note-text">{item.body}</p>
 						</div>
 						<time datetime={item.at}>{when(item.at)}</time>
@@ -160,6 +214,22 @@
 				{/if}
 			{/each}
 		</ol>
+
+		{#if emailId}
+			<form class="note-form" onsubmit={saveNote}>
+				<textarea
+					bind:value={noteText}
+					rows="2"
+					maxlength="2000"
+					placeholder={agentNames.length
+						? `Private note. "@${agentNames[0]} …" hands this over; "@${agentNames[0]} remember: …" saves a fact.`
+						: 'Private note, only you see it.'}
+					aria-label="Private note"
+				></textarea>
+				<button type="submit" class="btn-ghost" disabled={noteBusy || !noteText.trim()}>Save note</button>
+			</form>
+			{#if noteMessage}<p class="hint" role="status">{noteMessage}</p>{/if}
+		{/if}
 	</section>
 {/if}
 
@@ -272,6 +342,30 @@
 
 	.alert .note-text {
 		box-shadow: inset 2px 0 0 var(--color-danger);
+	}
+
+	.mine .note-text {
+		background: transparent;
+		box-shadow: inset 0 0 0 1px var(--color-line);
+	}
+
+	.note-form {
+		display: flex;
+		gap: 0.5rem;
+		align-items: flex-end;
+		margin-top: 0.75rem;
+	}
+
+	.note-form textarea {
+		flex: 1;
+		min-width: 0;
+		padding: 0.5rem 0.625rem;
+		border-radius: 0.5rem;
+		font: inherit;
+		color: var(--color-text);
+		background: transparent;
+		box-shadow: inset 0 0 0 1px var(--color-line);
+		resize: vertical;
 	}
 
 	time {

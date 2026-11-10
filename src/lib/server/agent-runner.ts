@@ -8,8 +8,10 @@ import {
 	costMicros,
 	systemPrompt,
 	threadParticipants,
+	LOG_TASK_TOOL,
 	SUGGEST_TOOL,
 	toolsFor,
+	toTaskLabel,
 	toProposal,
 	toSuggestion,
 	verifiedContext,
@@ -31,6 +33,7 @@ import { getEmailForUser, listThreadMessages } from './mail-store.ts';
 import { saveSuggestions } from './reply-suggestions-store.ts';
 import { executeAction, type ExecuteResult } from './agent-executor.ts';
 import { isThreadTakenOver } from './thread-activity-store.ts';
+import { listMemory } from './agent-memory-store.ts';
 
 /**
  * Carries out agent runs (docs/specs/agent-staff-platform.md, §8.2): loads the
@@ -186,6 +189,11 @@ async function runOne(db: D1Database, client: MessagesClient, run: AgentRun, now
 		return skip('taken_over');
 	}
 
+	const [memory, recentTasks] = await Promise.all([
+		listMemory(db, agent.id),
+		definition.kind === 'generalist' ? recentTaskLabels(db, agent.id) : Promise.resolve([])
+	]);
+
 	const conversation: Anthropic.Beta.BetaMessageParam[] = [
 		{
 			role: 'user',
@@ -195,7 +203,9 @@ async function runOne(db: D1Database, client: MessagesClient, run: AgentRun, now
 				trigger,
 				messages,
 				triggerEmailId: run.email_id,
-				founderAddresses
+				founderAddresses,
+				memory: memory.map((item) => item.fact),
+				recentTasks
 			})
 		}
 	];
@@ -271,7 +281,21 @@ async function runOne(db: D1Database, client: MessagesClient, run: AgentRun, now
 		conversation.push({ role: 'assistant', content: response.content });
 		const results: Anthropic.Beta.BetaToolResultBlockParam[] = [];
 		let suggestedThisTurn = 0;
+		let loggedThisTurn = 0;
 		for (const call of calls) {
+			if (call.name === LOG_TASK_TOOL.name && tools.includes(LOG_TASK_TOOL)) {
+				const label = toTaskLabel(call.input);
+				if (label) {
+					await db.prepare(`UPDATE agent_runs SET task_label = ? WHERE id = ?`).bind(label, run.id).run();
+					loggedThisTurn++;
+				}
+				results.push(
+					label
+						? { type: 'tool_result', tool_use_id: call.id, content: 'Logged.' }
+						: { type: 'tool_result', tool_use_id: call.id, is_error: true, content: 'Give a 2–6 word label.' }
+				);
+				continue;
+			}
 			if (call.name === SUGGEST_TOOL.name && tools.includes(SUGGEST_TOOL)) {
 				const suggestion = toSuggestion(call.input);
 				if (!suggestion) {
@@ -352,9 +376,9 @@ async function runOne(db: D1Database, client: MessagesClient, run: AgentRun, now
 				result.decision.outcome === 'execute' ? await executeAction(db, result.actionId, now()) : undefined;
 			results.push({ type: 'tool_result', tool_use_id: call.id, content: describe(result.decision, executed) });
 		}
-		// Suggesting was the whole job this turn: another call would only cost money to say so.
-		if (suggestedThisTurn === calls.length) {
-			outcome = 'suggested';
+		// Suggesting or logging was all that was left: another call would only cost money to say so.
+		if (suggestedThisTurn + loggedThisTurn === calls.length) {
+			outcome = proposals ? 'proposed' : suggestedThisTurn || suggested ? 'suggested' : 'logged';
 			break;
 		}
 		conversation.push({ role: 'user', content: results });
@@ -367,4 +391,17 @@ async function runOne(db: D1Database, client: MessagesClient, run: AgentRun, now
 		now()
 	);
 	if (spent >= budgetMicros) await pauseForBudget(db, agent.id);
+}
+
+/** A generalist's most used task labels from the last 90 days, so it reuses them. */
+async function recentTaskLabels(db: D1Database, agentId: string): Promise<string[]> {
+	const { results } = await db
+		.prepare(
+			`SELECT task_label FROM agent_runs
+			 WHERE agent_principal_id = ? AND task_label IS NOT NULL AND created_at >= ?
+			 GROUP BY task_label ORDER BY COUNT(*) DESC, MAX(created_at) DESC LIMIT 30`
+		)
+		.bind(agentId, new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString())
+		.all<{ task_label: string }>();
+	return results.map((row) => row.task_label);
 }

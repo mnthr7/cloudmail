@@ -14,10 +14,12 @@
 		AGENT_MODELS,
 		DEFAULT_MONTHLY_BUDGET_CENTS,
 		type AgentDefinition,
+		type AgentKind,
 		type AgentModel
 	} from '#lib/agents/definition.ts';
 	import type { AgentStatus } from '#lib/agents/policy.ts';
 	import { estimateRunMicros, formatMicros, MODEL_NOTES, TYPICAL_RUN } from '#lib/agents/models.ts';
+	import { SAM_NAME, specialistJob } from '#lib/agents/sam.ts';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
@@ -31,6 +33,9 @@
 		recipientKind: 'thread' | 'domains';
 		domains: string;
 		watch: string[];
+		/** Only mail a teammate forwards or CCs wakes it. */
+		teamOnly: boolean;
+		kind: AgentKind;
 		model: AgentModel;
 		/** Dollars, as typed. */
 		budget: string;
@@ -52,6 +57,8 @@
 			recipientKind: 'thread',
 			domains: '',
 			watch: [],
+			teamOnly: false,
+			kind: 'specialist',
 			model: AGENT_MODELS[0],
 			budget: String(DEFAULT_MONTHLY_BUDGET_CENTS / 100)
 		};
@@ -68,6 +75,8 @@
 		}
 		draft.sendAs = [...definition.scope.sendAs];
 		draft.watch = [...definition.triggers.watch];
+		draft.teamOnly = definition.triggers.teamOnly;
+		draft.kind = definition.kind;
 		draft.model = definition.model;
 		draft.budget = String(definition.monthlyBudgetCents / 100);
 		if (definition.scope.recipients.kind === 'domains') {
@@ -151,13 +160,14 @@
 			return null;
 		}
 		return {
+			kind: draft.kind,
 			job: draft.job,
 			capabilities,
 			scope: {
 				sendAs: draft.sendAs,
 				recipients: draft.recipientKind === 'domains' ? { kind: 'domains', domains } : { kind: 'thread' }
 			},
-			triggers: { watch: draft.watch },
+			triggers: { watch: draft.watch, teamOnly: draft.teamOnly },
 			model: draft.model,
 			monthlyBudgetCents: Math.round(dollars * 100)
 		};
@@ -195,6 +205,97 @@
 			formError = 'Network error';
 		} finally {
 			saving = false;
+		}
+	}
+
+	const hasGeneralist = $derived(data.agents.some((agent) => agent.definition.kind === 'generalist'));
+	let samAddress = $state('');
+	let samError = $state('');
+
+	async function hireSam(event: SubmitEvent) {
+		event.preventDefault();
+		samError = '';
+		const address = samAddress || data.sendAs.find((item) => item.startsWith('sam@')) || '';
+		if (!address) {
+			samError = 'Pick the address Sam should use.';
+			return;
+		}
+		busy = 'sam';
+		try {
+			const res = await fetch('/api/agents/sam', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ address })
+			});
+			if (!res.ok) {
+				const body = await res.json().catch(() => null);
+				samError =
+					body?.error === 'send_as' || body?.error === 'watch'
+						? 'You can only give Sam an address you can send from yourself.'
+						: 'Could not hire Sam.';
+				return;
+			}
+			window.location.reload();
+		} catch {
+			samError = 'Network error';
+		} finally {
+			busy = null;
+		}
+	}
+
+	/** Opens the hire form for a specialist, starting from a kind of task Sam keeps getting. */
+	function hireSpecialist(task: string, count: number) {
+		openHire();
+		draft.name = task.replace(/\b\w/g, (letter) => letter.toUpperCase()).slice(0, 80);
+		draft.job = specialistJob(task, count);
+	}
+
+	let factDrafts = $state<Record<string, string>>({});
+	let memoryError = $state<Record<string, string>>({});
+
+	const MEMORY_ERRORS: Record<string, string> = {
+		fact: 'A fact is one line, up to 300 characters.',
+		full: 'It already remembers 50 facts. Remove one first.'
+	};
+
+	async function addFact(event: SubmitEvent, agentId: string) {
+		event.preventDefault();
+		const fact = (factDrafts[agentId] ?? '').trim();
+		if (!fact) return;
+		busy = `memory:${agentId}`;
+		memoryError = { ...memoryError, [agentId]: '' };
+		try {
+			const res = await fetch(`/api/agents/${agentId}/memory`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ fact })
+			});
+			if (!res.ok) {
+				const body = await res.json().catch(() => null);
+				memoryError = { ...memoryError, [agentId]: MEMORY_ERRORS[body?.error] ?? 'Could not save that.' };
+				return;
+			}
+			window.location.reload();
+		} catch {
+			memoryError = { ...memoryError, [agentId]: 'Network error' };
+		} finally {
+			busy = null;
+		}
+	}
+
+	async function forgetFact(agentId: string, factId: string) {
+		busy = `memory:${agentId}`;
+		try {
+			const res = await fetch(`/api/agents/${agentId}/memory/${factId}`, { method: 'DELETE' });
+			if (!res.ok) {
+				memoryError = { ...memoryError, [agentId]: 'Could not remove that.' };
+				return;
+			}
+			window.location.reload();
+		} catch {
+			memoryError = { ...memoryError, [agentId]: 'Network error' };
+		} finally {
+			busy = null;
 		}
 	}
 
@@ -744,6 +845,34 @@
 
 	<section class="surface-lg card">
 		<h2><Icon name="team-line" size={18} /> Agents</h2>
+		{#if !hasGeneralist && !data.demo}
+			<form class="sam-card" onsubmit={hireSam}>
+				<p class="item-title"><Icon name="user-smile-line" size={16} /> Hire {SAM_NAME}, your generalist</p>
+				<p class="item-sub">
+					Hand {SAM_NAME} anything: mention him in a note on a thread ("@Sam chase this on Friday"), forward
+					him an email, or CC him. Every action he takes waits for your OK. He logs each kind of task, and
+					when one keeps coming up he suggests hiring a specialist for it.
+				</p>
+				{#if data.sendAs.length === 0}
+					<p class="item-sub">First add an address for him, like sam@yourdomain, under Settings → Your addresses.</p>
+				{:else}
+					<label class="field">
+						<span>His address. Only mail you or a teammate send to it wakes him.</span>
+						<select bind:value={samAddress}>
+							<option value="">Choose…</option>
+							{#each data.sendAs as address (address)}
+								<option value={address}>{address}</option>
+							{/each}
+						</select>
+					</label>
+					<p class="item-sub">No sam@ address yet? Add one under Settings → Your addresses, then come back.</p>
+					{#if samError}<p class="error" role="alert">{samError}</p>{/if}
+					<div class="item-actions">
+						<button type="submit" class="btn-primary text-xs" disabled={busy === 'sam'}>Hire {SAM_NAME}</button>
+					</div>
+				{/if}
+			</form>
+		{/if}
 		{#if data.agents.length === 0}
 			<p class="card-hint">No agents yet. Hire one to give it a job.</p>
 		{:else}
@@ -771,7 +900,9 @@
 						<p class="item-sub">{enabled(agent.definition)}</p>
 						<p class="item-sub">
 							{agent.definition.triggers.watch.length
-								? `Wakes up for mail to ${agent.definition.triggers.watch.join(', ')}`
+								? agent.definition.triggers.teamOnly
+									? `Wakes up when you or a teammate forward or CC ${agent.definition.triggers.watch.join(', ')}, or @mention ${agent.displayName}`
+									: `Wakes up for mail to ${agent.definition.triggers.watch.join(', ')}`
 								: 'Wakes up only when asked'} · {AGENT_MODEL_LABELS[agent.definition.model]} · {dollars(
 								data.spend[agent.id] ?? 0
 							)} of {dollars(agent.definition.monthlyBudgetCents * 10_000)} this month
@@ -779,6 +910,58 @@
 						{#if suggestionLine(agent.id)}
 							<p class="item-sub">{suggestionLine(agent.id)}</p>
 						{/if}
+						{#each data.patterns.filter((pattern) => pattern.agentId === agent.id) as pattern (pattern.task)}
+							<div class="pattern">
+								<p class="item-sub">
+									<Icon name="lightbulb-line" size={14} />
+									{agent.displayName} did "{pattern.task}" {pattern.count} times in the last 30 days.
+								</p>
+								<button type="button" class="btn-ghost text-xs" onclick={() => hireSpecialist(pattern.task, pattern.count)}>
+									Hire a specialist
+								</button>
+							</div>
+						{/each}
+						<details class="memory">
+							<summary>
+								Remembers {(data.memory[agent.id] ?? []).length}
+								{(data.memory[agent.id] ?? []).length === 1 ? 'fact' : 'facts'}
+							</summary>
+							{#if (data.memory[agent.id] ?? []).length === 0}
+								<p class="item-sub">Nothing yet. Add facts here, or write "@{agent.displayName} remember: …" in a note on a thread.</p>
+							{:else}
+								<ul class="facts">
+									{#each data.memory[agent.id] ?? [] as fact (fact.id)}
+										<li>
+											<span>{fact.fact}</span>
+											<span class="fact-source">{fact.source === 'agent' ? 'suggested by the agent' : 'you'}{fact.addedBy && fact.source === 'agent' ? `, approved by ${fact.addedBy}` : ''}</span>
+											{#if agent.canManage}
+												<button
+													type="button"
+													class="btn-ghost text-xs"
+													disabled={busy === `memory:${agent.id}`}
+													onclick={() => forgetFact(agent.id, fact.id)}
+												>
+													Forget
+												</button>
+											{/if}
+										</li>
+									{/each}
+								</ul>
+							{/if}
+							{#if agent.canManage}
+								<form class="fact-form" onsubmit={(event) => addFact(event, agent.id)}>
+									<input
+										type="text"
+										maxlength="300"
+										placeholder="Globex pays on the 15th"
+										aria-label={`New fact for ${agent.displayName}`}
+										bind:value={factDrafts[agent.id]}
+									/>
+									<button type="submit" class="btn-ghost text-xs" disabled={busy === `memory:${agent.id}`}>Add</button>
+								</form>
+							{/if}
+							{#if memoryError[agent.id]}<p class="error" role="alert">{memoryError[agent.id]}</p>{/if}
+						</details>
 						<div class="item-actions">
 							{#if agent.canManage}
 								<button type="button" class="btn-ghost text-xs" onclick={() => openEdit(agent.id)}>
@@ -831,6 +1014,80 @@
 </div>
 
 <style>
+	.sam-card {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+		margin-bottom: 1rem;
+		padding: 0.875rem 1rem;
+		border-radius: 0.75rem;
+		box-shadow: inset 0 0 0 1px var(--color-line);
+	}
+
+	.sam-card .item-title {
+		display: flex;
+		align-items: center;
+		gap: 0.375rem;
+	}
+
+	.pattern {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.5rem;
+		margin-top: 0.375rem;
+	}
+
+	.memory {
+		margin-top: 0.5rem;
+	}
+
+	.memory summary {
+		cursor: pointer;
+		font-size: 0.8125rem;
+		color: var(--color-text-secondary);
+	}
+
+	.facts {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+		margin: 0.5rem 0;
+		padding: 0;
+		list-style: none;
+		font-size: 0.8125rem;
+	}
+
+	.facts li {
+		display: flex;
+		align-items: baseline;
+		gap: 0.5rem;
+		flex-wrap: wrap;
+	}
+
+	.fact-source {
+		color: var(--color-text-secondary);
+		font-size: 0.75rem;
+	}
+
+	.fact-form {
+		display: flex;
+		gap: 0.5rem;
+		margin-top: 0.375rem;
+	}
+
+	.fact-form input {
+		flex: 1;
+		min-width: 0;
+		padding: 0.375rem 0.625rem;
+		border-radius: 0.5rem;
+		font: inherit;
+		font-size: 0.8125rem;
+		color: var(--color-text);
+		background: transparent;
+		box-shadow: inset 0 0 0 1px var(--color-line);
+	}
+
 	.model-picker {
 		display: flex;
 		flex-direction: column;

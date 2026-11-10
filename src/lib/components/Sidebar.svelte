@@ -239,6 +239,11 @@
 
 	const tools = $derived<NavItem[]>([
 		{
+			href: '/calendar',
+			icon: 'calendar-line',
+			label: 'Calendar'
+		},
+		{
 			href: '/staff',
 			icon: 'team-line',
 			label: 'Staff'

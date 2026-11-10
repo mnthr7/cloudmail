@@ -13,7 +13,8 @@ import {
 } from '#lib/server/demo.ts';
 import { SKIN_COOKIE, isSkin, parseSkin } from '#lib/skin.ts';
 
-const PUBLIC_PREFIXES = ['/login', '/setup', '/api/auth', '/api/setup', '/api/webhooks'];
+// /api/calendar/feed: secret subscribe links, authenticated by the token in the path.
+const PUBLIC_PREFIXES = ['/login', '/setup', '/api/auth', '/api/setup', '/api/webhooks', '/api/calendar/feed'];
 
 function isPublicPath(pathname: string): boolean {
 	return PUBLIC_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));

@@ -8,6 +8,7 @@ import {
 	setUserVtThreshold
 } from '#lib/server/auth.ts';
 import { DEMO_USER } from '#lib/server/demo.ts';
+import { readPhishingToSpam, setPhishingToSpam } from '#lib/server/phishing-check.ts';
 import { parseThreshold } from '#lib/security/verdict.ts';
 import { SKIN_COOKIE, isSkin } from '#lib/skin.ts';
 import { parseUndoSeconds, type UndoSeconds } from '#lib/writing/timing.ts';
@@ -23,6 +24,7 @@ export const PATCH: RequestHandler = async ({ request, locals, platform, cookies
 		priorityInbox?: unknown;
 		undoSendSeconds?: unknown;
 		vtMaliciousThreshold?: unknown;
+		phishingToSpam?: unknown;
 	} | null;
 
 	const hasSkin = Boolean(body && Object.prototype.hasOwnProperty.call(body, 'skin'));
@@ -32,7 +34,9 @@ export const PATCH: RequestHandler = async ({ request, locals, platform, cookies
 		body && Object.prototype.hasOwnProperty.call(body, 'vtMaliciousThreshold')
 	);
 
-	if (!hasSkin && !hasPriority && !hasUndo && !hasThreshold) {
+	const hasPhishing = Boolean(body && Object.prototype.hasOwnProperty.call(body, 'phishingToSpam'));
+
+	if (!hasSkin && !hasPriority && !hasUndo && !hasThreshold && !hasPhishing) {
 		return json({ error: 'skin must be ledger, desk, notes or classic' }, { status: 400 });
 	}
 	if (hasSkin && !isSkin(body?.skin)) {
@@ -94,6 +98,25 @@ export const PATCH: RequestHandler = async ({ request, locals, platform, cookies
 		}
 	}
 
+	let phishingToSpam: boolean | undefined;
+	if (hasPhishing) {
+		if (typeof body?.phishingToSpam !== 'boolean') {
+			return json({ error: 'phishingToSpam must be a boolean' }, { status: 400 });
+		}
+		if (locals.user.id === DEMO_USER.id) {
+			return json({ error: 'Demo mode is read-only' }, { status: 403 });
+		}
+		if (!db) return json({ error: 'Unauthorized' }, { status: 401 });
+		try {
+			await setPhishingToSpam(db, locals.user.id, body.phishingToSpam);
+			phishingToSpam = await readPhishingToSpam(db, locals.user.id);
+			saved = 'account';
+		} catch (err) {
+			console.error('saving phishing setting failed', err);
+			return json({ error: 'Could not save the phishing setting' }, { status: 500 });
+		}
+	}
+
 	if (hasPriority && typeof body?.priorityInbox === 'boolean') {
 		if (locals.user.id === DEMO_USER.id) {
 			return json({ error: 'Demo mode is read-only' }, { status: 403 });
@@ -134,6 +157,7 @@ export const PATCH: RequestHandler = async ({ request, locals, platform, cookies
 		...(priorityInbox !== undefined ? { priorityInbox } : {}),
 		...(undoSendSeconds !== undefined ? { undoSendSeconds } : {}),
 		...(vtMaliciousThreshold !== undefined ? { vtMaliciousThreshold } : {}),
+		...(phishingToSpam !== undefined ? { phishingToSpam } : {}),
 		saved
 	});
 };

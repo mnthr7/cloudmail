@@ -1,5 +1,6 @@
 import type { PageServerLoad } from './$types';
 import { readUndoSendSeconds, readVtThreshold } from '#lib/server/auth.ts';
+import { readPhishingToSpam } from '#lib/server/phishing-check.ts';
 import { DEMO_MODE, DEMO_USER } from '#lib/server/demo.ts';
 import {
 	listBlockedSenders,
@@ -26,6 +27,7 @@ export const load: PageServerLoad = async ({ locals, platform }) => {
 		vtMaliciousThreshold: number;
 		virusTotalConfigured: boolean;
 		imageSenders: string[];
+		phishingToSpam: boolean;
 	} = {
 		domains,
 		addresses,
@@ -35,7 +37,8 @@ export const load: PageServerLoad = async ({ locals, platform }) => {
 		undoSendSeconds: 10,
 		vtMaliciousThreshold: 1,
 		virusTotalConfigured,
-		imageSenders: []
+		imageSenders: [],
+		phishingToSpam: false
 	};
 
 	// Demo mode is server-env only (DEMO_MODE="true"), never a URL param.
@@ -45,14 +48,15 @@ export const load: PageServerLoad = async ({ locals, platform }) => {
 	const db = platform?.env.DB;
 	if (!db || !locals.user) return empty;
 
-	const [filters, blocked, labels, undoSendSeconds, vtMaliciousThreshold, imageSenders] =
+	const [filters, blocked, labels, undoSendSeconds, vtMaliciousThreshold, imageSenders, phishingToSpam] =
 		await Promise.all([
 			listFilters(db, locals.user.id),
 			listBlockedSenders(db, locals.user.id),
 			listLabels(db, locals.user.id),
 			readUndoSendSeconds(db, locals.user.id),
 			readVtThreshold(db, locals.user.id),
-			listImageSenders(db, locals.user.id)
+			listImageSenders(db, locals.user.id),
+			readPhishingToSpam(db, locals.user.id)
 		]);
 
 	return {
@@ -64,6 +68,7 @@ export const load: PageServerLoad = async ({ locals, platform }) => {
 		undoSendSeconds,
 		vtMaliciousThreshold,
 		virusTotalConfigured,
-		imageSenders
+		imageSenders,
+		phishingToSpam
 	};
 };

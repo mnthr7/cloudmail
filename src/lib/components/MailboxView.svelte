@@ -769,6 +769,16 @@
 									{#if view === 'sent' && thread.status}
 										<DeliveryStatus status={thread.status} />
 									{/if}
+									{#if thread.phishing}
+										<span
+											class="phishing-tag"
+											class:severe={thread.phishing === 'phishing'}
+											title={thread.phishing === 'phishing' ? 'Looks like phishing' : 'Be careful with this message'}
+										>
+											<Icon name="spam-2-line" size={12} />
+											{thread.phishing === 'phishing' ? 'Phishing?' : 'Careful'}
+										</span>
+									{/if}
 									{#if thread.suggested_replies}
 										<span
 											class="suggested-tag"
@@ -813,6 +823,16 @@
 								<span class="indicators">
 									{#if view === 'sent' && thread.status}
 										<DeliveryStatus status={thread.status} />
+									{/if}
+									{#if thread.phishing}
+										<span
+											class="phishing-tag"
+											class:severe={thread.phishing === 'phishing'}
+											title={thread.phishing === 'phishing' ? 'Looks like phishing' : 'Be careful with this message'}
+										>
+											<Icon name="spam-2-line" size={12} />
+											{thread.phishing === 'phishing' ? 'Phishing?' : 'Careful'}
+										</span>
 									{/if}
 									{#if thread.suggested_replies}
 										<span
@@ -1595,6 +1615,23 @@
 		.title {
 			font-size: 0.9375rem;
 		}
+	}
+
+	.phishing-tag {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.2rem;
+		padding: 0 0.4rem;
+		border-radius: 9999px;
+		font-size: 0.7rem;
+		font-weight: 600;
+		color: var(--color-text-secondary);
+		box-shadow: inset 0 0 0 1px var(--color-line);
+	}
+
+	.phishing-tag.severe {
+		color: var(--color-danger);
+		box-shadow: inset 0 0 0 1px currentColor;
 	}
 
 	.suggested-tag {

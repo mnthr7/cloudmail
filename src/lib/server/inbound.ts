@@ -157,6 +157,8 @@ async function handleInboundEmail(
 				listUnsubscribe,
 				precedence: readInboundHeader(received.headers, 'precedence'),
 				autoSubmitted: readInboundHeader(received.headers, 'auto-submitted'),
+				authenticationResults: readInboundHeader(received.headers, 'authentication-results'),
+				receivedSpf: readInboundHeader(received.headers, 'received-spf'),
 				hasAttachment
 			},
 			env.provider

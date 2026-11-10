@@ -170,6 +170,37 @@
 		}
 	}
 
+	let phishingToSpam = $state<boolean | null>(null);
+	const phishingOn = $derived(phishingToSpam ?? data.phishingToSpam);
+	let phishingSaving = $state(false);
+	let phishingError = $state('');
+
+	async function savePhishingToSpam(on: boolean) {
+		phishingSaving = true;
+		phishingError = '';
+		const before = phishingOn;
+		phishingToSpam = on;
+		try {
+			const res = await fetch('/api/preferences', {
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ phishingToSpam: on })
+			});
+			const body = await res.json().catch(() => null);
+			if (!res.ok) {
+				phishingToSpam = before;
+				phishingError = messageFrom(body, 'Could not save the phishing setting');
+				return;
+			}
+			if (typeof body?.phishingToSpam === 'boolean') phishingToSpam = body.phishingToSpam;
+		} catch {
+			phishingToSpam = before;
+			phishingError = 'Network error';
+		} finally {
+			phishingSaving = false;
+		}
+	}
+
 	async function saveThreshold(input: HTMLInputElement) {
 		if (vtSaving) return;
 		const next = input.value;
@@ -1175,6 +1206,27 @@
 				{/each}
 			</ul>
 		{/if}
+	</section>
+
+	<section class="surface-lg card" id="phishing">
+		<h2><Icon name="spam-2-line" size={18} /> Phishing protection</h2>
+		<p class="card-hint">
+			New mail is checked when it arrives: whether the sender's domain vouches for it, lookalike
+			domains, names that pretend to be a brand or someone on your team, and first-time senders
+			asking for money or logins. Anything suspicious gets a warning above the message and a marker
+			in the inbox. Agents never act on mail that looks like phishing.
+		</p>
+		<label class="check-row">
+			<input
+				type="checkbox"
+				checked={phishingOn}
+				disabled={phishingSaving}
+				onchange={(event) => savePhishingToSpam(event.currentTarget.checked)}
+			/>
+			Move mail that looks like phishing straight to Spam
+		</label>
+		<p class="card-hint">Only the strongest warnings move. "Be careful" mail stays in the inbox, flagged.</p>
+		{#if phishingError}<p class="error" role="alert">{phishingError}</p>{/if}
 	</section>
 
 	<section class="surface-lg card" id="image-senders">

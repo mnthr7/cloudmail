@@ -221,6 +221,8 @@ export type ThreadMessage = {
 	list_unsubscribe?: string | null;
 	/** Phishing checks from when it arrived (MessageSecurity as JSON). Null on older mail. */
 	security_json?: string | null;
+	/** A calendar invite, update, cancellation or RSVP that came with it. */
+	invite?: import('#lib/calendar/types.ts').InviteView | null;
 	attachments: EmailAttachmentMeta[];
 };
 

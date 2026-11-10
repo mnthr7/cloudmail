@@ -2,6 +2,8 @@ import { json } from '@sveltejs/kit';
 import type { D1Database } from '@cloudflare/workers-types';
 import { DEMO_MODE, DEMO_USER } from './demo.ts';
 import { CalendarError } from './calendar-store.ts';
+import { getEmailProvider } from './context.ts';
+import type { EmailProvider } from './email-provider.ts';
 
 /** Shared plumbing for /api/calendar routes. */
 export function calendarCaller(
@@ -26,4 +28,13 @@ export function calendarFailure(error: unknown): Response {
 export async function readJson(request: Request): Promise<Record<string, unknown>> {
 	const body = (await request.json().catch(() => null)) as unknown;
 	return body && typeof body === 'object' && !Array.isArray(body) ? (body as Record<string, unknown>) : {};
+}
+
+/** The mail provider for sending invites, or null when sending isn't set up. */
+export function inviteProvider(platform: App.Platform | undefined): EmailProvider | null {
+	try {
+		return getEmailProvider(platform);
+	} catch {
+		return null;
+	}
 }

@@ -1,4 +1,6 @@
 import type { D1Database, R2Bucket } from '@cloudflare/workers-types';
+import { isCalendarAttachment, recordCalendarMail } from './calendar-invites.ts';
+import { MAX_ICS_BYTES } from '#lib/calendar/ics-parse.ts';
 import PostalMime, { type Address, type Attachment } from 'postal-mime';
 import { insertAttachmentBytes } from './attachments';
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS_PER_EMAIL } from './constants';
@@ -99,6 +101,11 @@ export async function handleCloudflareInbound(
 
 	const attachments = parsed.attachments ?? [];
 	await storeInboundAttachments(env, emailId, attachments);
+	const calendarFiles = attachments
+		.filter((attachment) => isCalendarAttachment(attachment.mimeType, attachment.filename))
+		.map((attachment) => attachmentBytes(attachment.content))
+		.filter((bytes): bytes is Uint8Array => !!bytes && bytes.byteLength <= MAX_ICS_BYTES)
+		.map((bytes) => new TextDecoder().decode(bytes));
 
 	// A filter bug must not make Cloudflare retry delivery and store a second copy.
 	try {
@@ -121,6 +128,13 @@ export async function handleCloudflareInbound(
 		);
 	} catch (error) {
 		console.error('Failed to organize inbound mail', emailId, error);
+	}
+
+	// Invites, updates, cancellations and RSVPs. Never blocks the mail itself.
+	if (calendarFiles.length) {
+		await recordCalendarMail(env.DB, route.userId, emailId, calendarFiles).catch((error) =>
+			console.error('Failed to read the calendar part', emailId, error)
+		);
 	}
 }
 

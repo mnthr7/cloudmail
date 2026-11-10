@@ -3,6 +3,7 @@
 	import AttachmentList from './AttachmentList.svelte';
 	import DeliveryStatus from './DeliveryStatus.svelte';
 	import EmailBody from './EmailBody.svelte';
+	import InviteCard from './calendar/InviteCard.svelte';
 	import { untrack } from 'svelte';
 	import { showToast } from '#lib/toast.ts';
 	import { formatFullDate, formatRelativeDate } from '#lib/utils/date.ts';
@@ -196,6 +197,9 @@
 			{/if}
 		</header>
 
+		{#if message.invite}
+			<InviteCard invite={message.invite} />
+		{/if}
 		<div class="body mail-body">
 			{#if imagesHeld && !allowImages}
 				<p class="image-hold">

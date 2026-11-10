@@ -117,3 +117,59 @@ export function calendarFile(input: {
 	];
 	return `${lines.map(foldLine).join('\r\n')}\r\n`;
 }
+
+export type InvitePerson = { email: string; name: string | null };
+export type InviteAttendee = InvitePerson & { partstat: string };
+
+function cn(name: string | null): string {
+	// CN is a parameter value: quote it and drop characters that would break it.
+	return name ? `;CN="${name.replace(/["\r\n]/g, '').slice(0, 120)}"` : '';
+}
+
+/** ORGANIZER and ATTENDEE lines for an invite or an update. */
+export function peopleLines(organizer: InvitePerson, attendees: InviteAttendee[]): string[] {
+	return [
+		`ORGANIZER${cn(organizer.name)}:mailto:${organizer.email}`,
+		...attendees.map(
+			(attendee) =>
+				`ATTENDEE${cn(attendee.name)};ROLE=REQ-PARTICIPANT;PARTSTAT=${attendee.partstat.toUpperCase()};RSVP=TRUE:mailto:${attendee.email}`
+		)
+	];
+}
+
+/**
+ * An RSVP (METHOD:REPLY) to someone else's invite: who we are, our answer,
+ * and enough of the event for their calendar to match it.
+ */
+export function replyFile(input: {
+	uid: string;
+	sequence: number;
+	title: string;
+	organizer: InvitePerson;
+	attendee: InvitePerson;
+	partstat: 'ACCEPTED' | 'TENTATIVE' | 'DECLINED';
+	start: { allDay: boolean; local: string; timezone: string };
+	now: Date;
+}): string {
+	const stamp = utcStamp(input.now.toISOString());
+	const start = input.start.allDay
+		? `DTSTART;VALUE=DATE:${compact(input.start.local.slice(0, 10))}`
+		: `DTSTART;TZID=${input.start.timezone}:${compact(input.start.local)}`;
+	const lines = [
+		'BEGIN:VCALENDAR',
+		'VERSION:2.0',
+		'PRODID:-//CloudMail//Calendar//EN',
+		'METHOD:REPLY',
+		'BEGIN:VEVENT',
+		`UID:${input.uid}`,
+		`SEQUENCE:${input.sequence}`,
+		`DTSTAMP:${stamp}`,
+		start,
+		`SUMMARY:${escapeText(input.title)}`,
+		`ORGANIZER${cn(input.organizer.name)}:mailto:${input.organizer.email}`,
+		`ATTENDEE${cn(input.attendee.name)};PARTSTAT=${input.partstat}:mailto:${input.attendee.email}`,
+		'END:VEVENT',
+		'END:VCALENDAR'
+	];
+	return `${lines.map(foldLine).join('\r\n')}\r\n`;
+}

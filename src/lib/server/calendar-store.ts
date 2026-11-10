@@ -43,6 +43,8 @@ export class CalendarError extends Error {
 			| 'text'
 			| 'color'
 			| 'range'
+			| 'guests'
+			| 'from'
 	) {
 		super(code);
 		this.name = 'CalendarError';
@@ -227,6 +229,11 @@ export type EventRow = {
 	recurrence_local: string | null;
 	status: 'confirmed' | 'tentative' | 'cancelled';
 	transparency: 'busy' | 'free';
+	organizer_email: string | null;
+	organizer_name: string | null;
+	my_status: string | null;
+	send_from: string | null;
+	source_email_id: string | null;
 	created_at: string;
 	updated_at: string;
 };
@@ -656,7 +663,10 @@ export async function occurrencesInRange(
 			timezone: row.timezone,
 			rrule: row.rrule,
 			seriesStartLocal: row.start_local,
-			transparency: row.transparency
+			transparency: row.transparency,
+			organizer: row.organizer_email ? { email: row.organizer_email, name: row.organizer_name } : null,
+			myStatus: row.my_status,
+			sourceEmailId: row.source_email_id
 		};
 		if (!row.rrule) {
 			out.push({
@@ -726,4 +736,190 @@ export async function eventsForFeed(db: D1Database, calendarId: string): Promise
 		.bind(calendarId)
 		.all<EventRow>();
 	return results;
+}
+
+// ---------------------------------------------------------------------------
+// Events that came from somewhere else (an invite you accepted)
+
+export type ImportedEvent = {
+	uid: string;
+	sequence: number;
+	title: string;
+	description: string | null;
+	location: string | null;
+	allDay: boolean;
+	startLocal: string;
+	endLocal: string;
+	timezone: string;
+	rrule: string | null;
+	exdates: string[];
+	recurrenceLocal: string | null;
+	transparency: 'busy' | 'free';
+};
+
+/** Checks an outside event's times and rule; null if it can't be stored as given. */
+function importTiming(event: ImportedEvent): (Timing & { rrule: string | null; until: number | undefined }) | null {
+	let timing: Timing;
+	try {
+		timing = readTiming({ allDay: event.allDay, start: event.startLocal, end: event.endLocal, timezone: event.timezone });
+	} catch {
+		return null;
+	}
+	let rrule: string | null = null;
+	let until: number | undefined;
+	if (event.rrule) {
+		try {
+			until = parseRule(event.rrule, event.timezone).until;
+			rrule = event.rrule;
+		} catch {
+			// A rule we can't read: keep just the first occurrence.
+		}
+	}
+	return { ...timing, rrule, until };
+}
+
+/**
+ * Puts an outside event (series plus edited occurrences) on a calendar, or
+ * updates the copy already there with the same UID. Returns the series row id.
+ */
+export async function upsertImportedEvent(
+	db: D1Database,
+	calendar: { id: string },
+	input: {
+		series: ImportedEvent;
+		edits: ImportedEvent[];
+		organizer: { email: string; name: string | null } | null;
+		myStatus: string | null;
+		sourceEmailId: string | null;
+		createdBy: string | null;
+	},
+	now = new Date()
+): Promise<string | null> {
+	const timing = importTiming(input.series);
+	if (!timing) return null;
+	const at = now.toISOString();
+	const existing = await db
+		.prepare(`SELECT id FROM calendar_events WHERE calendar_id = ? AND uid = ? AND parent_id IS NULL`)
+		.bind(calendar.id, input.series.uid)
+		.first<{ id: string }>();
+	const id = existing?.id ?? crypto.randomUUID();
+	const values = [
+		input.series.sequence,
+		input.series.title.slice(0, MAX_TITLE) || '(No title)',
+		input.series.description?.slice(0, MAX_DESCRIPTION) ?? null,
+		input.series.location?.slice(0, MAX_LOCATION) ?? null,
+		timing.allDay ? 1 : 0,
+		timing.startLocal,
+		timing.endLocal,
+		timing.timezone,
+		iso(timing.startAt),
+		iso(timing.endAt),
+		timing.rrule,
+		JSON.stringify(timing.rrule ? input.series.exdates.slice(0, 500) : []),
+		timing.until !== undefined ? iso(timing.until) : null,
+		input.series.transparency,
+		input.organizer?.email ?? null,
+		input.organizer?.name ?? null,
+		input.myStatus,
+		input.sourceEmailId
+	];
+	const statements = [
+		existing
+			? db
+					.prepare(
+						`UPDATE calendar_events
+						 SET sequence = ?, title = ?, description = ?, location = ?, all_day = ?, start_local = ?, end_local = ?,
+						     timezone = ?, start_at = ?, end_at = ?, rrule = ?, exdates_json = ?, repeat_until_at = ?, transparency = ?,
+						     organizer_email = ?, organizer_name = ?, my_status = ?, source_email_id = COALESCE(?, source_email_id),
+						     status = 'confirmed', updated_at = ?
+						 WHERE id = ?`
+					)
+					.bind(...values, at, id)
+			: db
+					.prepare(
+						`INSERT INTO calendar_events
+						 (sequence, title, description, location, all_day, start_local, end_local, timezone, start_at, end_at, rrule,
+						  exdates_json, repeat_until_at, transparency, organizer_email, organizer_name, my_status, source_email_id,
+						  id, calendar_id, uid, created_by_principal_id, created_at, updated_at)
+						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+					)
+					.bind(...values, id, calendar.id, input.series.uid, input.createdBy, at, at),
+		// Edited occurrences are replaced wholesale by the newest copy.
+		db.prepare(`DELETE FROM calendar_events WHERE parent_id = ?`).bind(id)
+	];
+	for (const edit of timing.rrule ? input.edits.slice(0, 200) : []) {
+		const editTiming = importTiming({ ...edit, rrule: null });
+		if (!editTiming || !edit.recurrenceLocal) continue;
+		statements.push(
+			db
+				.prepare(
+					`INSERT INTO calendar_events
+					 (id, calendar_id, uid, sequence, title, description, location, all_day, start_local, end_local, timezone,
+					  start_at, end_at, exdates_json, parent_id, recurrence_local, transparency, organizer_email, organizer_name,
+					  my_status, source_email_id, created_by_principal_id, created_at, updated_at)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+				)
+				.bind(
+					crypto.randomUUID(),
+					calendar.id,
+					input.series.uid,
+					edit.sequence,
+					edit.title.slice(0, MAX_TITLE) || '(No title)',
+					edit.description?.slice(0, MAX_DESCRIPTION) ?? null,
+					edit.location?.slice(0, MAX_LOCATION) ?? null,
+					editTiming.allDay ? 1 : 0,
+					editTiming.startLocal,
+					editTiming.endLocal,
+					editTiming.timezone,
+					iso(editTiming.startAt),
+					iso(editTiming.endAt),
+					id,
+					edit.recurrenceLocal,
+					edit.transparency,
+					input.organizer?.email ?? null,
+					input.organizer?.name ?? null,
+					input.myStatus,
+					input.sourceEmailId,
+					input.createdBy,
+					at,
+					at
+				)
+		);
+	}
+	await db.batch(statements);
+	return id;
+}
+
+/** The series row for an event row (itself, or the series an edited occurrence belongs to). */
+export async function seriesOf(db: D1Database, userId: string, eventId: string): Promise<EventRow> {
+	const row = await ownedEvent(db, userId, eventId);
+	if (!row.parent_id) return row;
+	const series = await db.prepare(`SELECT * FROM calendar_events WHERE id = ?`).bind(row.parent_id).first<EventRow>();
+	if (!series) throw new CalendarError('missing');
+	return series;
+}
+
+export async function editedOccurrences(db: D1Database, seriesId: string): Promise<EventRow[]> {
+	const { results } = await db
+		.prepare(`SELECT * FROM calendar_events WHERE parent_id = ? ORDER BY start_at`)
+		.bind(seriesId)
+		.all<EventRow>();
+	return results;
+}
+
+/** The person's events with this UID (on any of their calendars). */
+export async function eventsByUid(db: D1Database, userId: string, uid: string): Promise<EventRow[]> {
+	const human = await humanPrincipalForUser(db, userId);
+	const { results } = await db
+		.prepare(
+			`SELECT e.* FROM calendar_events e JOIN calendars c ON c.id = e.calendar_id
+			 WHERE c.owner_principal_id = ? AND e.uid = ? AND e.parent_id IS NULL`
+		)
+		.bind(human.id, uid)
+		.all<EventRow>();
+	return results;
+}
+
+export async function setSendFrom(db: D1Database, eventId: string, address: string | null): Promise<void> {
+	await db.prepare(`UPDATE calendar_events SET send_from = ? WHERE id = ?`).bind(address, eventId).run();
 }

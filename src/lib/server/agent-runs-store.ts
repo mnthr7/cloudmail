@@ -1,7 +1,7 @@
 import type { D1Database } from '@cloudflare/workers-types';
 import { looksLikeAutoReply } from '#lib/agents/auto-reply.ts';
 import { parseDefinition } from '#lib/agents/definition.ts';
-import { parseSecurity } from '#lib/security/phishing.ts';
+import { fromDomainVerified, parseSecurity } from '#lib/security/phishing.ts';
 import { splitQuotedText } from '#lib/utils/quotes.ts';
 import { stripHtml } from './html.ts';
 import type { AgentDefinition } from '#lib/agents/definition.ts';
@@ -598,8 +598,8 @@ type TeamMail = {
 /**
  * Whether this mail is a teammate handing an agent work, and if so what they
  * asked. The sender must be a human's address in the workspace that no agent
- * sends from (so one agent can't instruct another), the message must be
- * signed by its domain (DKIM or DMARC pass, so it isn't a forgery), and the
+ * sends from (so one agent can't instruct another), the message must provably
+ * come from that domain (DMARC pass, or an aligned DKIM pass), and the
  * teammate must be allowed to direct this agent. What they wrote, above any
  * forwarded or quoted part, is the request; the rest of the thread is data.
  */
@@ -615,8 +615,8 @@ async function teamRequest(
 	const senderUserId = workspaceAddresses.get(from);
 	if (!senderUserId) return null;
 
-	const security = parseSecurity(email.security_json);
-	if (security?.auth.dkim !== 'pass' && security?.auth.dmarc !== 'pass') return null;
+	// Signed by the From domain itself, not just signed by someone.
+	if (!fromDomainVerified(parseSecurity(email.security_json)?.auth, from)) return null;
 
 	const agents = await db
 		.prepare(

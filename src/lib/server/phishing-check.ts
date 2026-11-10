@@ -50,16 +50,7 @@ export async function checkInbound(
 			)
 			.bind(userId, CONTACT_SAMPLE)
 			.all<{ to_addr: string; cc_addr: string | null }>(),
-		db
-			.prepare(
-				`SELECT 1 AS yes FROM emails
-				 WHERE user_id = ? AND id <> ?
-				   AND ((direction = 'inbound' AND lower(from_addr) = ?)
-				     OR (direction = 'outbound' AND (lower(to_addr) LIKE ? OR lower(cc_addr) LIKE ?)))
-				 LIMIT 1`
-			)
-			.bind(userId, emailId, from, `%${from}%`, `%${from}%`)
-			.first<{ yes: number }>()
+		hasHistoryWith(db, userId, emailId, from)
 	]);
 
 	const contactDomains = new Set<string>();
@@ -91,6 +82,40 @@ export async function checkInbound(
 		.bind(JSON.stringify(security), emailId, userId)
 		.run();
 	return security;
+}
+
+/** `%`, `_` and `\` match anything in LIKE; a sender could pick an address full of them. */
+function likeLiteral(value: string): string {
+	return value.replace(/[\\%_]/g, (char) => `\\${char}`);
+}
+
+/**
+ * Whether this mailbox has heard from, or written to, exactly this address
+ * before. LIKE only narrows the candidates; each is then parsed and compared
+ * whole, so `ann@x.com` doesn't count as having written to `joann@x.com`.
+ */
+async function hasHistoryWith(db: D1Database, userId: string, emailId: string, address: string): Promise<boolean> {
+	const heard = await db
+		.prepare(
+			`SELECT 1 AS yes FROM emails
+			 WHERE user_id = ? AND id <> ? AND direction = 'inbound' AND lower(from_addr) = ? LIMIT 1`
+		)
+		.bind(userId, emailId, address)
+		.first<{ yes: number }>();
+	if (heard) return true;
+	const pattern = `%${likeLiteral(address)}%`;
+	const { results } = await db
+		.prepare(
+			`SELECT to_addr, cc_addr FROM emails
+			 WHERE user_id = ? AND direction = 'outbound' AND (status IS NULL OR status <> 'draft')
+			   AND (lower(to_addr) LIKE ? ESCAPE '\\' OR lower(cc_addr) LIKE ? ESCAPE '\\')
+			 LIMIT 50`
+		)
+		.bind(userId, pattern, pattern)
+		.all<{ to_addr: string; cc_addr: string | null }>();
+	return results.some((row) =>
+		parseEmailAddresses([row.to_addr, row.cc_addr ?? '']).some((sent) => sent.toLowerCase() === address)
+	);
 }
 
 /** Whether this user sends mail that looks like phishing straight to Spam. */

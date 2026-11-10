@@ -11,7 +11,7 @@ import {
 	type AssessInput
 } from '../src/lib/security/phishing';
 import { organizeInbound } from '../src/lib/server/organize-inbound';
-import { setPhishingToSpam } from '../src/lib/server/phishing-check';
+import { checkInbound, setPhishingToSpam } from '../src/lib/server/phishing-check';
 import { createAgent, setAgentStatus } from '../src/lib/server/agents-store';
 import { defaultDefinition } from '../src/lib/agents/definition';
 
@@ -268,5 +268,48 @@ describe('when mail arrives', () => {
 
 		const runs = sqlite.query(`SELECT email_id FROM agent_runs`).all() as Array<{ email_id: string }>;
 		expect(runs.map((run) => run.email_id)).toEqual([normal]);
+	});
+
+	test('only exactly this address counts as someone you know', async () => {
+		const { sqlite, db } = open();
+		const sent = (to: string) =>
+			sqlite.run(
+				`INSERT INTO emails (id, user_id, direction, from_addr, to_addr, subject, body_text, created_at, status)
+				 VALUES (?, 'u1', 'outbound', 'sada@acme.com', ?, 'Hi', 'Hi', '2026-11-01T00:00:00Z', 'sent')`,
+				[`out_${to}`, to]
+			);
+		sent('Joann Smith <joann@vendor.io>');
+		const ask = { subject: 'Invoice', body: 'Our bank details have changed, please wire the payment.' };
+
+		// A substring of someone you wrote to, or a wildcard address, is still a stranger.
+		for (const from of ['ann@vendor.io', '%@vendor.io', '_oann@vendor.io']) {
+			const id = addMail(sqlite, { from, to: 'sada@acme.com', ...ask });
+			const result = await checkInbound(db, 'u1', id, {});
+			expect(result?.reasons.map((reason) => reason.code)).toContain('money_ask');
+		}
+		// The real contact isn't.
+		const known = addMail(sqlite, { from: 'joann@vendor.io', to: 'sada@acme.com', ...ask });
+		expect((await checkInbound(db, 'u1', known, {}))?.verdict).toBeNull();
+	});
+
+	test("if the check can't run, no agent wakes up", async () => {
+		const { sqlite, db } = open();
+		const definition = { ...defaultDefinition('Help with support mail.'), scope: { sendAs: ['support@acme.com'], recipients: { kind: 'thread' as const } }, triggers: { watch: ['support@acme.com'] } };
+		const agent = await createAgent(db, { ownerUserId: 'u1', displayName: 'Ava', definition });
+		await setAgentStatus(db, { agentId: agent.id, byUserId: 'u1', status: 'active' });
+		const email = addMail(sqlite, { from: 'pat@customer.com' });
+		// Only saving the check's result fails; everything else works.
+		sqlite.exec(`CREATE TRIGGER break_check BEFORE UPDATE OF security_json ON emails
+		             BEGIN SELECT RAISE(ABORT, 'check failed'); END;`);
+		await organizeInbound(db, 'u1', email, { hasAttachment: false });
+		expect(sqlite.query(`SELECT COUNT(*) AS n FROM agent_runs`).get()).toEqual({ n: 0 });
+
+		// The same mail with the check working does wake the agent, so the test is fair.
+		sqlite.exec('DROP TRIGGER break_check');
+		const again = addMail(sqlite, { from: 'pat@customer.com' });
+		await organizeInbound(db, 'u1', again, { hasAttachment: false });
+		expect(sqlite.query(`SELECT COUNT(*) AS n FROM agent_runs`).get()).toEqual({ n: 1 });
+		// The mail is still filed.
+		expect((sqlite.query(`SELECT in_inbox FROM emails WHERE id = ?`).get(email) as { in_inbox: number }).in_inbox).toBe(1);
 	});
 });

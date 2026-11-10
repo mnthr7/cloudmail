@@ -116,7 +116,8 @@ export async function organizeInbound(
 
 	// Phishing checks (sender proof, lookalikes, impersonation). A failure here
 	// must not stop the mail being filed.
-	let phishing = false;
+	// Unknown until the check succeeds: an agent only wakes for mail that was checked and isn't phishing.
+	let phishing = true;
 	try {
 		const security = await checkInbound(db, userId, emailId, headers);
 		phishing = security?.verdict === 'phishing';
@@ -143,7 +144,7 @@ export async function organizeInbound(
 
 	// Wake an agent watching this address (A5). Mail that was blocked or marked
 	// spam returned above. A failure here must not undo the filing.
-	// Never hand an agent mail that looks like phishing: it could be bait for it.
+	// Never hand an agent mail that looks like phishing, or that couldn't be checked: it could be bait.
 	if (phishing) return;
 	try {
 		await enqueueMailRuns(db, userId, emailId, headers);

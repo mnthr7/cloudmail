@@ -64,4 +64,6 @@ export type InviteView = {
 	onCalendar: boolean;
 	/** For an RSVP to your event: who answered and what. */
 	reply: { email: string; name: string | null; partstat: string } | null;
+	/** For a guest proposing a new time (COUNTER): your event's time as it stands now. */
+	proposal: { current: string | null } | null;
 };

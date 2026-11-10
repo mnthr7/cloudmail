@@ -186,3 +186,39 @@ export function replyFile(input: {
 	];
 	return `${lines.map(foldLine).join('\r\n')}\r\n`;
 }
+
+/**
+ * The organizer turning down a guest's proposed new time (METHOD:DECLINECOUNTER).
+ * Carries the event as it stands, so the guest's calendar keeps the current time.
+ */
+export function declineCounterFile(input: {
+	uid: string;
+	sequence: number;
+	title: string;
+	organizer: InvitePerson;
+	attendee: InvitePerson;
+	start: { allDay: boolean; local: string; timezone: string };
+	now: Date;
+}): string {
+	const start = input.start.allDay
+		? `DTSTART;VALUE=DATE:${compact(input.start.local.slice(0, 10))}`
+		: `DTSTART;TZID=${input.start.timezone}:${compact(input.start.local)}`;
+	const lines = [
+		'BEGIN:VCALENDAR',
+		'VERSION:2.0',
+		'PRODID:-//CloudMail//Calendar//EN',
+		'METHOD:DECLINECOUNTER',
+		'BEGIN:VEVENT',
+		`UID:${input.uid}`,
+		`SEQUENCE:${input.sequence}`,
+		`DTSTAMP:${utcStamp(input.now.toISOString())}`,
+		start,
+		`SUMMARY:${escapeText(input.title)}`,
+		`ORGANIZER${cn(input.organizer.name)}:mailto:${cleanAddress(input.organizer.email)}`,
+		`ATTENDEE${cn(input.attendee.name)}:mailto:${cleanAddress(input.attendee.email)}`,
+		'END:VEVENT',
+		'END:VCALENDAR'
+	];
+	return `${lines.map(foldLine).join('\r\n')}\r\n`;
+}
+

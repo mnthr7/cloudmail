@@ -9,6 +9,7 @@ import { threadParticipants } from './agent-brain.ts';
 import { getAgent, liveWorkspaceAddresses, sendableForAuthor } from './agents-store.ts';
 import { getUserById } from './auth.ts';
 import { createLabel, listLabels } from './labels-store.ts';
+import { addMemory, MemoryError } from './agent-memory-store.ts';
 import {
 	expandToThreads,
 	getEmailForUser,
@@ -292,6 +293,28 @@ async function carryOut(db: D1Database, action: ClaimedAction, now: Date): Promi
 				threadId
 			});
 			return queued.id;
+		}
+
+		case 'propose_memory': {
+			// Only ever after a human said yes (the policy never lets it run on its own).
+			if (!action.decided_by_principal_id) throw new StopError('needs_approval');
+			try {
+				const added = await addMemory(
+					db,
+					{
+						agentId: action.agent_principal_id,
+						fact: payload.fact,
+						source: 'agent',
+						byPrincipalId: action.decided_by_principal_id,
+						actionId: action.id
+					},
+					now
+				);
+				return added.id;
+			} catch (error) {
+				if (error instanceof MemoryError) throw new StopError(error.code === 'full' ? 'memory_full' : 'empty');
+				throw error;
+			}
 		}
 
 		default:

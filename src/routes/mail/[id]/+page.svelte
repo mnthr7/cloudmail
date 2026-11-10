@@ -435,7 +435,12 @@
 			<AskAgentForm agents={data.agents} emailId={latest.id} onClose={() => (askOpen = false)} />
 		{/if}
 
-		<AgentActivity activity={data.activity} emailId={latest?.id ?? null} hasAgents={data.agents.length > 0} />
+		<AgentActivity
+			activity={data.activity}
+			emailId={latest?.id ?? null}
+			hasAgents={data.agents.length > 0}
+			agentNames={data.agents.map((agent) => agent.name)}
+		/>
 
 		<SuggestedReplies
 			suggestion={data.suggestion}

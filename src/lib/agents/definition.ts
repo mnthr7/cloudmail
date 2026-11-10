@@ -10,8 +10,8 @@ import {
 
 /**
  * What an agent is allowed to see and do, stored as one version of its
- * definition (docs/specs/agent-staff-platform.md, A3). Memory joins this shape
- * in a later phase.
+ * definition (docs/specs/agent-staff-platform.md, A3). What it remembers
+ * lives beside the definition (agent_memory), so facts don't need a new version.
  */
 
 /** Models an agent can run on. The first is the default. */
@@ -54,9 +54,23 @@ export type AgentScope = {
 export type AgentTriggers = {
 	/** New mail to any of these addresses starts a run. */
 	watch: string[];
+	/**
+	 * Only mail a verified teammate sends to a watched address (a forward, a CC)
+	 * wakes it, and what they wrote is their request. Mail from anyone else is
+	 * left alone. Sam works this way.
+	 */
+	teamOnly: boolean;
 };
 
+/**
+ * A specialist has one job (Demos, Billing). A generalist (Sam, A15) takes
+ * whatever the team hands it, logs what kind of task each was, and suggests a
+ * specialist when the same kind keeps coming up.
+ */
+export type AgentKind = 'specialist' | 'generalist';
+
 export type AgentDefinition = {
+	kind: AgentKind;
 	job: string;
 	capabilities: Partial<Record<Capability, CapabilitySetting>>;
 	scope: AgentScope;
@@ -77,7 +91,18 @@ export class AgentDefinitionError extends Error {
 	 * (checked by the store). `trigger`, `model`, `budget`: malformed fields.
 	 */
 	constructor(
-		readonly code: 'job' | 'capability' | 'level' | 'limit' | 'scope' | 'send_as' | 'watch' | 'trigger' | 'model' | 'budget'
+		readonly code:
+			| 'job'
+			| 'kind'
+			| 'capability'
+			| 'level'
+			| 'limit'
+			| 'scope'
+			| 'send_as'
+			| 'watch'
+			| 'trigger'
+			| 'model'
+			| 'budget'
 	) {
 		super(code);
 		this.name = 'AgentDefinitionError';
@@ -95,12 +120,13 @@ export function defaultDefinition(job: string): AgentDefinition {
 
 /** Older stored versions predate triggers, model and budget; they get the defaults. */
 function parseTriggers(value: unknown): AgentTriggers {
-	if (value === undefined || value === null) return { watch: [] };
+	if (value === undefined || value === null) return { watch: [], teamOnly: false };
 	if (typeof value !== 'object') throw new AgentDefinitionError('trigger');
 	const raw = value as Record<string, unknown>;
 	const watch = raw.watch === undefined ? [] : Array.isArray(raw.watch) ? raw.watch.map(normalizeAddress) : null;
 	if (!watch || watch.some((address) => address === null)) throw new AgentDefinitionError('trigger');
-	return { watch: [...new Set(watch as string[])] };
+	if (raw.teamOnly !== undefined && typeof raw.teamOnly !== 'boolean') throw new AgentDefinitionError('trigger');
+	return { watch: [...new Set(watch as string[])], teamOnly: raw.teamOnly === true };
 }
 
 function parseModel(value: unknown): AgentModel {
@@ -138,7 +164,12 @@ export function parseDefinition(input: unknown): AgentDefinition {
 		capabilities[name] = parseSetting(setting);
 	}
 
+	if (raw.kind !== undefined && raw.kind !== 'specialist' && raw.kind !== 'generalist') {
+		throw new AgentDefinitionError('kind');
+	}
+
 	return {
+		kind: raw.kind === 'generalist' ? 'generalist' : 'specialist',
 		job,
 		capabilities,
 		scope: parseScope(raw.scope),

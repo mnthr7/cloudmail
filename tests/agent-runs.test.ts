@@ -209,7 +209,8 @@ describe('agent definitions', () => {
 			capabilities: { draft_reply: { level: 'auto' } },
 			scope: { sendAs: [], recipients: { kind: 'thread' } }
 		});
-		expect(old.triggers).toEqual({ watch: [] });
+		expect(old.triggers).toEqual({ watch: [], teamOnly: false });
+		expect(old.kind).toBe('specialist');
 		expect(old.model).toBe('claude-opus-5-5');
 		expect(old.monthlyBudgetCents).toBe(1000);
 	});
@@ -256,6 +257,7 @@ describe('the agent brain', () => {
 			'draft_reply',
 			'organize',
 			'write_note',
+			'propose_memory',
 			'suggest_replies'
 		]);
 		// New mail gets suggestions, not drafts or sends; a reply request gets only suggestions.

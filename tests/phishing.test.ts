@@ -139,16 +139,24 @@ describe('reading authentication results', () => {
 				'mx.example; spf=pass smtp.mailfrom=x.com; dkim=pass header.i=@x.com; dmarc=pass',
 				'amazonses.com; spf=fail smtp.mailfrom=x.com; dkim=none; dmarc=fail header.from=x.com'
 			])
-		).toEqual({ spf: 'fail', dkim: 'none', dmarc: 'fail' });
+		).toMatchObject({ spf: 'fail', dkim: 'none', dmarc: 'fail' });
 	});
 
 	test('Received-SPF and missing headers', () => {
-		expect(parseAuthResults([], ['SoftFail (domain does not designate 1.2.3.4)'])).toEqual({
+		expect(parseAuthResults([], ['SoftFail (domain does not designate 1.2.3.4)'])).toMatchObject({
 			spf: 'softfail',
 			dkim: null,
 			dmarc: null
 		});
-		expect(parseAuthResults([])).toEqual(UNKNOWN);
+		expect(parseAuthResults([])).toMatchObject(UNKNOWN);
+	});
+
+	test('a forged pass never outvotes the real result', () => {
+		const auth = parseAuthResults([
+			'evil.example; dmarc=pass header.from=acme.com',
+			'amazonses.com; spf=pass smtp.mailfrom=evil.com; dkim=pass header.d=evil.com; dmarc=none header.from=acme.com'
+		]);
+		expect(auth.dmarc).toBe('none');
 	});
 });
 

@@ -169,14 +169,21 @@ export async function threadActivity(db: D1Database, userId: string, threadId: s
 			.all<ActionRow>(),
 		db
 			.prepare(
-				`SELECT n.id, n.kind, n.body, n.created_at, p.display_name AS agent_name
+				`SELECT n.id, n.kind, n.body, n.created_at, p.display_name AS agent_name, p.kind AS author_kind
 				 FROM thread_notes n LEFT JOIN principals p ON p.id = n.author_principal_id
 				 WHERE n.mailbox_user_id = ? AND n.thread_id = ?
 				 ORDER BY n.created_at ASC
 				 LIMIT 100`
 			)
 			.bind(userId, threadId)
-			.all<{ id: string; kind: 'note' | 'alert'; body: string; created_at: string; agent_name: string | null }>(),
+			.all<{
+				id: string;
+				kind: 'note' | 'alert';
+				body: string;
+				created_at: string;
+				agent_name: string | null;
+				author_kind: string | null;
+			}>(),
 		db
 			.prepare(
 				`SELECT t.created_at, p.display_name AS by_name
@@ -220,7 +227,14 @@ export async function threadActivity(db: D1Database, userId: string, threadId: s
 		});
 	}
 	for (const note of notes.results) {
-		items.push({ kind: note.kind, id: note.id, agentName: note.agent_name, body: note.body, at: note.created_at });
+		items.push({
+			kind: note.kind,
+			id: note.id,
+			agentName: note.agent_name,
+			byHuman: note.author_kind === 'human',
+			body: note.body,
+			at: note.created_at
+		});
 	}
 	if (takeover) items.push({ kind: 'takeover', by: takeover.by_name, at: takeover.created_at });
 	items.sort((a, b) => a.at.localeCompare(b.at));

@@ -13,11 +13,15 @@ import {
 	listShadowActions,
 	runUsageByAgent,
 	spendByAgent,
+	taskPatterns,
 	type RunSummary,
+	type TaskPattern,
 	type ShadowAction
 } from '#lib/server/agent-runs-store.ts';
 import { providerStatusForUser } from '#lib/server/ai-provider-store.ts';
 import { suggestionStats, type SuggestionStats } from '#lib/server/reply-suggestions-store.ts';
+import { memoryByAgent, type MemoryFact } from '#lib/server/agent-memory-store.ts';
+import { SPECIALIST_AFTER } from '#lib/agents/sam.ts';
 
 export const load: PageServerLoad = async ({ locals, platform }) => {
 	const empty: {
@@ -36,8 +40,14 @@ export const load: PageServerLoad = async ({ locals, platform }) => {
 		volume: Record<string, number>;
 		/** What the user did with each agent's suggested replies over the last 30 days. */
 		suggestions: SuggestionStats[];
+		/** Each agent's remembered facts. */
+		memory: Record<string, MemoryFact[]>;
+		/** Kinds of task a generalist keeps getting: candidates for a specialist. */
+		patterns: TaskPattern[];
 		demo: boolean;
 	} = {
+		memory: {},
+		patterns: [],
 		usage: {},
 		volume: {},
 		suggestions: [],
@@ -69,10 +79,12 @@ export const load: PageServerLoad = async ({ locals, platform }) => {
 	]);
 	const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 	const watchable = [...new Set([...sendAs, ...agents.flatMap((agent) => agent.definition.triggers.watch)])];
-	const [usage, volume, suggestions] = await Promise.all([
+	const [usage, volume, suggestions, memory, patterns] = await Promise.all([
 		runUsageByAgent(db, locals.user.id, since).catch(() => empty.usage),
 		inboundVolume(db, locals.user.id, watchable, since).catch(() => empty.volume),
-		suggestionStats(db, locals.user.id, since).catch(() => [])
+		suggestionStats(db, locals.user.id, since).catch(() => []),
+		memoryByAgent(db, agents.map((agent) => agent.id)).catch(() => empty.memory),
+		taskPatterns(db, locals.user.id, since, SPECIALIST_AFTER).catch(() => [])
 	]);
 	const key = providers.find((row) => row.provider === 'anthropic');
 	const aiKey: 'ready' | 'missing' | 'rejected' =
@@ -88,6 +100,8 @@ export const load: PageServerLoad = async ({ locals, platform }) => {
 		isAdmin: Boolean(locals.user.is_admin),
 		usage,
 		volume,
+		memory,
+		patterns,
 		suggestions,
 		demo: false
 	};

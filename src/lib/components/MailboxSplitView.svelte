@@ -898,6 +898,7 @@
 							activity={threadData?.activity ?? null}
 							emailId={latest?.id ?? null}
 							hasAgents={askAgents.length > 0}
+							agentNames={askAgents.map((agent) => agent.name)}
 						/>
 
 						<SuggestedReplies

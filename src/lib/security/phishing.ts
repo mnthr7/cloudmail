@@ -15,8 +15,6 @@ export type AuthSummary = {
 	spf: AuthResult | null;
 	dkim: AuthResult | null;
 	dmarc: AuthResult | null;
-	/** Domains whose DKIM signature passed (header.d, or the domain of header.i). Absent on older results. */
-	dkimDomains?: string[];
 };
 
 export type PhishingReasonCode =
@@ -62,7 +60,6 @@ function asResult(value: string): AuthResult | null {
  */
 export function parseAuthResults(authResults: string[], receivedSpf: string[] = []): AuthSummary {
 	const found: Record<'spf' | 'dkim' | 'dmarc', AuthResult[]> = { spf: [], dkim: [], dmarc: [] };
-	const dkimDomains = new Set<string>();
 	for (const header of authResults) {
 		// Each method's result and its properties sit between semicolons.
 		for (const clause of header.split(';')) {
@@ -72,12 +69,6 @@ export function parseAuthResults(authResults: string[], receivedSpf: string[] = 
 			const result = asResult(match[2]);
 			if (!result) continue;
 			found[method].push(result);
-			if (method === 'dkim' && result === 'pass') {
-				const domain =
-					clause.match(/\bheader\.d\s*=\s*([a-z0-9.-]+)/i)?.[1] ??
-					clause.match(/\bheader\.i\s*=\s*[^@\s;]*@([a-z0-9.-]+)/i)?.[1];
-				if (domain) dkimDomains.add(domain.toLowerCase().replace(/\.$/, ''));
-			}
 		}
 	}
 	for (const header of receivedSpf) {
@@ -91,28 +82,19 @@ export function parseAuthResults(authResults: string[], receivedSpf: string[] = 
 		}
 		return 'pass';
 	};
-	return {
-		spf: worst(found.spf),
-		dkim: worst(found.dkim),
-		dmarc: worst(found.dmarc),
-		dkimDomains: [...dkimDomains]
-	};
+	return { spf: worst(found.spf), dkim: worst(found.dkim), dmarc: worst(found.dmarc) };
 }
 
 /**
- * Whether the message provably comes from its From domain: DMARC passed, or a
- * DKIM signature from that same domain passed and DMARC didn't fail. A DKIM
- * pass on its own isn't enough: anyone can sign with their own domain and put
- * someone else's address in From.
+ * Whether the message provably comes from its From domain, for deciding if a
+ * teammate is giving an agent instructions. Only DMARC counts: it checks the
+ * signature or sender against the From domain itself, and the results are
+ * combined worst-first, so a forged "pass" a sender adds to their own message
+ * can't outvote the receiving server's real result. A DKIM pass alone proves
+ * only that someone signed, possibly with their own domain.
  */
-export function fromDomainVerified(auth: AuthSummary | null | undefined, fromAddress: string): boolean {
-	if (!auth) return false;
-	if (auth.dmarc === 'pass') return true;
-	if (auth.dmarc === 'fail' || auth.dmarc === 'softfail' || auth.dmarc === 'permerror') return false;
-	const fromDomain = (fromAddress.split('@')[1] ?? '').trim().toLowerCase();
-	if (!fromDomain) return false;
-	const fromOrg = registrableDomain(fromDomain);
-	return (auth.dkimDomains ?? []).some((domain) => registrableDomain(domain) === fromOrg);
+export function fromDomainVerified(auth: AuthSummary | null | undefined): boolean {
+	return auth?.dmarc === 'pass';
 }
 
 /** Brands phishers imitate most. Short names only match exactly, to avoid false alarms. */

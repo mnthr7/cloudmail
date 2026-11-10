@@ -151,11 +151,12 @@ describe('reading authentication results', () => {
 		expect(parseAuthResults([])).toMatchObject(UNKNOWN);
 	});
 
-	test('which domains signed', () => {
+	test('a forged pass never outvotes the real result', () => {
 		const auth = parseAuthResults([
-			'amazonses.com; spf=pass smtp.mailfrom=bounce.gmail.com; dkim=pass header.d=gmail.com header.s=x; dkim=pass header.i=@Acme.com.; dmarc=none'
+			'evil.example; dmarc=pass header.from=acme.com',
+			'amazonses.com; spf=pass smtp.mailfrom=evil.com; dkim=pass header.d=evil.com; dmarc=none header.from=acme.com'
 		]);
-		expect(auth.dkimDomains).toEqual(['gmail.com', 'acme.com']);
+		expect(auth.dmarc).toBe('none');
 	});
 });
 

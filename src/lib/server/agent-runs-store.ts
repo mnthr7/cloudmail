@@ -2,7 +2,7 @@ import type { D1Database } from '@cloudflare/workers-types';
 import { looksLikeAutoReply } from '#lib/agents/auto-reply.ts';
 import { parseDefinition } from '#lib/agents/definition.ts';
 import { fromDomainVerified, parseSecurity } from '#lib/security/phishing.ts';
-import { splitQuotedText } from '#lib/utils/quotes.ts';
+import { ownWords } from '#lib/agents/own-words.ts';
 import { stripHtml } from './html.ts';
 import type { AgentDefinition } from '#lib/agents/definition.ts';
 import type { AgentStatus } from '#lib/agents/policy.ts';
@@ -599,7 +599,7 @@ type TeamMail = {
  * Whether this mail is a teammate handing an agent work, and if so what they
  * asked. The sender must be a human's address in the workspace that no agent
  * sends from (so one agent can't instruct another), the message must provably
- * come from that domain (DMARC pass, or an aligned DKIM pass), and the
+ * come from that domain (DMARC pass), and the
  * teammate must be allowed to direct this agent. What they wrote, above any
  * forwarded or quoted part, is the request; the rest of the thread is data.
  */
@@ -615,8 +615,8 @@ async function teamRequest(
 	const senderUserId = workspaceAddresses.get(from);
 	if (!senderUserId) return null;
 
-	// Signed by the From domain itself, not just signed by someone.
-	if (!fromDomainVerified(parseSecurity(email.security_json)?.auth, from)) return null;
+	// DMARC passed for the From domain: not just signed by someone, and not outvoted by a forged header.
+	if (!fromDomainVerified(parseSecurity(email.security_json)?.auth)) return null;
 
 	const agents = await db
 		.prepare(
@@ -640,13 +640,14 @@ async function teamRequest(
 	if (!agent || !canManage(agent, sender)) return null;
 
 	const text = (email.body_text?.trim() || (email.body_html ? stripHtml(email.body_html) : '')).trim();
-	const written = splitQuotedText(text).body.split(/^-{2,}\s*Forwarded message\s*-{2,}/im)[0]?.trim() ?? '';
+	// Only what they typed themselves is an instruction; a bare forward asks for nothing in particular.
+	const written = ownWords(text);
 	const subject = email.subject?.trim() ?? '';
 	const to = parseEmailAddresses([email.to_addr]).map((address) => address.toLowerCase());
 	const direct = agentAddresses.some((address) => to.includes(address));
 	const request = (
 		direct
-			? `${written || '(no message)'}${subject ? `\n\n(Subject: ${subject})` : ''}`
+			? `${written || '(They forwarded this without a note. Look at it and suggest what to do, but take no other action until they say.)'}${subject ? `\n\n(Subject: ${subject})` : ''}`
 			: `I copied you on this message I sent. Help with whatever it needs from you.\n\n${written}`
 	).slice(0, MAX_REQUEST_LENGTH);
 	return { request, requestedBy: sender.id };

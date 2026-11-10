@@ -176,6 +176,8 @@ export type ThreadSummary = {
 	labels: { id: string; name: string; color: string }[];
 	/** How many replies an agent suggested and the user hasn't acted on. */
 	suggested_replies?: number;
+	/** The worst phishing verdict on a message in the conversation. */
+	phishing?: 'phishing' | 'suspicious';
 	created_at: string;
 };
 
@@ -217,6 +219,8 @@ export type ThreadMessage = {
 	created_at: string;
 	/** Raw List-Unsubscribe header. Absent or null hides the Unsubscribe control. */
 	list_unsubscribe?: string | null;
+	/** Phishing checks from when it arrived (MessageSecurity as JSON). Null on older mail. */
+	security_json?: string | null;
 	attachments: EmailAttachmentMeta[];
 };
 

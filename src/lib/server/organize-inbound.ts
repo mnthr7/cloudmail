@@ -1,4 +1,5 @@
 import type { D1Database } from '@cloudflare/workers-types';
+import { checkInbound, readPhishingToSpam } from './phishing-check.ts';
 import { parseEmailAddress } from '#lib/email-address.ts';
 import {
 	assignCategory,
@@ -15,7 +16,12 @@ import { expandToThreads, setEmailFlags } from './mail-store';
 import { setThreadColumns, setThreadLabels, type ThreadColumnPatch } from './organizing-store';
 import { sendOutboundEmail } from './send-mail';
 
-export type OrganizeInboundHeaders = CategoryHeaders & { hasAttachment: boolean };
+export type OrganizeInboundHeaders = CategoryHeaders & {
+	hasAttachment: boolean;
+	/** The receiving server's SPF, DKIM and DMARC results, for the phishing checks. */
+	authenticationResults?: string | null;
+	receivedSpf?: string | null;
+};
 
 /**
  * Actions from one filter. `actionForwardTo` is ignored here; the caller sends it.
@@ -108,6 +114,21 @@ export async function organizeInbound(
 		return;
 	}
 
+	// Phishing checks (sender proof, lookalikes, impersonation). A failure here
+	// must not stop the mail being filed.
+	// Unknown until the check succeeds: an agent only wakes for mail that was checked and isn't phishing.
+	let phishing = true;
+	try {
+		const security = await checkInbound(db, userId, emailId, headers);
+		phishing = security?.verdict === 'phishing';
+		if (phishing && (await readPhishingToSpam(db, userId))) {
+			await setThreadColumns(db, userId, [emailId], { is_spam: 1 });
+			return;
+		}
+	} catch (error) {
+		console.error('Failed to check inbound mail for phishing', emailId, error);
+	}
+
 	if (sibling?.is_muted === 1) {
 		await setThreadColumns(db, userId, [emailId], { is_muted: 1, in_inbox: 0 });
 	} else {
@@ -123,6 +144,8 @@ export async function organizeInbound(
 
 	// Wake an agent watching this address (A5). Mail that was blocked or marked
 	// spam returned above. A failure here must not undo the filing.
+	// Never hand an agent mail that looks like phishing, or that couldn't be checked: it could be bait.
+	if (phishing) return;
 	try {
 		await enqueueMailRuns(db, userId, emailId, headers);
 	} catch (error) {

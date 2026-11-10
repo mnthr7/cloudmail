@@ -10,6 +10,7 @@
 	import { isMarkdownAttachment } from '#lib/utils/attachments.ts';
 	import { resolveMessageBody } from '#lib/utils/markdown.ts';
 	import { senderWarning } from '#lib/security/sender.ts';
+	import { parseSecurity } from '#lib/security/phishing.ts';
 	import type { ThreadMessage } from '#lib/types.ts';
 
 	let {
@@ -27,8 +28,11 @@
 
 	const outbound = $derived(message.direction === 'outbound');
 	const sender = $derived(outbound ? 'me' : message.from_addr);
+	const security = $derived(outbound ? null : parseSecurity(message.security_json));
 	const nameWarning = $derived.by(() => {
 		if (outbound) return null;
+		// The phishing banner already says it.
+		if (security?.verdict && security.reasons.some((reason) => reason.code === 'name_mismatch')) return null;
 		const name = message.from_name?.trim();
 		return senderWarning(name ? `${name} <${message.from_addr}>` : message.from_addr);
 	});
@@ -147,6 +151,21 @@
 
 <article class="message" class:collapsed={!expanded}>
 	{#if expanded}
+		{#if security?.verdict}
+			<div class="phishing-banner" class:severe={security.verdict === 'phishing'} role="alert">
+				<p class="phishing-title">
+					<Icon name={security.verdict === 'phishing' ? 'spam-2-line' : 'error-warning-line'} size={16} />
+					{security.verdict === 'phishing'
+						? "This looks like phishing. Don't click links, open attachments, or send money or passwords."
+						: 'Be careful with this message.'}
+				</p>
+				<ul>
+					{#each security.reasons as reason (reason.code)}
+						<li>{reason.text}</li>
+					{/each}
+				</ul>
+			</div>
+		{/if}
 		{#if nameWarning}
 			<p class="sender-banner">{nameWarning}</p>
 		{/if}
@@ -261,6 +280,37 @@
 		color: var(--color-text);
 		background: var(--tone-warn-bg);
 		border-radius: 0.5rem;
+	}
+
+.phishing-banner {
+		margin: 0 0 0.75rem;
+		padding: 0.625rem 0.875rem;
+		font-size: 0.8125rem;
+		line-height: 1.5;
+		color: var(--color-text);
+		background: var(--tone-warn-bg);
+		border-radius: 0.5rem;
+	}
+
+	.phishing-banner.severe {
+		box-shadow: inset 3px 0 0 var(--color-danger);
+	}
+
+	.phishing-title {
+		display: flex;
+		align-items: flex-start;
+		gap: 0.5rem;
+		font-weight: 600;
+	}
+
+	.phishing-banner.severe .phishing-title :global(i) {
+		color: var(--color-danger);
+	}
+
+	.phishing-banner ul {
+		margin: 0.25rem 0 0 1.5rem;
+		padding: 0;
+		list-style: disc;
 	}
 
 	.head {

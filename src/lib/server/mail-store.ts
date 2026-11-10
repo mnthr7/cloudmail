@@ -1,5 +1,6 @@
 import type { D1Database, R2Bucket } from '@cloudflare/workers-types';
 import { openSuggestionCounts } from './reply-suggestions-store.ts';
+import type { PhishingVerdict } from '#lib/security/phishing.ts';
 import { MAILBOX_PAGE_SIZE } from '#lib/constants.ts';
 import { MAX_BODY_BYTES } from './constants';
 import { stripQuotedText } from '#lib/utils/quotes.ts';
@@ -394,7 +395,38 @@ export async function listMailbox(
 		if (count) thread.suggested_replies = count;
 	}
 
+	// The worst phishing verdict on any message in each conversation. Never blocks the list.
+	const flagged = await phishingVerdicts(db, userId, threadIds).catch(() => new Map<string, PhishingVerdict>());
+	for (const thread of threads) {
+		const verdict = flagged.get(thread.thread_id);
+		if (verdict) thread.phishing = verdict;
+	}
+
 	return { threads, total, page, pageCount, pageSize };
+}
+
+async function phishingVerdicts(
+	db: D1Database,
+	userId: string,
+	threadIds: string[]
+): Promise<Map<string, PhishingVerdict>> {
+	const verdicts = new Map<string, PhishingVerdict>();
+	if (threadIds.length === 0) return verdicts;
+	const { results } = await db
+		.prepare(
+			`SELECT COALESCE(thread_id, id) AS thread_id, json_extract(security_json, '$.verdict') AS verdict
+			 FROM emails
+			 WHERE user_id = ? AND direction = 'inbound' AND security_json IS NOT NULL
+			   AND json_extract(security_json, '$.verdict') IS NOT NULL
+			   AND COALESCE(thread_id, id) IN (SELECT value FROM json_each(?))`
+		)
+		.bind(userId, JSON.stringify(threadIds))
+		.all<{ thread_id: string; verdict: string }>();
+	for (const row of results) {
+		if (row.verdict === 'phishing') verdicts.set(row.thread_id, 'phishing');
+		else if (row.verdict === 'suspicious' && !verdicts.has(row.thread_id)) verdicts.set(row.thread_id, 'suspicious');
+	}
+	return verdicts;
 }
 
 /** `messages` is the whole conversation, oldest first. */
@@ -952,7 +984,7 @@ export async function listThreadMessages(
 			`SELECT e.id, e.direction, e.from_addr, e.from_name, e.to_addr, e.cc_addr, e.subject,
 			        e.body_text, e.body_html, e.message_id, e.references_header, e.reply_to_header,
 			        e.status, e.status_detail, e.is_read, e.is_starred, e.deleted_at, e.created_at,
-			        e.list_unsubscribe
+			        e.list_unsubscribe, e.security_json
 			 FROM emails e
 			 WHERE e.user_id = ?
 			 AND COALESCE(e.thread_id, e.id) = ?

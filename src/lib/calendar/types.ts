@@ -40,4 +40,28 @@ export type Occurrence = {
 	/** Where the series starts (its first occurrence), for "all events" edits. */
 	seriesStartLocal: string;
 	transparency: 'busy' | 'free';
+	/** Someone else organizes it (an invite you accepted). Null: it's yours. */
+	organizer: { email: string; name: string | null } | null;
+	/** Your answer to that invite. */
+	myStatus: string | null;
+	/** The email the invite came in. */
+	sourceEmailId: string | null;
+};
+
+export type AttendeeView = { email: string; name: string | null; partstat: string };
+
+/** An invite, update, cancellation or RSVP that arrived by email, as the reader shows it. */
+export type InviteView = {
+	id: string;
+	method: string;
+	title: string;
+	when: string;
+	location: string | null;
+	organizer: { email: string; name: string | null } | null;
+	/** Your answer, if you gave one. */
+	response: string | null;
+	/** It's on your calendar now. */
+	onCalendar: boolean;
+	/** For an RSVP to your event: who answered and what. */
+	reply: { email: string; name: string | null; partstat: string } | null;
 };

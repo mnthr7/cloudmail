@@ -13,6 +13,7 @@
 	let view = $state<View>(typeof window !== 'undefined' && window.innerWidth < 720 ? 'day' : 'week');
 	let anchor = $state(startOfDay(new Date()));
 	let calendars = $state<CalendarInfo[]>([]);
+	let addresses = $state<string[]>([]);
 	let occurrences = $state<Occurrence[]>([]);
 	let loading = $state(true);
 	let error = $state('');
@@ -84,7 +85,9 @@
 			try {
 				const res = await fetch(`/api/calendar/calendars?timezone=${encodeURIComponent(browserZone)}`);
 				if (!res.ok) throw new Error('calendars');
-				calendars = (await res.json()).calendars;
+				const body = await res.json();
+				calendars = body.calendars;
+				addresses = body.addresses ?? [];
 			} finally {
 				calendarsLoading = null;
 			}
@@ -217,8 +220,10 @@
 		editor = { occurrence: null, start: `${dateKey(base)}T${String(hour).padStart(2, '0')}:00` };
 	}
 
-	function done() {
-		editor = null;
+	let notice = $state('');
+	function done(close: boolean, message?: string) {
+		if (close) editor = null;
+		notice = message ?? '';
 		loadEvents();
 	}
 
@@ -328,6 +333,7 @@
 	{/if}
 
 	{#if error}<p class="error" role="alert">{error}</p>{/if}
+	{#if notice}<p class="error" role="status">{notice}</p>{/if}
 
 	{#if view === 'month'}
 		<div class="month surface-lg">
@@ -474,7 +480,7 @@
 </div>
 
 {#if editor && calendars.length > 0}
-	<EventEditor {calendars} occurrence={editor.occurrence} start={editor.start} onDone={done} onClose={() => (editor = null)} />
+	<EventEditor {calendars} {addresses} occurrence={editor.occurrence} start={editor.start} onDone={done} onClose={() => (editor = null)} />
 {/if}
 
 <style>

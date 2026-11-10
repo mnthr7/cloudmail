@@ -9,6 +9,7 @@ import {
 } from '#lib/server/mail-store.ts';
 import { displaySubject } from '#lib/server/threads.ts';
 import { askableAgents } from '#lib/server/agent-runs-store.ts';
+import { invitesForEmails } from '#lib/server/calendar-invites.ts';
 import { threadActivity, type ThreadActivity } from '#lib/server/thread-activity-store.ts';
 import { openSuggestion, type ReplySuggestion } from '#lib/server/reply-suggestions-store.ts';
 import { DEMO_MODE, DEMO_USER, generateDemoMessages, demoStore } from '#lib/server/demo.ts';
@@ -69,10 +70,13 @@ export const load: PageServerLoad = async ({ params, locals, platform, url }) =>
 	const threadId = email.thread_id ?? email.id;
 	const labels = await listThreadLabels(platform.env.DB, locals.user.id, threadId);
 	// Agents this user may ask for help here. A lookup failure only hides the button.
-	const [agents, suggestion, activity] = await Promise.all([
+	const [agents, suggestion, activity, invites] = await Promise.all([
 		askableAgents(platform.env.DB, locals.user.id).catch(() => []),
 		openSuggestion(platform.env.DB, locals.user.id, threadId).catch(() => null),
-		threadActivity(platform.env.DB, locals.user.id, threadId).catch((): ThreadActivity | null => null)
+		threadActivity(platform.env.DB, locals.user.id, threadId).catch((): ThreadActivity | null => null),
+		invitesForEmails(platform.env.DB, locals.user.id, messages.map((message) => message.id)).catch(
+			() => ({}) as Record<string, never>
+		)
 	]);
 
 	return {
@@ -87,7 +91,7 @@ export const load: PageServerLoad = async ({ params, locals, platform, url }) =>
 		isImportant: email.is_important === 1,
 		category: isMailCategory(email.category) ? email.category : 'primary',
 		labels,
-		messages: messages.map((message) => ({ ...message, is_read: true })),
+		messages: messages.map((message) => ({ ...message, is_read: true, invite: invites[message.id] ?? null })),
 		agents: agents.map((agent) => ({ id: agent.id, name: agent.name })),
 		suggestion,
 		activity

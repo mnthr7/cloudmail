@@ -117,3 +117,72 @@ export function calendarFile(input: {
 	];
 	return `${lines.map(foldLine).join('\r\n')}\r\n`;
 }
+
+export type InvitePerson = { email: string; name: string | null };
+
+/** The answers a guest can give. Anything else is never written into a file. */
+export const PARTSTATS = ['NEEDS-ACTION', 'ACCEPTED', 'TENTATIVE', 'DECLINED', 'DELEGATED'] as const;
+
+export function cleanPartstat(value: unknown): (typeof PARTSTATS)[number] {
+	const upper = typeof value === 'string' ? value.trim().toUpperCase() : '';
+	return (PARTSTATS as readonly string[]).includes(upper) ? (upper as (typeof PARTSTATS)[number]) : 'NEEDS-ACTION';
+}
+
+/** An address safe to put after "mailto:" in a file: one bare address, nothing that ends the line or a parameter. */
+function cleanAddress(value: string): string {
+	return /^[^\s@:;,"<>]+@[^\s@:;,"<>]+$/.test(value) ? value : 'invalid@invalid';
+}
+export type InviteAttendee = InvitePerson & { partstat: string };
+
+function cn(name: string | null): string {
+	// CN is a parameter value: quote it and drop characters that would break it.
+	return name ? `;CN="${name.replace(/["\r\n]/g, '').slice(0, 120)}"` : '';
+}
+
+/** ORGANIZER and ATTENDEE lines for an invite or an update. */
+export function peopleLines(organizer: InvitePerson, attendees: InviteAttendee[]): string[] {
+	return [
+		`ORGANIZER${cn(organizer.name)}:mailto:${cleanAddress(organizer.email)}`,
+		...attendees.map(
+			(attendee) =>
+				`ATTENDEE${cn(attendee.name)};ROLE=REQ-PARTICIPANT;PARTSTAT=${cleanPartstat(attendee.partstat)};RSVP=TRUE:mailto:${cleanAddress(attendee.email)}`
+		)
+	];
+}
+
+/**
+ * An RSVP (METHOD:REPLY) to someone else's invite: who we are, our answer,
+ * and enough of the event for their calendar to match it.
+ */
+export function replyFile(input: {
+	uid: string;
+	sequence: number;
+	title: string;
+	organizer: InvitePerson;
+	attendee: InvitePerson;
+	partstat: 'ACCEPTED' | 'TENTATIVE' | 'DECLINED';
+	start: { allDay: boolean; local: string; timezone: string };
+	now: Date;
+}): string {
+	const stamp = utcStamp(input.now.toISOString());
+	const start = input.start.allDay
+		? `DTSTART;VALUE=DATE:${compact(input.start.local.slice(0, 10))}`
+		: `DTSTART;TZID=${input.start.timezone}:${compact(input.start.local)}`;
+	const lines = [
+		'BEGIN:VCALENDAR',
+		'VERSION:2.0',
+		'PRODID:-//CloudMail//Calendar//EN',
+		'METHOD:REPLY',
+		'BEGIN:VEVENT',
+		`UID:${input.uid}`,
+		`SEQUENCE:${input.sequence}`,
+		`DTSTAMP:${stamp}`,
+		start,
+		`SUMMARY:${escapeText(input.title)}`,
+		`ORGANIZER${cn(input.organizer.name)}:mailto:${cleanAddress(input.organizer.email)}`,
+		`ATTENDEE${cn(input.attendee.name)};PARTSTAT=${cleanPartstat(input.partstat)}:mailto:${cleanAddress(input.attendee.email)}`,
+		'END:VEVENT',
+		'END:VCALENDAR'
+	];
+	return `${lines.map(foldLine).join('\r\n')}\r\n`;
+}

@@ -10,6 +10,7 @@ import {
 } from '#lib/server/mail-store.ts';
 import { isMailCategory } from '#lib/organizing/categories.ts';
 import { askableAgents } from '#lib/server/agent-runs-store.ts';
+import { invitesForEmails } from '#lib/server/calendar-invites.ts';
 import { threadActivity, type ThreadActivity } from '#lib/server/thread-activity-store.ts';
 import { openSuggestion, recordReplyForSuggestions } from '#lib/server/reply-suggestions-store.ts';
 import {
@@ -127,16 +128,17 @@ export const GET: RequestHandler = async ({ params, locals, platform, url }) => 
 
 	// Agents this user can hand the thread to, for the reader's "Ask an agent",
 	// and the replies one already suggested.
-	const [agents, suggestion, activity] = await Promise.all([
+	const [agents, suggestion, activity, invites] = await Promise.all([
 		askableAgents(db, locals.user.id).catch(() => []),
 		openSuggestion(db, locals.user.id, threadId).catch(() => null),
-		threadActivity(db, locals.user.id, threadId).catch((): ThreadActivity | null => null)
+		threadActivity(db, locals.user.id, threadId).catch((): ThreadActivity | null => null),
+		invitesForEmails(db, locals.user.id, messages.map((message) => message.id)).catch(() => ({}))
 	]);
 
 	return json({
 		threadId,
 		subject: displaySubject(messages[0]?.subject ?? email.subject),
-		messages,
+		messages: messages.map((message) => ({ ...message, invite: invites[message.id as keyof typeof invites] ?? null })),
 		draft: draft ?? null,
 		inInbox: email.in_inbox === 1,
 		isMuted: email.is_muted === 1,

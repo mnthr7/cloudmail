@@ -1,4 +1,6 @@
 import type { D1Database, R2Bucket } from '@cloudflare/workers-types';
+import { isCalendarAttachment, recordCalendarMail } from './calendar-invites.ts';
+import { MAX_ICS_BYTES } from '#lib/calendar/ics-parse.ts';
 import type { DeliveryStatus } from '#lib/types.ts';
 import { insertAttachmentBytes } from './attachments';
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS_PER_EMAIL, MAX_BODY_BYTES } from './constants';
@@ -142,7 +144,8 @@ async function handleInboundEmail(
 		listUnsubscribePost
 	});
 
-	const hasAttachment = await storeInboundAttachments(env, client, providerId, emailId);
+	const calendarFiles: string[] = [];
+	const hasAttachment = await storeInboundAttachments(env, client, providerId, emailId, calendarFiles);
 
 	// A filter bug must not make Resend retry the webhook and store a second copy.
 	try {
@@ -167,6 +170,13 @@ async function handleInboundEmail(
 		console.error('Failed to organize inbound mail', emailId, error);
 	}
 
+	// Invites, updates, cancellations and RSVPs. Never blocks the mail itself.
+	if (calendarFiles.length) {
+		await recordCalendarMail(env.DB, route.userId, emailId, calendarFiles).catch((error) =>
+			console.error('Failed to read the calendar part', emailId, error)
+		);
+	}
+
 	return {
 		handled: true,
 		note: `Delivered ${providerId} to ${route.address}${route.viaCatchall ? ' (catch-all)' : ''}`
@@ -177,7 +187,9 @@ async function storeInboundAttachments(
 	env: InboundEnv,
 	client: ResendClient,
 	providerId: string,
-	emailId: string
+	emailId: string,
+	/** Calendar files found among the attachments, as text, for invites and RSVPs. */
+	calendars: string[] = []
 ): Promise<boolean> {
 	let attachments;
 	try {
@@ -197,6 +209,9 @@ async function storeInboundAttachments(
 		try {
 			const bytes = await client.downloadAttachment(attachment.download_url);
 			if (bytes.byteLength > MAX_ATTACHMENT_BYTES) continue;
+			if (isCalendarAttachment(attachment.content_type, attachment.filename) && bytes.byteLength <= MAX_ICS_BYTES) {
+				calendars.push(new TextDecoder().decode(bytes));
+			}
 
 			await insertAttachmentBytes(
 				env.DB,

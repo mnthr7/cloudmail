@@ -9,7 +9,8 @@ export const GET: RequestHandler = async ({ url, locals, platform }) => {
 	try {
 		const timezone = url.searchParams.get('timezone') || 'UTC';
 		const calendars = await ensureCalendars(who.db, who.userId, { name: locals.user?.name || 'Calendar', timezone });
-		return json({ calendars });
+		// Your addresses, for choosing where invites go out from.
+		return json({ calendars, addresses: locals.addresses.map((address) => address.address) });
 	} catch (error) {
 		return calendarFailure(error);
 	}

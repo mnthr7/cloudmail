@@ -3,7 +3,7 @@
 	import { describeRule, parseRule } from '#lib/calendar/recurrence.ts';
 	import { presetLabels, presetOf, ruleFor, type RepeatEnd, type RepeatPreset } from '#lib/calendar/presets.ts';
 	import { addDays, formatDate, parseDate } from '#lib/calendar/time.ts';
-	import type { CalendarInfo, Occurrence } from '#lib/calendar/types.ts';
+	import type { AttendeeView, CalendarInfo, Occurrence } from '#lib/calendar/types.ts';
 
 	/**
 	 * Create or edit an event. For a repeating event, saving or deleting asks
@@ -11,17 +11,21 @@
 	 */
 	let {
 		calendars,
+		addresses = [],
 		occurrence = null,
 		start = null,
 		onDone,
 		onClose
 	}: {
 		calendars: CalendarInfo[];
+		/** Your addresses, for choosing where invites go out from. */
+		addresses?: string[];
 		/** The occurrence being edited; null creates a new event. */
 		occurrence?: Occurrence | null;
 		/** For a new event: where it starts ("2026-11-10T09:00" or "2026-11-10" for all-day). */
 		start?: string | null;
-		onDone: () => void;
+		/** `close` false keeps the editor open to show a problem; `notice` is shown on the calendar. */
+		onDone: (close: boolean, notice?: string) => void;
 		onClose: () => void;
 	} = $props();
 
@@ -108,6 +112,65 @@
 	/** Set while asking "this event or all events?". */
 	let asking = $state<'save' | 'delete' | null>(null);
 
+	// Guests: only for events you organize (an accepted invite belongs to its organizer).
+	const invited = $derived(!!occurrence?.organizer);
+	let guests = $state<AttendeeView[]>([]);
+	let guestInput = $state('');
+	let sendFrom = $state('');
+	// Guests load after the editor opens (an event you're editing); a new event starts with none.
+	let guestsLoaded = $state(false);
+	let initialGuests = $state('');
+
+	$effect(() => {
+		if (!occurrence || occurrence.organizer) {
+			guestsLoaded = true;
+			return;
+		}
+		fetch(`/api/calendar/events/${occurrence.seriesId}`)
+			.then((res) => (res.ok ? res.json() : null))
+			.then((data) => {
+				guests = data?.attendees ?? [];
+				initialGuests = guests.map((guest) => guest.email).join(',');
+				sendFrom = data?.sendFrom ?? '';
+			})
+			.finally(() => (guestsLoaded = true));
+	});
+
+	const GUEST = /^[^\s@,;<>"]+@[^\s@,;<>"]+\.[^\s@,;<>"]+$/;
+
+	function addGuests(text: string) {
+		const own = new Set(addresses.map((address) => address.toLowerCase()));
+		const bad: string[] = [];
+		for (const raw of text.split(/[\s,;]+/)) {
+			const email = raw.replace(/^<|>$/g, '').trim().toLowerCase();
+			if (!email) continue;
+			if (!GUEST.test(email)) {
+				bad.push(raw);
+				continue;
+			}
+			if (own.has(email) || guests.some((guest) => guest.email === email)) continue;
+			guests = [...guests, { email, name: null, partstat: 'NEEDS-ACTION' }];
+		}
+		guestInput = bad.join(' ');
+		if (bad.length) error = `Not an email address: ${bad.join(', ')}`;
+	}
+
+	function guestKey(event: KeyboardEvent) {
+		if (event.key === 'Enter' || event.key === ',' || event.key === ';') {
+			event.preventDefault();
+			addGuests(guestInput);
+		} else if (event.key === 'Backspace' && !guestInput && guests.length) {
+			guests = guests.slice(0, -1);
+		}
+	}
+
+	const STATUS: Record<string, { icon: string; label: string }> = {
+		ACCEPTED: { icon: 'checkbox-circle-line', label: 'Going' },
+		TENTATIVE: { icon: 'question-line', label: 'Maybe' },
+		DECLINED: { icon: 'close-circle-line', label: 'Not going' },
+		'NEEDS-ACTION': { icon: 'time-line', label: 'No answer yet' }
+	};
+
 	const editing = $derived(occurrence !== null);
 	const isSeries = $derived(!!occurrence && occurrence.recurring && occurrence.eventId === occurrence.seriesId);
 	const isEditedCopy = $derived(!!occurrence && occurrence.eventId !== occurrence.seriesId);
@@ -122,7 +185,9 @@
 		calendar: 'Pick a calendar.',
 		occurrence: 'That occurrence no longer exists. Reload and try again.',
 		missing: 'That event no longer exists.',
-		text: 'Location or notes are too long.'
+		text: 'Location or notes are too long.',
+		guests: 'Check the guest addresses (up to 50).',
+		from: "You can't send invites from that address."
 	};
 
 	function payload(includeRepeat: boolean): Record<string, unknown> {
@@ -146,6 +211,11 @@
 				? formatDate(addDays(parseDate(form.endDate) ?? day!, 1))
 				: `${endDate}T${form.endTime}`
 		};
+		if (!invited && guestsLoaded) {
+			if (guestInput.trim()) addGuests(guestInput);
+			body.guests = guests.map((guest) => ({ email: guest.email, name: guest.name }));
+			if (sendFrom) body.sendFrom = sendFrom;
+		}
 		if (includeRepeat && day) {
 			const end: RepeatEnd =
 				endKind === 'after'
@@ -172,12 +242,23 @@
 				headers: body ? { 'Content-Type': 'application/json' } : undefined,
 				body: body ? JSON.stringify(body) : undefined
 			});
+			const data = await res.json().catch(() => null);
 			if (!res.ok) {
-				const data = await res.json().catch(() => null);
 				error = ERRORS[data?.error] ?? 'Could not save that.';
 				return;
 			}
-			onDone();
+			if (data?.invites?.error) {
+				if (method === 'DELETE') {
+					// The event is gone; say so on the calendar instead of keeping the editor open.
+					onDone(true, `Deleted, but guests couldn't be told: ${data.invites.error}`);
+					return;
+				}
+				// Saved, but the email didn't go out: say so rather than closing quietly.
+				error = `Saved, but invites couldn't be sent: ${data.invites.error}`;
+				onDone(false);
+				return;
+			}
+			onDone(true);
 		} catch {
 			error = 'Network error';
 		} finally {
@@ -327,6 +408,66 @@
 					{/if}
 				{/if}
 			</div>
+		{/if}
+
+		{#if invited && occurrence?.organizer}
+			<div class="organizer">
+				<Icon name="mail-line" size={15} />
+				<span>
+					Organized by {occurrence.organizer.email.endsWith('@invalid')
+						? 'someone else'
+						: occurrence.organizer.name || occurrence.organizer.email}{occurrence.myStatus === 'tentative'
+						? ' · You said maybe'
+						: ' · You’re going'}. Changes here only affect your calendar.
+				</span>
+				{#if occurrence.sourceEmailId}<a href={`/mail/${occurrence.sourceEmailId}`}>Open the email</a>{/if}
+			</div>
+		{:else}
+			<div class="field">
+				<span>Guests</span>
+				<div class="guests">
+					{#each guests as guest (guest.email)}
+						<span class="guest" title={STATUS[guest.partstat]?.label ?? guest.partstat}>
+							<Icon name={STATUS[guest.partstat]?.icon ?? 'time-line'} size={13} />
+							{guest.name || guest.email}
+							<button
+								type="button"
+								aria-label={`Remove ${guest.email}`}
+								onclick={() => (guests = guests.filter((item) => item.email !== guest.email))}
+							>
+								<Icon name="close-line" size={12} />
+							</button>
+						</span>
+					{/each}
+					<input
+						type="email"
+						multiple
+						placeholder={guests.length ? '' : 'Add people by email'}
+						bind:value={guestInput}
+						onkeydown={guestKey}
+						onblur={() => guestInput.trim() && addGuests(guestInput)}
+						aria-label="Add guests"
+					/>
+				</div>
+				{#if guests.length}
+					<span class="hint">
+						{editing && guests.map((guest) => guest.email).join(',') === initialGuests
+							? 'Guests get the update when you save.'
+							: 'Guests get an invite by email when you save.'}
+					</span>
+				{/if}
+			</div>
+			{#if guests.length && addresses.length > 1}
+				<label class="field">
+					<span>Send invites from</span>
+					<select bind:value={sendFrom}>
+						<option value="">Your default address</option>
+						{#each addresses as address (address)}
+							<option value={address}>{address}</option>
+						{/each}
+					</select>
+				</label>
+			{/if}
 		{/if}
 
 		<label class="field">
@@ -522,6 +663,60 @@
 
 	.danger {
 		color: var(--color-danger);
+	}
+
+	.guests {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.375rem;
+		padding: 0.375rem;
+		border-radius: 0.5rem;
+		box-shadow: inset 0 0 0 1px var(--color-line);
+	}
+
+	.guests input {
+		flex: 1;
+		min-width: 10rem;
+		padding: 0.125rem 0.25rem;
+		font: inherit;
+		font-size: 0.875rem;
+		color: var(--color-text);
+		background: transparent;
+		border: 0;
+		outline: none;
+	}
+
+	.guest {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.25rem;
+		padding: 0.125rem 0.25rem 0.125rem 0.5rem;
+		border-radius: 9999px;
+		font-size: 0.8125rem;
+		color: var(--color-text);
+		background: var(--color-surface-muted);
+	}
+
+	.guest button {
+		display: inline-flex;
+		padding: 0.125rem;
+		border-radius: 9999px;
+		color: var(--color-text-secondary);
+	}
+
+	.organizer {
+		display: flex;
+		align-items: flex-start;
+		flex-wrap: wrap;
+		gap: 0.375rem;
+		padding: 0.625rem 0.75rem;
+		border-radius: 0.625rem;
+		font-size: 0.8125rem;
+		background: var(--color-surface-muted);
+	}
+
+	.organizer a {
+		color: var(--color-link);
 	}
 
 	.scope {

@@ -210,7 +210,8 @@ describe('Ava handles booking replies', () => {
 		// What she saw: the booking (as facts), its open times in both zones, and booking tools.
 		const prompt = JSON.stringify(requests[0].messages);
 		expect(prompt).toContain(`<booking id=\\"${bookingId}\\"`);
-		expect(prompt).toContain('2026-11-12T18:00:00.000Z = Thu, Nov 12 at 12:00 PM CST / Thu, Nov 12 at 1:00 PM EST');
+		// The exact value to use, then the time in your zone and theirs (wording varies by date library: "Nov 12, 12:00" or "Nov 12 at 12:00").
+		expect(prompt).toMatch(/2026-11-12T18:00:00\.000Z = Thu, Nov 12,? (at )?12:00 PM CST \/ Thu, Nov 12,? (at )?1:00 PM EST/);
 		expect(requests[0].tools?.map((tool) => ('name' in tool ? tool.name : ''))).toContain('reschedule_booking');
 
 		// It waits for your OK, then the calendar moves, the guest gets the update, and your note says Ava did it.

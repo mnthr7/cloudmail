@@ -230,7 +230,7 @@ describe('iCalendar output', () => {
 	});
 
 	test('a zone without daylight time gets its one offset', () => {
-		expect(timezoneLines('Asia/Kolkata', 2026, 2026)).toEqual([
+		expect(timezoneLines('Asia/Kolkata', [2026])).toEqual([
 			'BEGIN:VTIMEZONE',
 			'TZID:Asia/Kolkata',
 			'BEGIN:STANDARD',
@@ -240,6 +240,13 @@ describe('iCalendar output', () => {
 			'END:STANDARD',
 			'END:VTIMEZONE'
 		]);
+	});
+
+	test('far-off years are left out of the zone, so a feed date like 9999 costs nothing', () => {
+		const started = performance.now();
+		const lines = timezoneLines('America/Chicago', [1, 2026, 9999, 50_000]);
+		expect(lines.filter((line) => line.startsWith('DTSTART:'))).toEqual(['DTSTART:20260308T020000', 'DTSTART:20261101T020000']);
+		expect(performance.now() - started).toBeLessThan(2000);
 	});
 });
 

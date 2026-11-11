@@ -18,6 +18,7 @@
 	let {
 		counts,
 		labels = [],
+		calendarNew = 0,
 		domains,
 		activeDomainId,
 		isAdmin,
@@ -30,6 +31,8 @@
 	}: { 
 		counts: MailboxCounts;
 		labels?: SidebarLabel[];
+		/** Invites waiting on you plus calendar changes you haven't seen. */
+		calendarNew?: number;
 		domains: Domain[];
 		activeDomainId: string | null;
 		isAdmin: boolean;
@@ -241,7 +244,8 @@
 		{
 			href: '/calendar',
 			icon: 'calendar-line',
-			label: 'Calendar'
+			label: 'Calendar',
+			badge: calendarNew
 		},
 		{
 			href: '/staff',
@@ -491,7 +495,12 @@
 				onclick={() => mobileOpen = false}
 			>
 				<Icon name={item.icon} size={17} />
-				{#if !collapsed}<span class="nav-label">{item.label}</span>{/if}
+				{#if !collapsed}
+					<span class="nav-label">{item.label}</span>
+					{#if item.badge}<span class="nav-badge" aria-label="{item.badge} new">{item.badge}</span>{/if}
+				{:else if item.badge}
+					<span class="nav-dot"></span>
+				{/if}
 			</a>
 		{/each}
 	</nav>

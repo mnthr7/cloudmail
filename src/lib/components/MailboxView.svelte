@@ -57,6 +57,11 @@
 		? currentPage.data.counts?.inbox_unread as number | undefined ?? 0
 		: 0);
 
+	/** "N new" per inbox tab since it was last opened, with who it's from. */
+	const tabNews = $derived(
+		(currentPage.data.tabNews ?? {}) as Partial<Record<MailCategory, { count: number; senders: string[] }>>
+	);
+
 	/** Date dividers (Today, Yesterday, …) with how many rows each holds. */
 	const groups = $derived.by(() => {
 		const sizes = new Map<string, number>();
@@ -656,13 +661,20 @@
 		<div class="inbox-bar">
 			<nav class="tabs" aria-label="Inbox categories">
 				{#each CATEGORIES as category (category)}
+					{@const news = activeCategory === category ? undefined : tabNews[category]}
 					<a
 						class="tab"
 						class:active={activeCategory === category}
 						href={withParams({ category })}
 						aria-current={activeCategory === category ? 'page' : undefined}
 					>
-						{CATEGORY_LABELS[category]}
+						<span class="tab-head">
+							{CATEGORY_LABELS[category]}
+							{#if news?.count}<span class="tab-new">{news.count > 99 ? '99+' : news.count} new</span>{/if}
+						</span>
+						{#if news?.count && news.senders.length}
+							<span class="tab-senders">{news.senders.join(', ')}</span>
+						{/if}
 					</a>
 				{/each}
 			</nav>
@@ -1502,6 +1514,32 @@
 
 	.tab:hover {
 		color: var(--color-text);
+	}
+
+	.tab-head {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.375rem;
+	}
+
+	.tab-new {
+		padding: 0.0625rem 0.4375rem;
+		border-radius: 9999px;
+		font-size: 0.6875rem;
+		font-weight: 600;
+		line-height: 1.4;
+		color: var(--color-on-accent);
+		background: var(--color-accent);
+	}
+
+	.tab-senders {
+		display: block;
+		max-width: 13rem;
+		margin-top: 0.125rem;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		font-size: 0.75rem;
+		color: var(--color-text-secondary);
 	}
 
 	.tab.active {

@@ -5,6 +5,7 @@ import { isMailCategory } from '#lib/organizing/categories.ts';
 import type { MailboxFilters, MailboxPage, MailboxView } from '#lib/types.ts';
 import type { D1Database } from '@cloudflare/workers-types';
 import { DEMO_MODE, DEMO_USER, demoStore } from './demo';
+import { tabNewsForInbox, type TabNews } from './whats-new.ts';
 
 export function readFilters(url: URL): MailboxFilters {
 	return {
@@ -30,6 +31,8 @@ export async function loadMailbox(
 	mailbox: MailboxPage;
 	filters: MailboxFilters;
 	priorityInbox: boolean;
+	/** "N new" per inbox tab since you last opened it. */
+	tabNews: TabNews;
 }> {
 	const filters = readFilters(url);
 	const requestedCategory = url.searchParams.get('category');
@@ -72,12 +75,13 @@ export async function loadMailbox(
 			view,
 			mailbox: { threads, total: threads.length, page: 1, pageCount: 1, pageSize: 25 },
 			filters,
-			priorityInbox: false
+			priorityInbox: false,
+			tabNews: {}
 		};
 	}
 
 	if (!db || !userId) {
-		return { view, mailbox: EMPTY, filters, priorityInbox: false };
+		return { view, mailbox: EMPTY, filters, priorityInbox: false, tabNews: {} };
 	}
 
 	const priorityInbox = view === 'inbox' ? await readPriorityInbox(db, userId) : false;
@@ -95,5 +99,8 @@ export async function loadMailbox(
 		page: Number(url.searchParams.get('page')) || 1
 	});
 
-	return { view, mailbox, filters, priorityInbox };
+	const tabNews =
+		view === 'inbox' ? await tabNewsForInbox(db, userId, domainId, category) : {};
+
+	return { view, mailbox, filters, priorityInbox, tabNews };
 }

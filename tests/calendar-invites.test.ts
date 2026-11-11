@@ -25,6 +25,7 @@ import {
 	sendInvites
 } from '../src/lib/server/calendar-invites';
 import type { EmailProvider } from '../src/lib/server/email-provider';
+import { calendarBadge, calendarNews, newInTabs, tabNewsForInbox } from '../src/lib/server/whats-new';
 import type { OutboundMailInput } from '../src/lib/server/send-mail';
 import type { User } from '../src/lib/types';
 
@@ -569,3 +570,118 @@ describe('invites others send you', () => {
 	});
 });
 
+
+describe("what's new: inbox tabs and the calendar badge", () => {
+	function mail(sqlite: Database, from: string, category: string, at: string, opts: { name?: string; read?: boolean } = {}) {
+		const id = addMail(sqlite, { from, to: 'sada@acme.com', subject: 'Hello' });
+		sqlite.run(`UPDATE emails SET category = ?, created_at = ?, from_name = ?, is_read = ?, in_inbox = 1 WHERE id = ?`, [
+			category,
+			at,
+			opts.name ?? null,
+			opts.read ? 1 : 0,
+			id
+		]);
+		sqlite.run(`UPDATE emails SET security_json = ? WHERE id = ?`, [
+			JSON.stringify({ auth: { spf: 'pass', dkim: 'pass', dmarc: 'pass' }, verdict: null, reasons: [] }),
+			id
+		]);
+		return id;
+	}
+
+	test('each tab counts unread conversations since you last opened it, with who they are from', async () => {
+		const { sqlite, db } = setup();
+		mail(sqlite, 'alerts@amex.test', 'updates', '2026-11-09T10:00:00Z', { name: 'American Express' });
+		mail(sqlite, 'bills@power.test', 'updates', '2026-11-09T11:00:00Z');
+		mail(sqlite, 'old@news.test', 'updates', '2026-11-09T09:00:00Z', { read: true });
+		mail(sqlite, 'friend@x.test', 'primary', '2026-11-09T12:00:00Z');
+		mail(sqlite, 'deals@shop.test', 'promotions', '2026-11-09T12:00:00Z');
+
+		// Never opened: every unread conversation counts. Primary and the open tab don't get a count.
+		let news = await tabNewsForInbox(db, 'u1', null, 'primary', new Date('2026-11-10T08:00:00Z'));
+		expect(news.updates).toEqual({ count: 2, senders: ['bills@power.test', 'American Express'] });
+		expect(news.promotions?.count).toBe(1);
+		expect(news.primary).toBeUndefined();
+
+		// Opening Updates clears it, even though the mail is still unread.
+		news = await tabNewsForInbox(db, 'u1', null, 'updates', new Date('2026-11-10T08:00:00Z'));
+		expect(news.updates).toBeUndefined();
+		expect((await newInTabs(db, 'u1', null, 'primary')).updates).toBeUndefined();
+
+		// Something new arrives: just that one counts, until it's read.
+		const fresh = mail(sqlite, 'ship@store.test', 'updates', '2026-11-10T09:00:00Z', { name: 'Store' });
+		expect((await newInTabs(db, 'u1', null, 'primary')).updates).toEqual({ count: 1, senders: ['Store'] });
+		sqlite.run(`UPDATE emails SET is_read = 1 WHERE id = ?`, [fresh]);
+		expect((await newInTabs(db, 'u1', null, 'primary')).updates).toBeUndefined();
+	});
+
+	test('the calendar flags invites to answer, then updates since you last looked', async () => {
+		const { sqlite, db } = setup();
+		const { provider } = fakeProvider();
+		await ensureCalendars(db, 'u1', { name: 'Sada', timezone: CHICAGO });
+		const invite = mail(sqlite, 'pat@customer.com', 'primary', NOW.toISOString());
+		await recordCalendarMail(db, 'u1', invite, [GMAIL_INVITE], NOW);
+
+		let news = await calendarNews(db, 'u1', NOW);
+		expect(news.waiting).toMatchObject([{ method: 'REQUEST', title: 'Product sync, weekly', emailId: invite }]);
+
+		// Answered: nothing waits.
+		const card = (await invitesForEmails(db, 'u1', [invite]))[invite];
+		await respondToInvite(db, provider, SADA, ['sada@acme.com'], card.id, 'ACCEPTED', NOW);
+		await calendarBadge(db, 'u1', true, NOW);
+		news = await calendarNews(db, 'u1', NOW);
+		expect(news).toEqual({ waiting: [], updates: 0 });
+
+		// The organizer changes it: an update to see, gone once you open the calendar.
+		const later = new Date(NOW.getTime() + 3_600_000);
+		const update = mail(sqlite, 'pat@customer.com', 'updates', later.toISOString());
+		await recordCalendarMail(db, 'u1', update, [GMAIL_INVITE.replace('SEQUENCE:0', 'SEQUENCE:1')], later);
+		expect(await calendarNews(db, 'u1', later)).toEqual({ waiting: [], updates: 1 });
+		expect((await calendarBadge(db, 'u1', false, later)).updates).toBe(1);
+		// Opening the calendar is seeing it.
+		expect((await calendarBadge(db, 'u1', true, later)).updates).toBe(0);
+		expect((await calendarNews(db, 'u1', later)).updates).toBe(0);
+	});
+
+	test("proposed new times wait per guest; past and canceled invites don't", async () => {
+		const { sqlite, db } = setup();
+		const { provider } = fakeProvider();
+		const [calendar] = await ensureCalendars(db, 'u1', { name: 'Sada', timezone: CHICAGO });
+		const id = await createEvent(db, 'u1', { calendarId: calendar.id, title: 'Test', start: '2026-11-11T08:00', end: '2026-11-11T09:00' });
+		await replaceAttendees(db, id, readGuests(['a@guest.test', 'b@guest.test'], []));
+		const { uid } = await seriesOf(db, 'u1', id);
+		const counter = (who: string) =>
+			[
+				'BEGIN:VCALENDAR',
+				'METHOD:COUNTER',
+				'BEGIN:VEVENT',
+				'DTSTART;TZID=America/Chicago:20261111T100000',
+				'DTEND;TZID=America/Chicago:20261111T110000',
+				`UID:${uid}`,
+				'ORGANIZER:mailto:sada@acme.com',
+				`ATTENDEE;PARTSTAT=TENTATIVE:mailto:${who}`,
+				'SUMMARY:Test',
+				'END:VEVENT',
+				'END:VCALENDAR'
+			].join('\r\n');
+		const fromA = mail(sqlite, 'a@guest.test', 'updates', NOW.toISOString());
+		await recordCalendarMail(db, 'u1', fromA, [counter('a@guest.test')], NOW);
+		const fromB = mail(sqlite, 'b@guest.test', 'updates', NOW.toISOString());
+		await recordCalendarMail(db, 'u1', fromB, [counter('b@guest.test')], NOW);
+		expect((await calendarNews(db, 'u1', NOW)).waiting.map((item) => item.method)).toEqual(['COUNTER', 'COUNTER']);
+
+		const cardA = (await invitesForEmails(db, 'u1', [fromA]))[fromA];
+		await respondToInvite(db, provider, SADA, ['sada@acme.com'], cardA.id, 'DECLINED', NOW);
+		expect((await calendarNews(db, 'u1', NOW)).waiting).toMatchObject([{ emailId: fromB }]);
+
+		// Once the meeting is over, there's nothing left to decide.
+		expect((await calendarNews(db, 'u1', new Date('2026-11-12T00:00:00Z'))).waiting).toEqual([]);
+
+		// An invite canceled before you answered doesn't wait either.
+		const invite = mail(sqlite, 'pat@customer.com', 'primary', NOW.toISOString());
+		await recordCalendarMail(db, 'u1', invite, [GMAIL_INVITE], NOW);
+		const later = new Date(NOW.getTime() + 60_000);
+		const cancel = mail(sqlite, 'pat@customer.com', 'updates', later.toISOString());
+		await recordCalendarMail(db, 'u1', cancel, [GMAIL_INVITE.replace('METHOD:REQUEST', 'METHOD:CANCEL')], later);
+		expect((await calendarNews(db, 'u1', later)).waiting.map((item) => item.method)).toEqual(['COUNTER']);
+	});
+});

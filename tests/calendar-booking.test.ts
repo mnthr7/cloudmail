@@ -493,7 +493,8 @@ describe('booking pages', () => {
 
 	test('names are cleaned to letters', () => {
 		expect(cleanName('  José  O’Brien-Smith ')).toBe('José O’Brien-Smith');
-		expect(cleanName('Visit http://evil.example now')).toBe('Visit httpevil.example now');
+		expect(cleanName('Dr. Lee')).toBe('Dr Lee');
+		expect(cleanName('Visit http://evil.example now')).toBe('Visit httpevilexample now');
 		expect(() => cleanName('<>://')).toThrow(BookingError);
 	});
 });

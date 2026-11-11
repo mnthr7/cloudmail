@@ -455,12 +455,15 @@ export async function openSlots(
 
 const EMAIL = /^[^\s@,;<>"()\[\]\\]{1,64}@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/i;
 
-/** A guest's name as it may appear in an invite: letters, spaces and a little punctuation. */
+/**
+ * A guest's name as it may appear in an invite: letters, spaces, apostrophes
+ * and hyphens. No dots, colons or slashes, so it can't carry a link or domain.
+ */
 export function cleanName(value: unknown): string {
 	if (typeof value !== 'string') throw new BookingError('name');
 	const name = value
 		.normalize('NFKC')
-		.replace(/[^\p{L}\p{M}\s.'’-]/gu, '')
+		.replace(/[^\p{L}\p{M}\s'’-]/gu, '')
 		.replace(/\s+/g, ' ')
 		.trim()
 		.slice(0, 60);
@@ -477,6 +480,8 @@ export function guestKey(email: string): string {
 }
 
 const PER_HOUR = 10;
+/** Invites one page may send in a day, whoever books. */
+const PER_DAY_SENT = 30;
 const AHEAD_PER_GUEST = 3;
 
 export type BookingResult = { start: string; end: string; invited: boolean };
@@ -507,6 +512,7 @@ export async function bookSlot(
 
 	const key = guestKey(email);
 	const hourAgo = new Date(now.getTime() - 3_600_000).toISOString();
+	const dayAgo = new Date(now.getTime() - 86_400_000).toISOString();
 	const holdCutoff = new Date(now.getTime() - HOLD_MS).toISOString();
 	// No more than a handful of bookings an hour from one page, and three ahead per guest.
 	// Checked here for a clear answer, and again inside the hold so parallel tries can't pass.
@@ -516,6 +522,11 @@ export async function bookSlot(
 			.bind(page.id, hourAgo)
 			.first<{ n: number }>();
 		if ((recent?.n ?? 0) >= PER_HOUR) throw new BookingError('slow_down');
+		const today = await db
+			.prepare(`SELECT COUNT(*) AS n FROM bookings WHERE page_id = ? AND created_at > ?`)
+			.bind(page.id, dayAgo)
+			.first<{ n: number }>();
+		if ((today?.n ?? 0) >= PER_DAY_SENT) throw new BookingError('slow_down');
 		const ahead = await db
 			.prepare(
 				`SELECT COUNT(*) AS n FROM bookings WHERE page_id = ? AND guest_key = ? AND start_at > ?
@@ -548,6 +559,7 @@ export async function bookSlot(
 			     AND (event_id IS NOT NULL OR created_at > ?)
 			 )
 			 AND (SELECT COUNT(*) FROM bookings WHERE page_id = ? AND created_at > ?) < ?
+			 AND (SELECT COUNT(*) FROM bookings WHERE page_id = ? AND created_at > ?) < ?
 			 AND (SELECT COUNT(*) FROM bookings WHERE page_id = ? AND guest_key = ? AND start_at > ?
 			        AND (event_id IS NOT NULL OR created_at > ?)) < ?
 			 AND (SELECT COUNT(*) FROM bookings WHERE page_id = ? AND start_at >= ? AND start_at < ?
@@ -571,6 +583,9 @@ export async function bookSlot(
 			page.id,
 			hourAgo,
 			PER_HOUR,
+			page.id,
+			dayAgo,
+			PER_DAY_SENT,
 			page.id,
 			key,
 			now.toISOString(),

@@ -40,12 +40,12 @@
 			});
 			const body = await res.json().catch(() => null);
 			if (!res.ok) {
-				message = ERRORS[body?.error] ?? "Couldn't add that calendar. Try again.";
+				message = body?.error === 'fetch' && body?.message ? body.message : (ERRORS[body?.error] ?? "Couldn't add that calendar. Try again.");
 				return;
 			}
 			url = '';
 			name = '';
-			message = body?.error ? `Added, but the first copy failed: ${body.error}` : 'Added. Its events are on your calendar now.';
+			message = 'Added. Its events are on your calendar now.';
 			await onChange();
 		} catch {
 			message = 'Network error';
@@ -176,7 +176,8 @@
 		<ul class="help">
 			<li>
 				<strong>Google Calendar:</strong> on the web, open Settings, pick the calendar under "Settings for my calendars",
-				then copy "Secret address in iCal format".
+				then copy "Secret address in iCal format" (it has "private-" in it). The "Public address" only works if the
+				calendar is shared publicly.
 			</li>
 			<li>
 				<strong>iCloud:</strong> in Calendar on icloud.com, click the share icon next to the calendar, turn on "Public

@@ -1,7 +1,7 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
 import { calendarCaller, calendarFailure, readJson } from '#lib/server/calendar-http.ts';
 import { isTimeZone } from '#lib/calendar/time.ts';
-import { addOutsideCalendar } from '#lib/server/outside-calendars.ts';
+import { addOutsideCalendar, FeedRejected } from '#lib/server/outside-calendars.ts';
 import { outsideKey } from '#lib/server/outside-http.ts';
 
 /** Add an outside calendar by its secret iCal link (Google, iCloud, Outlook). */
@@ -22,6 +22,7 @@ export const POST: RequestHandler = async ({ request, locals, platform }) => {
 		);
 		return json(result, { status: 201 });
 	} catch (error) {
+		if (error instanceof FeedRejected) return json({ error: 'fetch', message: error.message }, { status: 400 });
 		return calendarFailure(error);
 	}
 };

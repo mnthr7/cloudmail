@@ -18,6 +18,7 @@ import {
 import {
 	addOutsideCalendar,
 	eventsToKeep,
+	FeedRejected,
 	readFeedUrl,
 	refreshOutsideCalendar,
 	removeOutsideCalendar,
@@ -304,6 +305,19 @@ describe('outside calendars on your calendar', () => {
 		expect(await syncDueOutsideCalendars(db, key, fetcher, minutes(12 + 16))).toBe(1);
 		expect(calls).toHaveLength(1);
 		expect((await listCalendars(db, 'u1')).find((item) => item.id === calendar.id)?.source?.error).toBeNull();
+	});
+
+	test("a link that doesn't work isn't kept, and Google's public address says what to use instead", async () => {
+		const { db } = open();
+		await ensureCalendars(db, 'u1', { name: 'Sada', timezone: CHICAGO });
+		const { fetcher } = feedFetcher(() => new Response('Not Found', { status: 404 }));
+		const publicLink = 'https://calendar.google.com/calendar/ical/someone%40example.com/public/basic.ics';
+		const failure = await addOutsideCalendar(db, key, 'u1', { url: publicLink, name: 'G', timezone: CHICAGO }, fetcher, NOW).catch((error) => error);
+		expect(failure).toBeInstanceOf(FeedRejected);
+		expect(failure.message).toContain('Secret address in iCal format');
+		const other = await addOutsideCalendar(db, key, 'u1', { url: LINK, name: 'G', timezone: CHICAGO }, fetcher, NOW).catch((error) => error);
+		expect(other.message).toContain('no longer works');
+		expect((await listCalendars(db, 'u1')).filter((item) => item.source)).toEqual([]);
 	});
 
 	test('your own calendar is still made when an outside one exists first', async () => {
@@ -618,7 +632,9 @@ describe('booking v2', () => {
 		expect(stored.manage_token_hash).not.toBe(token);
 		for (const invite of invites) {
 			expect(invite.text).toContain('Where: https://us02web.zoom.us/j/123456789');
-			for (const secret of ['Acme Corp', 'Pricing and the agent', '615', 'Looking forward']) expect(JSON.stringify(invite)).not.toContain(secret);
+			// What the guest can read: the text, the HTML and the calendar file (not random IDs, which can hold any digits).
+			const readable = [invite.text, invite.html ?? '', ...(invite.attachments ?? []).map((file) => atob(file.content))].join('\n');
+			for (const secret of ['Acme Corp', 'Pricing and the agent', '555-0100', 'Looking forward']) expect(readable).not.toContain(secret);
 		}
 		const notice = sent.find((mail) => mail.subject.startsWith('New booking'))!;
 		for (const shown of ['Acme Corp', 'Pricing and the agent setup', 'Phone: +1 (615) 555-0100', 'Also invited: lee@customer.test', 'Looking forward']) {
@@ -635,13 +651,23 @@ describe('booking v2', () => {
 		});
 	});
 
+	test('the location reads clearly by default, or in your own words', async () => {
+		const { db, page } = await setup({ locationKind: 'phone_guest', location: null });
+		expect((await publicPage(db, 'demo'))?.location).toEqual({ kind: 'phone_guest', label: 'Phone call: Sada will call you' });
+		await updateBookingPage(db, 'u1', OWN, page.id, { locationText: 'I’ll call your cell from a 615 number' }, NOW);
+		expect((await publicPage(db, 'demo'))?.location?.label).toBe('I’ll call your cell from a 615 number');
+		await updateBookingPage(db, 'u1', OWN, page.id, { locationKind: 'phone_host', location: '+1 615 555 0100', locationText: null }, NOW);
+		expect((await publicPage(db, 'demo'))?.location?.label).toBe('Phone call: you call Sada (number in your invite)');
+		await expect(updateBookingPage(db, 'u1', OWN, page.id, { locationText: 'x'.repeat(121) }, NOW)).rejects.toMatchObject({ code: 'text' });
+	});
+
 	test("when you call them, their number stays with you, not every invitee", async () => {
 		const { db } = await setup({ locationKind: 'phone_guest', location: null });
 		const { provider, sent } = fakeProvider();
 		await bookSlot(db, provider, 'demo', base, opts);
 		const [event] = await occurrencesInRange(db, await listCalendars(db, 'u1'), ...range('2026-11-12T00:00Z', '2026-11-13T00:00Z'));
 		expect(event.location).toBe('Phone call: Sada will call you');
-		for (const invite of sent.filter((mail) => mail.subject.startsWith('Invitation'))) expect(invite.text).not.toContain('615');
+		for (const invite of sent.filter((mail) => mail.subject.startsWith('Invitation'))) expect(invite.text).not.toContain('555-0100');
 		expect(sent.find((mail) => mail.subject.startsWith('New booking'))?.text).toContain('+1 (615) 555-0100');
 	});
 

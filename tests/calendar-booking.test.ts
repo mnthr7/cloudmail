@@ -632,7 +632,9 @@ describe('booking v2', () => {
 		expect(stored.manage_token_hash).not.toBe(token);
 		for (const invite of invites) {
 			expect(invite.text).toContain('Where: https://us02web.zoom.us/j/123456789');
-			for (const secret of ['Acme Corp', 'Pricing and the agent', '615', 'Looking forward']) expect(JSON.stringify(invite)).not.toContain(secret);
+			// What the guest can read: the text, the HTML and the calendar file (not random IDs, which can hold any digits).
+			const readable = [invite.text, invite.html ?? '', ...(invite.attachments ?? []).map((file) => atob(file.content))].join('\n');
+			for (const secret of ['Acme Corp', 'Pricing and the agent', '555-0100', 'Looking forward']) expect(readable).not.toContain(secret);
 		}
 		const notice = sent.find((mail) => mail.subject.startsWith('New booking'))!;
 		for (const shown of ['Acme Corp', 'Pricing and the agent setup', 'Phone: +1 (615) 555-0100', 'Also invited: lee@customer.test', 'Looking forward']) {
@@ -665,7 +667,7 @@ describe('booking v2', () => {
 		await bookSlot(db, provider, 'demo', base, opts);
 		const [event] = await occurrencesInRange(db, await listCalendars(db, 'u1'), ...range('2026-11-12T00:00Z', '2026-11-13T00:00Z'));
 		expect(event.location).toBe('Phone call: Sada will call you');
-		for (const invite of sent.filter((mail) => mail.subject.startsWith('Invitation'))) expect(invite.text).not.toContain('615');
+		for (const invite of sent.filter((mail) => mail.subject.startsWith('Invitation'))) expect(invite.text).not.toContain('555-0100');
 		expect(sent.find((mail) => mail.subject.startsWith('New booking'))?.text).toContain('+1 (615) 555-0100');
 	});
 

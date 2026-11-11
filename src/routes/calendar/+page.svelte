@@ -3,6 +3,9 @@
 	import { page } from '$app/state';
 	import Icon from '#lib/components/Icon.svelte';
 	import EventEditor from '#lib/components/calendar/EventEditor.svelte';
+	import OutsideCalendars from '#lib/components/calendar/OutsideCalendars.svelte';
+	import OutsideEventCard from '#lib/components/calendar/OutsideEventCard.svelte';
+	import BookingPages from '#lib/components/calendar/BookingPages.svelte';
 	import type { CalendarInfo, Occurrence } from '#lib/calendar/types.ts';
 
 	type View = 'day' | 'week' | 'month';
@@ -19,6 +22,23 @@
 	let loading = $state(true);
 	let error = $state('');
 	let editor = $state<{ occurrence: Occurrence | null; start: string | null } | null>(null);
+	/** An event from an outside calendar, shown read-only. */
+	let viewing = $state<Occurrence | null>(null);
+	/** Which settings panel is open under the toolbar. */
+	let panel = $state<'phone' | 'outside' | 'booking' | null>(null);
+	const ownCalendars = $derived(calendars.filter((calendar) => !calendar.source));
+	const viewingCalendar = $derived(viewing ? calendars.find((calendar) => calendar.id === viewing!.calendarId) : undefined);
+
+	function openOccurrence(item: Occurrence) {
+		const calendar = calendars.find((entry) => entry.id === item.calendarId);
+		if (calendar?.source) viewing = item;
+		else openOccurrence(item);
+	}
+
+	async function refreshAll() {
+		await loadCalendars();
+		await loadEvents();
+	}
 	let now = $state(new Date());
 	let scroller = $state<HTMLDivElement | null>(null);
 
@@ -234,7 +254,7 @@
 
 	// --- subscribe link -------------------------------------------------------------
 
-	let subscribeOpen = $state(false);
+	const subscribeOpen = $derived(panel === 'phone');
 	let subscribeLink = $state<{ link: string; webcal: string } | null>(null);
 	let subscribeBusy = $state(false);
 	let copied = $state(false);
@@ -299,7 +319,13 @@
 					</button>
 				{/each}
 			</div>
-			<button type="button" class="btn-ghost" onclick={() => (subscribeOpen = !subscribeOpen)} aria-expanded={subscribeOpen}>
+			<button type="button" class="btn-ghost" onclick={() => (panel = panel === 'booking' ? null : 'booking')} aria-expanded={panel === 'booking'}>
+				<Icon name="links-line" size={16} /> Booking page
+			</button>
+			<button type="button" class="btn-ghost" onclick={() => (panel = panel === 'outside' ? null : 'outside')} aria-expanded={panel === 'outside'}>
+				<Icon name="calendar-2-line" size={16} /> Other calendars
+			</button>
+			<button type="button" class="btn-ghost" onclick={() => (panel = panel === 'phone' ? null : 'phone')} aria-expanded={subscribeOpen}>
 				<Icon name="smartphone-line" size={16} /> On your phone
 			</button>
 			<button type="button" class="btn-primary" onclick={openNew}>
@@ -319,6 +345,12 @@
 			{/each}
 			{#if waiting.length > 5}<span class="waiting-more">and {waiting.length - 5} more in your inbox</span>{/if}
 		</section>
+	{/if}
+
+	{#if panel === 'outside'}
+		<OutsideCalendars {calendars} onChange={refreshAll} />
+	{:else if panel === 'booking'}
+		<BookingPages calendars={ownCalendars} {addresses} />
 	{/if}
 
 	{#if subscribeOpen}
@@ -388,7 +420,7 @@
 							class:all-day={item.allDay}
 							onclick={(event) => {
 								event.stopPropagation();
-								editor = { occurrence: item, start: null };
+								openOccurrence(item);
 							}}
 						>
 							{#if !item.allDay}<span class="chip-time">{timeLabel(item)}</span>{/if}
@@ -439,7 +471,7 @@
 								class="chip all-day color-{item.color}"
 								onclick={(event) => {
 									event.stopPropagation();
-									editor = { occurrence: item, start: null };
+									openOccurrence(item);
 								}}
 							>
 								{item.title}
@@ -472,7 +504,7 @@
 									style="top: {placed.top}px; height: {placed.height - 2}px; left: calc({(placed.column / placed.columns) * 100}% + 2px); width: calc({100 / placed.columns}% - 4px)"
 									onclick={(event) => {
 										event.stopPropagation();
-										editor = { occurrence: placed.item, start: null };
+										openOccurrence(placed.item);
 									}}
 								>
 									<span class="event-title">
@@ -497,8 +529,12 @@
 	{/if}
 </div>
 
-{#if editor && calendars.length > 0}
-	<EventEditor {calendars} {addresses} occurrence={editor.occurrence} start={editor.start} onDone={done} onClose={() => (editor = null)} />
+{#if viewing && viewingCalendar}
+	<OutsideEventCard occurrence={viewing} calendar={viewingCalendar} onClose={() => (viewing = null)} />
+{/if}
+
+{#if editor && ownCalendars.length > 0}
+	<EventEditor calendars={ownCalendars} {addresses} occurrence={editor.occurrence} start={editor.start} onDone={done} onClose={() => (editor = null)} />
 {/if}
 
 <style>

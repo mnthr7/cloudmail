@@ -3,6 +3,17 @@
 export const CALENDAR_COLORS = ['blue', 'green', 'purple', 'orange', 'red', 'teal', 'gray'] as const;
 export type CalendarColor = (typeof CALENDAR_COLORS)[number];
 
+/** The same colors the calendar grid uses, for dots and swatches elsewhere. */
+export const CALENDAR_HEX: Record<CalendarColor, string> = {
+	blue: '#3b6fd8',
+	green: '#2f9e5b',
+	purple: '#8250df',
+	orange: '#d9822b',
+	red: '#d1453b',
+	teal: '#1f9aa5',
+	gray: '#7a7f87'
+};
+
 export type CalendarInfo = {
 	id: string;
 	name: string;
@@ -12,6 +23,18 @@ export type CalendarInfo = {
 	isDefault: boolean;
 	/** A secret subscribe link is on. */
 	hasFeed: boolean;
+	/** A read-only copy of an outside calendar (Google, iCloud, Outlook). Null: your own. */
+	source: CalendarSource | null;
+};
+
+export type CalendarSource = {
+	/** Where it comes from, for display ("calendar.google.com"). */
+	host: string;
+	/** Titles and places are copied; otherwise just "Busy". */
+	details: boolean;
+	syncedAt: string | null;
+	/** Why the last refresh failed, in plain words. */
+	error: string | null;
 };
 
 /** One occurrence of an event in the range being shown. */

@@ -16,10 +16,10 @@ export const MAX_ICS_BYTES = 512 * 1024;
 const MAX_LINES = 20_000;
 
 /** Joins folded lines and splits each into name, parameters and value. */
-export function parseLines(text: string): ParsedProperty[] {
+export function parseLines(text: string, maxLines = MAX_LINES): ParsedProperty[] {
 	const unfolded = text.replace(/\r\n|\r/g, '\n').replace(/\n[ \t]/g, '');
 	const out: ParsedProperty[] = [];
-	for (const raw of unfolded.split('\n').slice(0, MAX_LINES)) {
+	for (const raw of unfolded.split('\n').slice(0, maxLines)) {
 		if (!raw.trim()) continue;
 		// The value starts at the first colon outside a quoted parameter.
 		let quoted = false;
@@ -48,10 +48,10 @@ export function parseLines(text: string): ParsedProperty[] {
 	return out;
 }
 
-export function parseComponents(text: string): ParsedComponent[] {
+export function parseComponents(text: string, maxLines = MAX_LINES): ParsedComponent[] {
 	const root: ParsedComponent = { type: 'ROOT', props: [], children: [] };
 	const stack = [root];
-	for (const line of parseLines(text)) {
+	for (const line of parseLines(text, maxLines)) {
 		const top = stack[stack.length - 1];
 		if (line.name === 'BEGIN') {
 			const child = { type: line.value.trim().toUpperCase(), props: [], children: [] };
@@ -131,8 +131,22 @@ const WINDOWS_ZONES: Record<string, string> = {
 };
 
 /** The IANA zone for a TZID: itself, a Windows name, or a fixed offset from the file. */
+const zoneCache = new WeakMap<ParsedComponent[], Map<string, string>>();
+
 export function resolveZone(tzid: string | undefined, vtimezones: ParsedComponent[], fallback: string): string {
 	if (!tzid) return fallback;
+	// Each TZID is worked out once per file: a feed can name the same zone thousands of times.
+	let cache = zoneCache.get(vtimezones);
+	if (!cache) zoneCache.set(vtimezones, (cache = new Map()));
+	const key = `${fallback}\u0000${tzid}`;
+	const known = cache.get(key);
+	if (known) return known;
+	const zone = findZone(tzid, vtimezones, fallback);
+	if (cache.size < 500) cache.set(key, zone);
+	return zone;
+}
+
+function findZone(tzid: string, vtimezones: ParsedComponent[], fallback: string): string {
 	const clean = tzid.replace(/^\/[^/]*\/[^/]*\//, '').trim();
 	if (isTimeZone(clean)) return clean;
 	if (WINDOWS_ZONES[clean]) return WINDOWS_ZONES[clean];
@@ -223,16 +237,24 @@ const text = (props: ParsedProperty[], name: string, max: number) => {
 	return prop ? unescapeText(prop.value).trim().slice(0, max) || null : null;
 };
 
+/** How much of a file to read. Invites are small; a whole calendar's feed is not. */
+export type ParseLimits = { maxBytes: number; maxLines: number; maxEvents: number };
+const INVITE_LIMITS: ParseLimits = { maxBytes: MAX_ICS_BYTES, maxLines: MAX_LINES, maxEvents: 200 };
+const MAX_VTIMEZONES = 50;
+const MAX_EXDATES = 500;
+export const FEED_LIMITS: ParseLimits = { maxBytes: 5 * 1024 * 1024, maxLines: 400_000, maxEvents: 20_000 };
+
 /** Reads a calendar file's events. `fallbackZone` is the recipient's own zone. */
-export function parseCalendar(input: string, fallbackZone = 'UTC'): ParsedCalendar {
-	if (new TextEncoder().encode(input).length > MAX_ICS_BYTES) return { method: null, events: [] };
-	const calendars = parseComponents(input).filter((component) => component.type === 'VCALENDAR');
+export function parseCalendar(input: string, fallbackZone = 'UTC', limits: ParseLimits = INVITE_LIMITS): ParsedCalendar {
+	if (new TextEncoder().encode(input).length > limits.maxBytes) return { method: null, events: [] };
+	const calendars = parseComponents(input, limits.maxLines).filter((component) => component.type === 'VCALENDAR');
 	const calendar = calendars[0];
 	if (!calendar) return { method: null, events: [] };
 	const method = calendar.props.find((prop) => prop.name === 'METHOD')?.value.trim().toUpperCase() || null;
-	const vtimezones = calendar.children.filter((child) => child.type === 'VTIMEZONE');
+	// A real calendar declares a handful of zones; more is padding.
+	const vtimezones = calendar.children.filter((child) => child.type === 'VTIMEZONE').slice(0, MAX_VTIMEZONES);
 	const events: ParsedEvent[] = [];
-	for (const component of calendar.children.filter((child) => child.type === 'VEVENT').slice(0, 200)) {
+	for (const component of calendar.children.filter((child) => child.type === 'VEVENT').slice(0, limits.maxEvents)) {
 		const props = component.props;
 		const uid = props.find((prop) => prop.name === 'UID')?.value.trim().slice(0, 255);
 		const start = readTime(props.find((prop) => prop.name === 'DTSTART'), vtimezones, fallbackZone);
@@ -261,8 +283,9 @@ export function parseCalendar(input: string, fallbackZone = 'UTC'): ParsedCalend
 			}
 		}
 		const exdates: string[] = [];
-		for (const prop of props.filter((item) => item.name === 'EXDATE')) {
-			for (const value of prop.value.split(',')) {
+		exdate: for (const prop of props.filter((item) => item.name === 'EXDATE')) {
+			for (const value of prop.value.split(',', MAX_EXDATES)) {
+				if (exdates.length >= MAX_EXDATES) break exdate;
 				const time = readTime({ ...prop, value }, vtimezones, start.timezone);
 				if (time) exdates.push(start.allDay ? `${time.local.slice(0, 10)}T00:00` : time.local);
 			}

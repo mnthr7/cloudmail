@@ -789,7 +789,8 @@ describe('scheduled scan', () => {
 		const wrangler = await Bun.file(new URL('../wrangler.jsonc', import.meta.url)).text();
 		const scheduled = source.slice(source.indexOf('async scheduled'));
 
-		expect(scheduled.match(/ctx\.waitUntil\(/g)?.length).toBe(4);
+		expect(scheduled.match(/ctx\.waitUntil\(/g)?.length).toBe(5);
+		expect(scheduled).toContain('syncDueOutsideCalendars(env.DB, key,');
 		expect(scheduled).toContain('expireActions(env.DB)');
 		expect(scheduled).toContain('Failed to expire or finish agent actions');
 		expect(scheduled).toContain('deliverDue(env.DB, getEmailProvider({ env }), new Date(), 20)');

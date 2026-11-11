@@ -1,5 +1,6 @@
 <script lang="ts">
 	import Icon from '#lib/components/Icon.svelte';
+	import Section from '#lib/components/Section.svelte';
 	import AddressField from '#lib/components/AddressField.svelte';
 	import { AI_PROVIDER_INFO, AI_PROVIDERS, type AiProvider } from '#lib/agents/providers.ts';
 	import type { PageData } from './$types';
@@ -169,8 +170,7 @@
 		</div>
 	{/if}
 
-	<section class="surface-lg admin-card">
-		<h2><Icon name="global-line" size={18} /> Domains</h2>
+	<Section id="domains" title="Domains" icon="global-line" remember="admin">
 		<p class="card-hint">
 			Connected domains send and receive through {data.providerKind === 'cloudflare'
 				? 'Cloudflare Email'
@@ -280,10 +280,9 @@
 		{/if}
 
 		{#if domainError}<p class="error">{domainError}</p>{/if}
-	</section>
+	</Section>
 
-	<section class="surface-lg admin-card" id="ai">
-		<h2><Icon name="key-2-line" size={18} /> AI provider</h2>
+	<Section id="ai" title="AI provider" icon="key-2-line" remember="admin">
 		<p class="card-hint">
 			Agents on the Staff page run on this workspace's own key, billed to your provider account. The key is
 			checked when you save it, stored encrypted, and never shown again.
@@ -358,11 +357,10 @@
 			{/if}
 			{#if aiError}<p class="error">{aiError}</p>{/if}
 		{/if}
-	</section>
+	</Section>
 
 	<div class="admin-grid">
-		<section class="surface-lg admin-card">
-			<h2><Icon name="user-add-line" size={18} /> New user</h2>
+		<Section id="new-user" title="New user" icon="user-add-line" remember="admin">
 			<p class="card-hint">
 				Their address is also their login — they can sign in and use it straight away.
 			</p>
@@ -390,10 +388,9 @@
 					{creatingUser ? 'Creating…' : 'Create'}
 				</button>
 			</form>
-		</section>
+		</Section>
 
-		<section class="surface-lg admin-card">
-			<h2><Icon name="group-line" size={18} /> {data.users.length} users</h2>
+		<Section id="users" title="Users" count={data.users.length} icon="group-line" remember="admin">
 			<ul class="user-list">
 				{#each data.users as user (user.id)}
 					<li class="user-row">
@@ -413,12 +410,11 @@
 					</li>
 				{/each}
 			</ul>
-		</section>
+		</Section>
 	</div>
 
 	{#if data.unrouted.length > 0}
-		<section class="surface-lg admin-card">
-			<h2><Icon name="question-mark" size={18} /> Unrouted mail</h2>
+		<Section id="unrouted" title="Unrouted mail" icon="question-mark" remember="admin">
 			<p class="card-hint">
 				Received on a connected domain but no address matched and no catch-all was set.
 			</p>
@@ -432,7 +428,7 @@
 					</li>
 				{/each}
 			</ul>
-		</section>
+		</Section>
 	{/if}
 </div>
 
@@ -466,22 +462,15 @@
 		}
 	}
 
-	.admin-card {
-		margin-top: 1.25rem;
-		padding: 1.5rem;
-	}
 
-	.admin-grid .admin-card {
+	.admin-grid :global(.fold) {
 		margin-top: 0;
 	}
 
-	.admin-card h2 {
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-		font-size: 0.9375rem;
-		font-weight: 600;
+	.admin-grid {
+		align-items: start;
 	}
+
 
 	.card-hint {
 		margin-top: 0.375rem;

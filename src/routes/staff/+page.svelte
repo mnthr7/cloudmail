@@ -1,5 +1,7 @@
 <script lang="ts">
+	import { tick } from 'svelte';
 	import Icon from '#lib/components/Icon.svelte';
+	import Section from '#lib/components/Section.svelte';
 	import {
 		AUTONOMY_LABELS,
 		AUTONOMY_LEVELS,
@@ -123,6 +125,20 @@
 		grantedWatch = [];
 		formError = '';
 		formOpen = true;
+		reveal('agent-form');
+	}
+
+	/** Brings the form into view where it opened, since it may be far down the page. */
+	async function reveal(elementId: string) {
+		await tick();
+		document.getElementById(elementId)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+	}
+
+	/** Each agent's recent runs, newest first. */
+	const RUNS_SHOWN = 5;
+	let runsExpanded = $state<Record<string, boolean>>({});
+	function runsFor(agentId: string) {
+		return data.runs.filter((run) => run.agentId === agentId);
 	}
 
 	function openEdit(id: string) {
@@ -134,6 +150,7 @@
 		grantedWatch = [...agent.definition.triggers.watch];
 		formError = '';
 		formOpen = true;
+		reveal(`agent-${id}`);
 	}
 
 	function definitionFromDraft(): AgentDefinition | null {
@@ -535,6 +552,12 @@
 		<h1>Staff</h1>
 		{#if !data.demo}
 			<div class="head-actions">
+				{#if data.queue.length > 0}
+					<a class="waiting-pill" href="#queue">
+						<Icon name="checkbox-circle-line" size={14} />
+						{data.queue.length} {data.queue.length === 1 ? 'needs' : 'need'} your OK
+					</a>
+				{/if}
 				{#if anyRunning}
 					<button type="button" class="btn-ghost" disabled={busy === 'all'} onclick={pauseAll}>
 						<Icon name="pause-circle-line" size={16} /> Pause all
@@ -585,8 +608,362 @@
 		</div>
 	{/if}
 
-	{#if formOpen}
-		<form class="surface-lg card" onsubmit={save}>
+	{#if formOpen && !editingId}
+		<div id="agent-form" class="form-anchor">
+			{@render agentForm()}
+		</div>
+	{/if}
+
+	<Section id="agents" title="Agents" icon="team-line" count={data.agents.length} remember="staff">
+		{#if data.agents.length === 0}
+			<p class="card-hint">No agents yet. Hire one to give it a job.</p>
+		{:else}
+			<ul class="list">
+				{#each data.agents as agent (agent.id)}
+					<li class="item agent" id="agent-{agent.id}">
+						{#if formOpen && editingId === agent.id}
+							{@render agentForm()}
+						{:else}
+						<div class="item-head">
+							<div class="min-w-0">
+								<p class="item-title">{agent.displayName}</p>
+								<p class="item-sub">
+									Version {agent.versionNumber}{agent.runtime === 'external' ? ' · External' : ''}{agent.queued
+										? ` · ${agent.queued} waiting for you`
+										: ''}
+								</p>
+							</div>
+							<span
+								class="chip"
+								class:chip-good={agent.status === 'active'}
+								class:chip-warn={agent.status === 'paused'}
+							>
+								{statusLabel(agent.status, agent.shadowRemaining)}
+							</span>
+						</div>
+						<p class="job">{agent.definition.job}</p>
+						<p class="item-sub">{enabled(agent.definition)}</p>
+						<p class="item-sub">
+							{agent.definition.triggers.watch.length
+								? agent.definition.triggers.teamOnly
+									? `Wakes up when you or a teammate forward or CC ${agent.definition.triggers.watch.join(', ')}, or @mention ${agent.displayName}`
+									: `Wakes up for mail to ${agent.definition.triggers.watch.join(', ')}`
+								: 'Wakes up only when asked'} · {AGENT_MODEL_LABELS[agent.definition.model]} · {dollars(
+								data.spend[agent.id] ?? 0
+							)} of {dollars(agent.definition.monthlyBudgetCents * 10_000)} this month
+						</p>
+						{#if suggestionLine(agent.id)}
+							<p class="item-sub">{suggestionLine(agent.id)}</p>
+						{/if}
+						{#each data.patterns.filter((pattern) => pattern.agentId === agent.id) as pattern (pattern.task)}
+							<div class="pattern">
+								<p class="item-sub">
+									<Icon name="lightbulb-line" size={14} />
+									{agent.displayName} did "{pattern.task}" {pattern.count} times in the last 30 days.
+								</p>
+								<button type="button" class="btn-ghost text-xs" onclick={() => hireSpecialist(pattern.task, pattern.count)}>
+									Hire a specialist
+								</button>
+							</div>
+						{/each}
+						<details class="memory">
+							<summary>
+								Remembers {(data.memory[agent.id] ?? []).length}
+								{(data.memory[agent.id] ?? []).length === 1 ? 'fact' : 'facts'}
+							</summary>
+							{#if (data.memory[agent.id] ?? []).length === 0}
+								<p class="item-sub">Nothing yet. Add facts here, or write "@{agent.displayName} remember: …" in a note on a thread.</p>
+							{:else}
+								<ul class="facts">
+									{#each data.memory[agent.id] ?? [] as fact (fact.id)}
+										<li>
+											<span>{fact.fact}</span>
+											<span class="fact-source">{fact.source === 'agent' ? 'suggested by the agent' : 'you'}{fact.addedBy && fact.source === 'agent' ? `, approved by ${fact.addedBy}` : ''}</span>
+											{#if agent.canManage}
+												<button
+													type="button"
+													class="btn-ghost text-xs"
+													disabled={busy === `memory:${agent.id}`}
+													onclick={() => forgetFact(agent.id, fact.id)}
+												>
+													Forget
+												</button>
+											{/if}
+										</li>
+									{/each}
+								</ul>
+							{/if}
+							{#if agent.canManage}
+								<form class="fact-form" onsubmit={(event) => addFact(event, agent.id)}>
+									<input
+										type="text"
+										maxlength="300"
+										placeholder="Globex pays on the 15th"
+										aria-label={`New fact for ${agent.displayName}`}
+										bind:value={factDrafts[agent.id]}
+									/>
+									<button type="submit" class="btn-ghost text-xs" disabled={busy === `memory:${agent.id}`}>Add</button>
+								</form>
+							{/if}
+							{#if memoryError[agent.id]}<p class="error" role="alert">{memoryError[agent.id]}</p>{/if}
+						</details>
+						{@const runs = runsFor(agent.id)}
+						<details class="memory">
+							<summary>Recent activity ({runs.length})</summary>
+							{#if runs.length === 0}
+								<p class="item-sub">Nothing yet. Runs show here when mail wakes {agent.displayName} or you ask for help.</p>
+							{:else}
+								<ul class="runs">
+									{#each runsExpanded[agent.id] ? runs : runs.slice(0, RUNS_SHOWN) as run (run.id)}
+										<li>
+											<p class="run-title">
+												{run.triggerKind === 'ask' ? 'Asked on' : 'New mail'}
+												{#if run.subject}<a href="/mail/{run.emailId}">{run.subject}</a>{/if}
+											</p>
+											<p class="item-sub">{runLabel(run)} · {when(run.createdAt)}{run.costMicros ? ` · ${dollars(run.costMicros)}` : ''}</p>
+											{#if run.summary}<p class="run-summary">{run.summary}</p>{/if}
+										</li>
+									{/each}
+								</ul>
+								{#if runs.length > RUNS_SHOWN}
+									<button type="button" class="btn-ghost text-xs" onclick={() => (runsExpanded[agent.id] = !runsExpanded[agent.id])}>
+										{runsExpanded[agent.id] ? 'Show fewer' : `Show all ${runs.length}`}
+									</button>
+								{/if}
+							{/if}
+						</details>
+						<div class="item-actions">
+							{#if agent.canManage}
+								<button type="button" class="btn-ghost text-xs" onclick={() => openEdit(agent.id)}>
+									Edit
+								</button>
+							{/if}
+							{#if agent.status === 'paused' && agent.canManage}
+								<button
+									type="button"
+									class="btn-ghost text-xs"
+									disabled={busy === agent.id}
+									onclick={() => setStatus(agent.id, 'shadow')}
+								>
+									Resume in shadow mode
+								</button>
+								<button
+									type="button"
+									class="btn-ghost text-xs"
+									disabled={busy === agent.id}
+									onclick={() => setStatus(agent.id, 'active')}
+								>
+									Resume
+								</button>
+							{:else if agent.status !== 'paused'}
+								{#if agent.status === 'shadow' && agent.canManage}
+									<button
+										type="button"
+										class="btn-ghost text-xs"
+										disabled={busy === agent.id}
+										onclick={() => setStatus(agent.id, 'active')}
+									>
+										End shadow mode
+									</button>
+								{/if}
+								<button
+									type="button"
+									class="btn-ghost text-xs"
+									disabled={busy === agent.id}
+									onclick={() => setStatus(agent.id, 'paused')}
+								>
+									<Icon name="pause-line" size={14} /> Pause
+								</button>
+							{/if}
+						</div>
+						{/if}
+					</li>
+				{/each}
+			</ul>
+		{/if}
+	</Section>
+
+	<Section id="queue" title="Needs your OK" icon="checkbox-circle-line" count={data.queue.length} remember="staff">
+		{#if data.queue.length === 0}
+			<p class="card-hint">Nothing waiting. Proposals that need your OK show up here.</p>
+		{:else}
+			<ul class="list">
+				{#each data.queue as action (action.id)}
+					<li class="item">
+						<div class="item-head">
+							<p class="item-title">{action.agentName} · {capabilityName(action.capability)}</p>
+							{#if action.expiresAt}
+								<span class="chip">Expires {when(action.expiresAt)}</span>
+							{/if}
+						</div>
+						{#if action.reason}
+							<p class="item-sub">{action.reason}</p>
+						{/if}
+						{#if action.hidden}
+							<p class="item-sub">This is about a thread in someone else's mailbox. Only they can see and approve it.</p>
+						{:else}
+							<pre class="payload">{preview(action.payload)}</pre>
+						{/if}
+						<div class="item-actions">
+							{#if !action.canApprove}
+								<span class="item-sub">Only its owner or an admin can approve this.</span>
+							{/if}
+							<button
+								type="button"
+								class="btn-ghost text-xs"
+								disabled={busy === action.id}
+								onclick={() => decide(action.id, 'decline')}
+							>
+								Decline
+							</button>
+							{#if action.canApprove}
+								<button
+									type="button"
+									class="btn-primary text-xs"
+									disabled={busy === action.id}
+									onclick={() => decide(action.id, 'approve')}
+								>
+									Approve
+								</button>
+							{/if}
+						</div>
+					</li>
+				{/each}
+			</ul>
+		{/if}
+	</Section>
+
+	<Section id="shadow" title="Would have done" icon="eye-line" count={data.shadow.length} remember="staff">
+		{#if data.shadow.length === 0}
+			<p class="card-hint">
+				Nothing yet. When an agent in shadow mode proposes something, it shows here instead of happening.
+			</p>
+		{:else}
+			<p class="card-hint">Nothing here was carried out. Thumbs up or down tells you, over time, whether to trust it more.</p>
+			<ul class="list">
+				{#each data.shadow as action (action.id)}
+					<li class="item">
+						<div class="item-head">
+							<p class="item-title">{action.agentName} · {capabilityName(action.capability)}</p>
+							<span class="chip">{action.status === 'shadowed' ? 'Shadow' : 'Allowed, not run yet'}</span>
+						</div>
+						{#if action.reason}
+							<p class="item-sub">{action.reason}</p>
+						{/if}
+						{#if action.hidden}
+							<p class="item-sub">This is about a thread in someone else's mailbox.</p>
+						{:else}
+							<pre class="payload">{payloadText(action.payload)}</pre>
+						{/if}
+						<div class="item-actions">
+							<span class="item-sub">{when(action.createdAt)}</span>
+							<button
+								type="button"
+								class="btn-ghost text-xs"
+								class:chosen={action.feedback === 'up'}
+								aria-pressed={action.feedback === 'up'}
+								aria-label="Good call"
+								disabled={busy === action.id}
+								onclick={() => rate(action.id, action.feedback, 'up')}
+							>
+								<Icon name="thumb-up-line" size={14} />
+							</button>
+							<button
+								type="button"
+								class="btn-ghost text-xs"
+								class:chosen={action.feedback === 'down'}
+								aria-pressed={action.feedback === 'down'}
+								aria-label="Wrong call"
+								disabled={busy === action.id}
+								onclick={() => rate(action.id, action.feedback, 'down')}
+							>
+								<Icon name="thumb-down-line" size={14} />
+							</button>
+						</div>
+					</li>
+				{/each}
+			</ul>
+		{/if}
+	</Section>
+
+	{#if !data.demo && (!hasGeneralist || !hasAva)}
+		<Section id="hire" title="Ready-made staff" icon="user-add-line" open={data.agents.length === 0}>
+			{#if !hasGeneralist && !data.demo}
+				<form class="sam-card" onsubmit={hireSam}>
+					<p class="item-title"><Icon name="user-smile-line" size={16} /> Hire {SAM_NAME}, your generalist</p>
+					<p class="item-sub">
+						Hand {SAM_NAME} anything: mention him in a note on a thread ("@Sam chase this on Friday"), forward
+						him an email, or CC him. Every action he takes waits for your OK. He logs each kind of task, and
+						when one keeps coming up he suggests hiring a specialist for it.
+					</p>
+					{#if data.sendAs.length === 0}
+						<p class="item-sub">First add an address for him, like sam@yourdomain, under Settings → Your addresses.</p>
+					{:else}
+						<label class="field">
+							<span>His address. Only mail you or a teammate send to it wakes him.</span>
+							<select bind:value={samAddress}>
+								<option value="">Choose…</option>
+								{#each data.sendAs as address (address)}
+									<option value={address}>{address}</option>
+								{/each}
+							</select>
+						</label>
+						<p class="item-sub">No sam@ address yet? Add one under Settings → Your addresses, then come back.</p>
+						{#if samError}<p class="error" role="alert">{samError}</p>{/if}
+						<div class="item-actions">
+							<button type="submit" class="btn-primary text-xs" disabled={busy === 'sam'}>Hire {SAM_NAME}</button>
+						</div>
+					{/if}
+				</form>
+			{/if}
+			{#if !hasAva && !data.demo}
+				<form class="sam-card" onsubmit={hireAva}>
+					<p class="item-title"><Icon name="calendar-check-line" size={16} /> Hire {AVA_NAME}, your scheduling assistant</p>
+					<p class="item-sub">
+						{AVA_NAME} runs your booking page. Invites come from her address, so when guests reply ("can we do
+						Thursday?", "I need to cancel") she lines up the move or cancellation and the reply, and everyone gets
+						the calendar update once you say OK. Once you trust her, let her do them on her own. Anything else
+						becomes a note for you.
+					</p>
+					{#if data.sendAs.length === 0 || data.bookingPages.length === 0}
+						<p class="item-sub">
+							First {data.sendAs.length === 0 ? 'add an address for her, like demo@yourdomain, under Settings → Your addresses' : 'make a booking page under Calendar → Booking page'}.
+						</p>
+					{:else}
+						<div class="ava-fields">
+							<label class="field">
+								<span>Her address. Guests' replies come here.</span>
+								<select bind:value={avaAddress}>
+									<option value="">Choose…</option>
+									{#each data.sendAs as address (address)}
+										<option value={address}>{address}</option>
+									{/each}
+								</select>
+							</label>
+							<label class="field">
+								<span>The booking page she runs</span>
+								<select bind:value={avaPage}>
+									{#each data.bookingPages as page (page.id)}
+										<option value={page.id}>{page.title} (/book/{page.slug})</option>
+									{/each}
+								</select>
+							</label>
+						</div>
+						<p class="item-sub">No demo@ address yet? Add one under Settings → Your addresses, then come back. She starts in shadow mode, so you can watch what she'd do first.</p>
+						{#if avaError}<p class="error" role="alert">{avaError}</p>{/if}
+						<div class="item-actions">
+							<button type="submit" class="btn-primary text-xs" disabled={busy === 'ava'}>Hire {AVA_NAME}</button>
+						</div>
+					{/if}
+				</form>
+			{/if}
+		</Section>
+	{/if}
+</div>
+
+
+{#snippet agentForm()}
+		<form class={editingId ? 'edit-form' : 'surface-lg card'} onsubmit={save}>
 			<h2>
 				<Icon name={editingId ? 'edit-line' : 'user-add-line'} size={18} />
 				{editingId ? `Edit ${draft.name}` : 'Hire an agent'}
@@ -751,351 +1128,68 @@
 				</button>
 			</div>
 		</form>
-	{/if}
-
-	<section class="surface-lg card">
-		<h2><Icon name="checkbox-circle-line" size={18} /> Needs your OK</h2>
-		{#if data.queue.length === 0}
-			<p class="card-hint">Nothing waiting. Proposals that need your OK show up here.</p>
-		{:else}
-			<ul class="list">
-				{#each data.queue as action (action.id)}
-					<li class="item">
-						<div class="item-head">
-							<p class="item-title">{action.agentName} · {capabilityName(action.capability)}</p>
-							{#if action.expiresAt}
-								<span class="chip">Expires {when(action.expiresAt)}</span>
-							{/if}
-						</div>
-						{#if action.reason}
-							<p class="item-sub">{action.reason}</p>
-						{/if}
-						{#if action.hidden}
-							<p class="item-sub">This is about a thread in someone else's mailbox. Only they can see and approve it.</p>
-						{:else}
-							<pre class="payload">{preview(action.payload)}</pre>
-						{/if}
-						<div class="item-actions">
-							{#if !action.canApprove}
-								<span class="item-sub">Only its owner or an admin can approve this.</span>
-							{/if}
-							<button
-								type="button"
-								class="btn-ghost text-xs"
-								disabled={busy === action.id}
-								onclick={() => decide(action.id, 'decline')}
-							>
-								Decline
-							</button>
-							{#if action.canApprove}
-								<button
-									type="button"
-									class="btn-primary text-xs"
-									disabled={busy === action.id}
-									onclick={() => decide(action.id, 'approve')}
-								>
-									Approve
-								</button>
-							{/if}
-						</div>
-					</li>
-				{/each}
-			</ul>
-		{/if}
-	</section>
-
-	<section class="surface-lg card">
-		<h2><Icon name="eye-line" size={18} /> Would have done</h2>
-		{#if data.shadow.length === 0}
-			<p class="card-hint">
-				Nothing yet. When an agent in shadow mode proposes something, it shows here instead of happening.
-			</p>
-		{:else}
-			<p class="card-hint">Nothing here was carried out. Thumbs up or down tells you, over time, whether to trust it more.</p>
-			<ul class="list">
-				{#each data.shadow as action (action.id)}
-					<li class="item">
-						<div class="item-head">
-							<p class="item-title">{action.agentName} · {capabilityName(action.capability)}</p>
-							<span class="chip">{action.status === 'shadowed' ? 'Shadow' : 'Allowed, not run yet'}</span>
-						</div>
-						{#if action.reason}
-							<p class="item-sub">{action.reason}</p>
-						{/if}
-						{#if action.hidden}
-							<p class="item-sub">This is about a thread in someone else's mailbox.</p>
-						{:else}
-							<pre class="payload">{payloadText(action.payload)}</pre>
-						{/if}
-						<div class="item-actions">
-							<span class="item-sub">{when(action.createdAt)}</span>
-							<button
-								type="button"
-								class="btn-ghost text-xs"
-								class:chosen={action.feedback === 'up'}
-								aria-pressed={action.feedback === 'up'}
-								aria-label="Good call"
-								disabled={busy === action.id}
-								onclick={() => rate(action.id, action.feedback, 'up')}
-							>
-								<Icon name="thumb-up-line" size={14} />
-							</button>
-							<button
-								type="button"
-								class="btn-ghost text-xs"
-								class:chosen={action.feedback === 'down'}
-								aria-pressed={action.feedback === 'down'}
-								aria-label="Wrong call"
-								disabled={busy === action.id}
-								onclick={() => rate(action.id, action.feedback, 'down')}
-							>
-								<Icon name="thumb-down-line" size={14} />
-							</button>
-						</div>
-					</li>
-				{/each}
-			</ul>
-		{/if}
-	</section>
-
-	{#if data.runs.length > 0}
-		<section class="surface-lg card">
-			<h2><Icon name="history-line" size={18} /> Activity</h2>
-			<ul class="list">
-				{#each data.runs as run (run.id)}
-					<li class="item">
-						<div class="item-head">
-							<div class="min-w-0">
-								<p class="item-title">
-									{run.agentName} · {run.triggerKind === 'ask' ? 'Asked on' : 'New mail'}
-									{#if run.subject}
-										<a href="/mail/{run.emailId}">{run.subject}</a>
-									{/if}
-								</p>
-								<p class="item-sub">{runLabel(run)} · {when(run.createdAt)}{run.costMicros ? ` · ${dollars(run.costMicros)}` : ''}</p>
-							</div>
-						</div>
-						{#if run.summary}
-							<p class="item-sub">{run.summary}</p>
-						{/if}
-					</li>
-				{/each}
-			</ul>
-		</section>
-	{/if}
-
-	<section class="surface-lg card">
-		<h2><Icon name="team-line" size={18} /> Agents</h2>
-		{#if !hasGeneralist && !data.demo}
-			<form class="sam-card" onsubmit={hireSam}>
-				<p class="item-title"><Icon name="user-smile-line" size={16} /> Hire {SAM_NAME}, your generalist</p>
-				<p class="item-sub">
-					Hand {SAM_NAME} anything: mention him in a note on a thread ("@Sam chase this on Friday"), forward
-					him an email, or CC him. Every action he takes waits for your OK. He logs each kind of task, and
-					when one keeps coming up he suggests hiring a specialist for it.
-				</p>
-				{#if data.sendAs.length === 0}
-					<p class="item-sub">First add an address for him, like sam@yourdomain, under Settings → Your addresses.</p>
-				{:else}
-					<label class="field">
-						<span>His address. Only mail you or a teammate send to it wakes him.</span>
-						<select bind:value={samAddress}>
-							<option value="">Choose…</option>
-							{#each data.sendAs as address (address)}
-								<option value={address}>{address}</option>
-							{/each}
-						</select>
-					</label>
-					<p class="item-sub">No sam@ address yet? Add one under Settings → Your addresses, then come back.</p>
-					{#if samError}<p class="error" role="alert">{samError}</p>{/if}
-					<div class="item-actions">
-						<button type="submit" class="btn-primary text-xs" disabled={busy === 'sam'}>Hire {SAM_NAME}</button>
-					</div>
-				{/if}
-			</form>
-		{/if}
-		{#if !hasAva && !data.demo}
-			<form class="sam-card" onsubmit={hireAva}>
-				<p class="item-title"><Icon name="calendar-check-line" size={16} /> Hire {AVA_NAME}, your scheduling assistant</p>
-				<p class="item-sub">
-					{AVA_NAME} runs your booking page. Invites come from her address, so when guests reply ("can we do
-					Thursday?", "I need to cancel") she lines up the move or cancellation and the reply, and everyone gets
-					the calendar update once you say OK. Once you trust her, let her do them on her own. Anything else
-					becomes a note for you.
-				</p>
-				{#if data.sendAs.length === 0 || data.bookingPages.length === 0}
-					<p class="item-sub">
-						First {data.sendAs.length === 0 ? 'add an address for her, like demo@yourdomain, under Settings → Your addresses' : 'make a booking page under Calendar → Booking page'}.
-					</p>
-				{:else}
-					<div class="ava-fields">
-						<label class="field">
-							<span>Her address. Guests' replies come here.</span>
-							<select bind:value={avaAddress}>
-								<option value="">Choose…</option>
-								{#each data.sendAs as address (address)}
-									<option value={address}>{address}</option>
-								{/each}
-							</select>
-						</label>
-						<label class="field">
-							<span>The booking page she runs</span>
-							<select bind:value={avaPage}>
-								{#each data.bookingPages as page (page.id)}
-									<option value={page.id}>{page.title} (/book/{page.slug})</option>
-								{/each}
-							</select>
-						</label>
-					</div>
-					<p class="item-sub">No demo@ address yet? Add one under Settings → Your addresses, then come back. She starts in shadow mode, so you can watch what she'd do first.</p>
-					{#if avaError}<p class="error" role="alert">{avaError}</p>{/if}
-					<div class="item-actions">
-						<button type="submit" class="btn-primary text-xs" disabled={busy === 'ava'}>Hire {AVA_NAME}</button>
-					</div>
-				{/if}
-			</form>
-		{/if}
-		{#if data.agents.length === 0}
-			<p class="card-hint">No agents yet. Hire one to give it a job.</p>
-		{:else}
-			<ul class="list">
-				{#each data.agents as agent (agent.id)}
-					<li class="item">
-						<div class="item-head">
-							<div class="min-w-0">
-								<p class="item-title">{agent.displayName}</p>
-								<p class="item-sub">
-									Version {agent.versionNumber}{agent.runtime === 'external' ? ' · External' : ''}{agent.queued
-										? ` · ${agent.queued} waiting for you`
-										: ''}
-								</p>
-							</div>
-							<span
-								class="chip"
-								class:chip-good={agent.status === 'active'}
-								class:chip-warn={agent.status === 'paused'}
-							>
-								{statusLabel(agent.status, agent.shadowRemaining)}
-							</span>
-						</div>
-						<p class="job">{agent.definition.job}</p>
-						<p class="item-sub">{enabled(agent.definition)}</p>
-						<p class="item-sub">
-							{agent.definition.triggers.watch.length
-								? agent.definition.triggers.teamOnly
-									? `Wakes up when you or a teammate forward or CC ${agent.definition.triggers.watch.join(', ')}, or @mention ${agent.displayName}`
-									: `Wakes up for mail to ${agent.definition.triggers.watch.join(', ')}`
-								: 'Wakes up only when asked'} · {AGENT_MODEL_LABELS[agent.definition.model]} · {dollars(
-								data.spend[agent.id] ?? 0
-							)} of {dollars(agent.definition.monthlyBudgetCents * 10_000)} this month
-						</p>
-						{#if suggestionLine(agent.id)}
-							<p class="item-sub">{suggestionLine(agent.id)}</p>
-						{/if}
-						{#each data.patterns.filter((pattern) => pattern.agentId === agent.id) as pattern (pattern.task)}
-							<div class="pattern">
-								<p class="item-sub">
-									<Icon name="lightbulb-line" size={14} />
-									{agent.displayName} did "{pattern.task}" {pattern.count} times in the last 30 days.
-								</p>
-								<button type="button" class="btn-ghost text-xs" onclick={() => hireSpecialist(pattern.task, pattern.count)}>
-									Hire a specialist
-								</button>
-							</div>
-						{/each}
-						<details class="memory">
-							<summary>
-								Remembers {(data.memory[agent.id] ?? []).length}
-								{(data.memory[agent.id] ?? []).length === 1 ? 'fact' : 'facts'}
-							</summary>
-							{#if (data.memory[agent.id] ?? []).length === 0}
-								<p class="item-sub">Nothing yet. Add facts here, or write "@{agent.displayName} remember: …" in a note on a thread.</p>
-							{:else}
-								<ul class="facts">
-									{#each data.memory[agent.id] ?? [] as fact (fact.id)}
-										<li>
-											<span>{fact.fact}</span>
-											<span class="fact-source">{fact.source === 'agent' ? 'suggested by the agent' : 'you'}{fact.addedBy && fact.source === 'agent' ? `, approved by ${fact.addedBy}` : ''}</span>
-											{#if agent.canManage}
-												<button
-													type="button"
-													class="btn-ghost text-xs"
-													disabled={busy === `memory:${agent.id}`}
-													onclick={() => forgetFact(agent.id, fact.id)}
-												>
-													Forget
-												</button>
-											{/if}
-										</li>
-									{/each}
-								</ul>
-							{/if}
-							{#if agent.canManage}
-								<form class="fact-form" onsubmit={(event) => addFact(event, agent.id)}>
-									<input
-										type="text"
-										maxlength="300"
-										placeholder="Globex pays on the 15th"
-										aria-label={`New fact for ${agent.displayName}`}
-										bind:value={factDrafts[agent.id]}
-									/>
-									<button type="submit" class="btn-ghost text-xs" disabled={busy === `memory:${agent.id}`}>Add</button>
-								</form>
-							{/if}
-							{#if memoryError[agent.id]}<p class="error" role="alert">{memoryError[agent.id]}</p>{/if}
-						</details>
-						<div class="item-actions">
-							{#if agent.canManage}
-								<button type="button" class="btn-ghost text-xs" onclick={() => openEdit(agent.id)}>
-									Edit
-								</button>
-							{/if}
-							{#if agent.status === 'paused' && agent.canManage}
-								<button
-									type="button"
-									class="btn-ghost text-xs"
-									disabled={busy === agent.id}
-									onclick={() => setStatus(agent.id, 'shadow')}
-								>
-									Resume in shadow mode
-								</button>
-								<button
-									type="button"
-									class="btn-ghost text-xs"
-									disabled={busy === agent.id}
-									onclick={() => setStatus(agent.id, 'active')}
-								>
-									Resume
-								</button>
-							{:else if agent.status !== 'paused'}
-								{#if agent.status === 'shadow' && agent.canManage}
-									<button
-										type="button"
-										class="btn-ghost text-xs"
-										disabled={busy === agent.id}
-										onclick={() => setStatus(agent.id, 'active')}
-									>
-										End shadow mode
-									</button>
-								{/if}
-								<button
-									type="button"
-									class="btn-ghost text-xs"
-									disabled={busy === agent.id}
-									onclick={() => setStatus(agent.id, 'paused')}
-								>
-									<Icon name="pause-line" size={14} /> Pause
-								</button>
-							{/if}
-						</div>
-					</li>
-				{/each}
-			</ul>
-		{/if}
-	</section>
-</div>
+{/snippet}
 
 <style>
+	.form-anchor {
+		scroll-margin-top: 1rem;
+	}
+
+	.agent {
+		scroll-margin-top: 1rem;
+	}
+
+	.edit-form h2 {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		font-size: 0.9375rem;
+		font-weight: 600;
+	}
+
+	.edit-form {
+		padding: 0.25rem 0;
+	}
+
+	.waiting-pill {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.375rem;
+		padding: 0.375rem 0.75rem;
+		border-radius: 999px;
+		font-size: 0.8125rem;
+		font-weight: 500;
+		color: var(--color-text);
+		background: var(--color-surface-muted);
+		box-shadow: inset 0 0 0 1px var(--color-line);
+		text-decoration: none;
+	}
+
+	.runs {
+		display: flex;
+		flex-direction: column;
+		gap: 0.625rem;
+		margin: 0.5rem 0;
+		padding: 0;
+		list-style: none;
+	}
+
+	.run-title {
+		font-size: 0.8125rem;
+		font-weight: 500;
+	}
+
+	.run-title a {
+		color: inherit;
+	}
+
+	.run-summary {
+		margin-top: 0.125rem;
+		font-size: 0.8125rem;
+		line-height: 1.45;
+		color: var(--color-text-secondary);
+	}
+
 	.sam-card {
 		display: flex;
 		flex-direction: column;
@@ -1402,7 +1496,7 @@
 	}
 
 	.list {
-		margin-top: 0.75rem;
+		margin-top: 0.25rem;
 	}
 
 	.item {

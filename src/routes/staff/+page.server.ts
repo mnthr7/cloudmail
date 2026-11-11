@@ -76,7 +76,7 @@ export const load: PageServerLoad = async ({ locals, platform }) => {
 		listAgents(db, locals.user.id),
 		listQueuedActions(db, locals.user.id),
 		listShadowActions(db, locals.user.id),
-		listRecentRuns(db, locals.user.id),
+		listRecentRuns(db, locals.user.id, 100),
 		spendByAgent(db, locals.user.id),
 		sendAsChoices(db, locals.user.id),
 		providerStatusForUser(db, locals.user.id).catch(() => [])

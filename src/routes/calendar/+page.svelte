@@ -32,7 +32,7 @@
 	function openOccurrence(item: Occurrence) {
 		const calendar = calendars.find((entry) => entry.id === item.calendarId);
 		if (calendar?.source) viewing = item;
-		else openOccurrence(item);
+		else editor = { occurrence: item, start: null };
 	}
 
 	async function refreshAll() {

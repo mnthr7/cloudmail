@@ -498,3 +498,14 @@ describe('booking pages', () => {
 		expect(() => cleanName('<>://')).toThrow(BookingError);
 	});
 });
+
+describe('calendar page', () => {
+	test('clicking an event opens the editor (or the read-only card), never itself again', async () => {
+		const source = await Bun.file(new URL('../src/routes/calendar/+page.svelte', import.meta.url)).text();
+		const start = source.indexOf('function openOccurrence(');
+		const body = source.slice(start, source.indexOf('\n\t}\n', start));
+		expect(body).toContain('viewing = item');
+		expect(body).toContain('editor = { occurrence: item, start: null }');
+		expect(body.slice(body.indexOf('{'))).not.toContain('openOccurrence(');
+	});
+});

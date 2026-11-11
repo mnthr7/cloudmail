@@ -212,7 +212,14 @@ export async function sendInvites(
 	provider: EmailProvider,
 	user: User,
 	series: EventRow,
-	options: { removed?: Guest[]; cancelAll?: boolean; attendees?: AttendeeView[]; edits?: EventRow[] } = {}
+	options: {
+		removed?: Guest[];
+		cancelAll?: boolean;
+		attendees?: AttendeeView[];
+		edits?: EventRow[];
+		/** A line only that guest sees in their own invite (a booking's private change link). */
+		privateLines?: Record<string, string>;
+	} = {}
 ): Promise<SendResult> {
 	if (series.organizer_email) return { sent: 0, error: null };
 	const attendees = options.attendees ?? (await listAttendees(db, series.id));
@@ -224,7 +231,7 @@ export async function sendInvites(
 	let sent = 0;
 	const errors: string[] = [];
 
-	const send = async (method: 'REQUEST' | 'CANCEL', to: Guest[], people: InviteAttendee[]) => {
+	const send = async (method: 'REQUEST' | 'CANCEL', to: Guest[], people: InviteAttendee[], footer?: string) => {
 		if (to.length === 0) return;
 		const cancelling = method === 'CANCEL';
 		const events = [
@@ -245,11 +252,12 @@ export async function sendInvites(
 				senderName: user.name,
 				to: to.map((guest) => guest.email),
 				subject: `${label}: ${series.title}`.slice(0, 250),
-				text: inviteText(
-					series,
-					cancelling ? 'This event has been canceled.' : `${user.name || from.address} invited you to:`,
-					user.name || from.address
-				),
+				text:
+					inviteText(
+						series,
+						cancelling ? 'This event has been canceled.' : `${user.name || from.address} invited you to:`,
+						user.name || from.address
+					) + (footer ? `\n\n${footer}` : ''),
 				attachments: [{ filename: 'invite.ics', type: `text/calendar; method=${method}; charset=UTF-8`, content: base64(ics) }]
 			});
 			sent += to.length;
@@ -262,7 +270,11 @@ export async function sendInvites(
 	if (options.cancelAll) {
 		await send('CANCEL', [...attendees, ...removed], people);
 	} else {
-		await send('REQUEST', attendees, people);
+		// Guests with a private line get their own copy; everyone else shares one.
+		const lines = options.privateLines ?? {};
+		const own = attendees.filter((guest) => lines[guest.email]);
+		await send('REQUEST', attendees.filter((guest) => !lines[guest.email]), people);
+		for (const guest of own) await send('REQUEST', [guest], people, lines[guest.email]);
 		await send('CANCEL', removed, removed.map((guest) => ({ ...guest, partstat: 'NEEDS-ACTION' })));
 	}
 	return { sent, error: errors[0] ?? null };

@@ -329,7 +329,7 @@
 	</div>
 
 	<!-- Assigning HTML does not fire input. Only typing does. -->
-	<div class="mt-4" oninput={markEdited}><RichTextEditor bind:html minHeight={320} /></div>
+	<div class="mt-4" oninput={markEdited}><RichTextEditor offerTimes bind:html minHeight={320} /></div>
 	<div class="mt-4 px-1"><AttachmentPicker bind:attachments /></div>
 
 	{#if error}

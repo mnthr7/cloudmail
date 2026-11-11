@@ -21,7 +21,34 @@
 		sendFrom: string | null;
 		location: string | null;
 		enabled: boolean;
+		locationKind: string;
+		askPhone: 'off' | 'optional' | 'required';
+		questions: Array<{ id: string; label: string; long: boolean; required: boolean }>;
+		allowGuests: boolean;
+		reminderMinutes: number;
 	};
+
+	const LOCATIONS = [
+		['none', 'No location'],
+		['video', 'Video call (Zoom, Google Meet, Teams…)'],
+		['phone_guest', 'Phone call: I call them'],
+		['phone_host', 'Phone call: they call me'],
+		['in_person', 'In person'],
+		['custom', 'Something else']
+	] as const;
+	const LOCATION_HINTS: Record<string, string> = {
+		video: 'Your meeting link, e.g. https://zoom.us/j/… or https://meet.google.com/…',
+		phone_host: 'Your phone number',
+		in_person: 'Address',
+		custom: 'Where or how you’ll meet'
+	};
+	const REMINDERS = [
+		[0, 'No reminder'],
+		[60, '1 hour before'],
+		[120, '2 hours before'],
+		[1440, '1 day before'],
+		[2880, '2 days before']
+	] as const;
 
 	const DAYS = [
 		['MO', 'Mon'],
@@ -65,6 +92,11 @@
 		sendFrom: string;
 		location: string;
 		enabled: boolean;
+		locationKind: string;
+		askPhone: 'off' | 'optional' | 'required';
+		questions: Array<{ id?: string; label: string; long: boolean; required: boolean }>;
+		allowGuests: boolean;
+		reminderMinutes: number;
 	};
 
 	function blank(): Form {
@@ -85,7 +117,12 @@
 			calendarId: (calendars.find((calendar) => calendar.isDefault) ?? calendars[0])?.id ?? '',
 			sendFrom: '',
 			location: '',
-			enabled: true
+			enabled: true,
+			locationKind: 'video',
+			askPhone: 'off',
+			questions: [],
+			allowGuests: true,
+			reminderMinutes: 1440
 		};
 	}
 
@@ -110,7 +147,12 @@
 			calendarId: page.calendarId,
 			sendFrom: page.sendFrom ?? '',
 			location: page.location ?? '',
-			enabled: page.enabled
+			enabled: page.enabled,
+			locationKind: page.locationKind,
+			askPhone: page.askPhone,
+			questions: page.questions.map((question) => ({ ...question })),
+			allowGuests: page.allowGuests,
+			reminderMinutes: page.reminderMinutes
 		};
 	}
 
@@ -160,7 +202,9 @@
 		numbers: 'Check the numbers: buffer up to 120 minutes, notice up to 14 days, up to 120 days ahead, 1 to 50 a day.',
 		calendar: 'Pick one of your calendars.',
 		from: 'Pick one of your addresses.',
-		limit: 'You can have up to 10 booking pages.'
+		limit: 'You can have up to 10 booking pages.',
+		location: 'Check the location: a video link must start with https://, and a phone number needs at least 7 digits.',
+		questions: 'Each question needs a label (up to 200 characters), and there can be up to five.'
 	};
 
 	async function save(event: SubmitEvent) {
@@ -187,7 +231,12 @@
 			calendarId: form.calendarId,
 			sendFrom: form.sendFrom || null,
 			location: form.location,
-			enabled: form.enabled
+			enabled: form.enabled,
+			locationKind: form.locationKind,
+			askPhone: form.locationKind === 'phone_guest' ? 'required' : form.askPhone,
+			questions: form.questions.filter((question) => question.label.trim()),
+			allowGuests: form.allowGuests,
+			reminderMinutes: Number(form.reminderMinutes)
 		};
 		try {
 			const res = await fetch(editing === 'new' ? '/api/calendar/booking-pages' : `/api/calendar/booking-pages/${editing}`, {
@@ -350,10 +399,20 @@
 				</label>
 			</div>
 			<div class="row">
-				<label class="field grow">
-					<span>Location or video link (optional)</span>
-					<input type="text" maxlength="500" bind:value={form.location} />
+				<label class="field">
+					<span>Location</span>
+					<select bind:value={form.locationKind}>
+						{#each LOCATIONS as option (option[0])}<option value={option[0]}>{option[1]}</option>{/each}
+					</select>
 				</label>
+				{#if LOCATION_HINTS[form.locationKind]}
+					<label class="field grow">
+						<span>{LOCATION_HINTS[form.locationKind]}</span>
+						<input type={form.locationKind === 'video' ? 'url' : 'text'} maxlength="500" required bind:value={form.location} />
+					</label>
+				{:else if form.locationKind === 'phone_guest'}
+					<p class="hint grow">They’ll be asked for their number, and it goes in the invite.</p>
+				{/if}
 				{#if calendars.length > 1}
 					<label class="field">
 						<span>Add to calendar</span>
@@ -376,6 +435,50 @@
 					</label>
 				{/if}
 			</div>
+			<div class="field">
+				<span>What to ask</span>
+				<div class="asks">
+					<label class="check">
+						Phone number
+						<select bind:value={form.askPhone} disabled={form.locationKind === 'phone_guest'}>
+							<option value="off">Don’t ask</option>
+							<option value="optional">Optional</option>
+							<option value="required">Required</option>
+						</select>
+					</label>
+					<label class="check"><input type="checkbox" bind:checked={form.allowGuests} /> Let them add up to 3 guests</label>
+				</div>
+				{#each form.questions as question, index (index)}
+					<div class="question">
+						<input type="text" maxlength="200" placeholder="Your question" bind:value={question.label} aria-label={`Question ${index + 1}`} />
+						<label class="check"><input type="checkbox" bind:checked={question.long} /> Long answer</label>
+						<label class="check"><input type="checkbox" bind:checked={question.required} /> Required</label>
+						<button
+							type="button"
+							class="icon-button"
+							aria-label={`Remove question ${index + 1}`}
+							onclick={() => (form.questions = form.questions.filter((_, i) => i !== index))}
+						>
+							<Icon name="close-line" size={15} />
+						</button>
+					</div>
+				{/each}
+				{#if form.questions.length < 5}
+					<button
+						type="button"
+						class="btn-ghost small add-question"
+						onclick={() => (form.questions = [...form.questions, { label: '', long: false, required: false }])}
+					>
+						<Icon name="add-line" size={15} /> Add a question
+					</button>
+				{/if}
+			</div>
+			<label class="field">
+				<span>Reminder email to the guest</span>
+				<select bind:value={form.reminderMinutes}>
+					{#each REMINDERS as option (option[0])}<option value={option[0]}>{option[1]}</option>{/each}
+				</select>
+			</label>
 			<label class="check"><input type="checkbox" bind:checked={form.enabled} /> Page is on (people can book)</label>
 			<div class="actions">
 				<button type="button" class="btn-ghost" onclick={() => (editing = null)} disabled={saving}>Cancel</button>
@@ -540,6 +643,53 @@
 		gap: 0.375rem;
 		font-size: 0.8125rem;
 		color: var(--color-text);
+	}
+
+	.asks {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem 1.25rem;
+		margin-bottom: 0.25rem;
+	}
+
+	.asks select {
+		margin-left: 0.25rem;
+	}
+
+	.question {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.5rem 0.75rem;
+	}
+
+	.question input[type='text'] {
+		flex: 1 1 16rem;
+		min-width: 0;
+		padding: 0.375rem 0.5rem;
+		border-radius: 0.5rem;
+		font: inherit;
+		font-size: 0.875rem;
+		color: var(--color-text);
+		background: var(--color-surface);
+		box-shadow: inset 0 0 0 1px var(--color-line);
+	}
+
+	.add-question {
+		align-self: flex-start;
+		display: inline-flex;
+		align-items: center;
+		gap: 0.25rem;
+	}
+
+	.hint {
+		align-self: flex-end;
+		font-size: 0.8125rem;
+		color: var(--color-text-secondary);
+	}
+
+	.grow {
+		flex: 1 1 14rem;
 	}
 
 	.actions {

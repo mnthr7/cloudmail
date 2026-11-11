@@ -119,6 +119,17 @@
 	let sendFrom = $state('');
 	// Guests load after the editor opens (an event you're editing); a new event starts with none.
 	let guestsLoaded = $state(false);
+	/** Booked through a booking page: who, how to reach them, what they said. */
+	let booking = $state<{
+		page: string;
+		name: string;
+		email: string;
+		phone: string | null;
+		note: string | null;
+		answers: Array<{ id: string; label: string; value: string }>;
+		guests: string[];
+		rescheduled: number;
+	} | null>(null);
 	let initialGuests = $state('');
 
 	$effect(() => {
@@ -132,6 +143,7 @@
 				guests = data?.attendees ?? [];
 				initialGuests = guests.map((guest) => guest.email).join(',');
 				sendFrom = data?.sendFrom ?? '';
+				booking = data?.booking ?? null;
 			})
 			.finally(() => (guestsLoaded = true));
 	});
@@ -470,6 +482,23 @@
 			{/if}
 		{/if}
 
+		{#if booking}
+			<section class="booking" aria-label="Booking details">
+				<p class="booking-head">
+					<Icon name="links-line" size={15} />
+					Booked by {booking.name} through “{booking.page}”{booking.rescheduled ? ` · moved ${booking.rescheduled}×` : ''}
+				</p>
+				<dl>
+					<dt>Email</dt>
+					<dd><a href={`mailto:${booking.email}`}>{booking.email}</a> · <a href={`/all?q=${encodeURIComponent(booking.email)}`}>Emails with them</a></dd>
+					{#if booking.phone}<dt>Phone</dt><dd><a href={`tel:${booking.phone.replace(/[^\d+]/g, '')}`}>{booking.phone}</a></dd>{/if}
+					{#if booking.guests.length}<dt>Also invited</dt><dd>{booking.guests.join(', ')}</dd>{/if}
+					{#each booking.answers as answer (answer.id)}<dt>{answer.label}</dt><dd>{answer.value}</dd>{/each}
+					{#if booking.note}<dt>Their note</dt><dd>{booking.note}</dd>{/if}
+				</dl>
+			</section>
+		{/if}
+
 		<label class="field">
 			<span>Location</span>
 			<input type="text" maxlength="500" placeholder="Room, address, or video link" bind:value={form.location} />
@@ -702,6 +731,42 @@
 		padding: 0.125rem;
 		border-radius: 9999px;
 		color: var(--color-text-secondary);
+	}
+
+	.booking {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+		padding: 0.75rem 0.875rem;
+		border-radius: 0.625rem;
+		font-size: 0.8125rem;
+		background: var(--color-surface-muted);
+	}
+
+	.booking-head {
+		display: flex;
+		align-items: center;
+		gap: 0.375rem;
+		font-weight: 600;
+	}
+
+	.booking dl {
+		display: grid;
+		grid-template-columns: max-content minmax(0, 1fr);
+		gap: 0.25rem 0.75rem;
+	}
+
+	.booking dt {
+		color: var(--color-text-secondary);
+	}
+
+	.booking dd {
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
+	}
+
+	.booking a {
+		color: var(--color-link);
 	}
 
 	.organizer {

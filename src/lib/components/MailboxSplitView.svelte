@@ -977,6 +977,7 @@
 								<!-- Assigning HTML does not fire input. Only typing does. -->
 								<div oninput={markEdited}>
 									<RichTextEditor
+										offerTimes
 										bind:html={replyHtml}
 										embedded
 										minHeight={160}

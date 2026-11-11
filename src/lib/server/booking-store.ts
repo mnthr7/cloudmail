@@ -45,6 +45,14 @@ export class BookingError extends Error {
 			| 'too_many'
 			| 'slow_down'
 			| 'limit'
+			| 'location'
+			| 'questions'
+			| 'phone'
+			| 'answers'
+			| 'guests'
+			| 'cancelled'
+			| 'past'
+			| 'changed'
 	) {
 		super(code);
 		this.name = 'BookingError';
@@ -68,7 +76,18 @@ export type BookingPage = {
 	sendFrom: string | null;
 	location: string | null;
 	enabled: boolean;
+	locationKind: LocationKind;
+	askPhone: AskPhone;
+	questions: Question[];
+	allowGuests: boolean;
+	reminderMinutes: number;
 };
+
+export const LOCATION_KINDS = ['none', 'video', 'phone_guest', 'phone_host', 'in_person', 'custom'] as const;
+export type LocationKind = (typeof LOCATION_KINDS)[number];
+export type AskPhone = 'off' | 'optional' | 'required';
+export type Question = { id: string; label: string; long: boolean; required: boolean };
+export const REMINDER_CHOICES = [0, 60, 120, 1440, 2880] as const;
 
 type PageRow = {
 	id: string;
@@ -87,6 +106,11 @@ type PageRow = {
 	send_from: string | null;
 	location: string | null;
 	enabled: number;
+	location_kind?: string | null;
+	ask_phone?: string | null;
+	questions_json?: string | null;
+	allow_guests?: number | null;
+	reminder_minutes?: number | null;
 };
 
 function toPage(row: PageRow): BookingPage {
@@ -117,8 +141,53 @@ function toPage(row: PageRow): BookingPage {
 		calendarId: row.calendar_id,
 		sendFrom: row.send_from,
 		location: row.location,
-		enabled: row.enabled === 1
+		enabled: row.enabled === 1,
+		locationKind: (LOCATION_KINDS as readonly string[]).includes(row.location_kind ?? '')
+			? (row.location_kind as LocationKind)
+			: row.location
+				? 'custom'
+				: 'none',
+		askPhone: row.ask_phone === 'optional' || row.ask_phone === 'required' ? row.ask_phone : 'off',
+		questions: parseQuestions(row.questions_json),
+		allowGuests: row.allow_guests === 1,
+		reminderMinutes: row.reminder_minutes ?? 1440
 	};
+}
+
+function parseQuestions(text: string | null | undefined): Question[] {
+	try {
+		const list = JSON.parse(text ?? '[]') as Question[];
+		return Array.isArray(list) ? list.slice(0, MAX_QUESTIONS) : [];
+	} catch {
+		return [];
+	}
+}
+
+const MAX_QUESTIONS = 5;
+const PHONE = /^\+?[\d\s().-]{7,24}$/;
+
+/** A phone number as typed: digits with the usual punctuation, 7 to 15 digits. */
+export function readPhone(value: unknown): string | null {
+	if (typeof value !== 'string') return null;
+	const text = value.trim().replace(/\s+/g, ' ');
+	const digits = text.replace(/\D/g, '');
+	if (!PHONE.test(text) || digits.length < 7 || digits.length > 15) return null;
+	return text;
+}
+
+/** "Zoom", "Google Meet", "Microsoft Teams", or "Video call" for any other link. */
+export function videoProvider(link: string): string {
+	try {
+		const host = new URL(link).hostname.toLowerCase();
+		if (host === 'zoom.us' || host.endsWith('.zoom.us')) return 'Zoom';
+		if (host === 'meet.google.com') return 'Google Meet';
+		if (host === 'teams.microsoft.com' || host === 'teams.live.com') return 'Microsoft Teams';
+		if (host.endsWith('webex.com')) return 'Webex';
+		if (host === 'whereby.com' || host.endsWith('.whereby.com')) return 'Whereby';
+	} catch {
+		// not a link
+	}
+	return 'Video call';
 }
 
 const MAX_PAGES = 10;
@@ -163,7 +232,43 @@ async function readPage(
 	const slug = input.slug === undefined && current ? current.slug : readSlug(input.slug);
 	const title = input.title === undefined && current ? current.title : readText(input.title, 120, 'title')!;
 	const description = input.description === undefined ? (current?.description ?? null) : readText(input.description, 1000);
-	const location = input.location === undefined ? (current?.location ?? null) : readText(input.location, 500);
+	const locationKind = (input.locationKind ?? current?.locationKind ?? 'none') as LocationKind;
+	if (!(LOCATION_KINDS as readonly unknown[]).includes(locationKind)) throw new BookingError('location');
+	let location = input.location === undefined ? (current?.location ?? null) : readText(input.location, 500);
+	if (locationKind === 'none' || locationKind === 'phone_guest') location = null;
+	else if (!location) throw new BookingError('location');
+	else if (locationKind === 'video') {
+		let link: URL | null = null;
+		try {
+			link = new URL(location);
+		} catch {
+			link = null;
+		}
+		if (!link || link.protocol !== 'https:') throw new BookingError('location');
+	} else if (locationKind === 'phone_host' && !readPhone(location)) throw new BookingError('location');
+
+	let askPhone: AskPhone = (input.askPhone ?? current?.askPhone ?? 'off') as AskPhone;
+	if (!['off', 'optional', 'required'].includes(askPhone)) throw new BookingError('numbers');
+	// If you call them, you need their number.
+	if (locationKind === 'phone_guest') askPhone = 'required';
+
+	let questions = current?.questions ?? [];
+	if (input.questions !== undefined) {
+		if (!Array.isArray(input.questions) || input.questions.length > MAX_QUESTIONS) throw new BookingError('questions');
+		const used = new Set<string>();
+		questions = input.questions.map((raw, index) => {
+			const item = (raw ?? {}) as Record<string, unknown>;
+			const label = typeof item.label === 'string' ? item.label.trim() : '';
+			if (!label || label.length > 200) throw new BookingError('questions');
+			let id = typeof item.id === 'string' && /^[a-z0-9]{1,12}$/.test(item.id) ? item.id : `q${index + 1}`;
+			while (used.has(id)) id = `${id}x`.slice(-12);
+			used.add(id);
+			return { id, label, long: item.long === true, required: item.required === true };
+		});
+	}
+
+	const reminderMinutes = input.reminderMinutes === undefined ? (current?.reminderMinutes ?? 1440) : Number(input.reminderMinutes);
+	if (!(REMINDER_CHOICES as readonly number[]).includes(reminderMinutes)) throw new BookingError('numbers');
 
 	let durations = current?.durations ?? [30];
 	if (input.durations !== undefined) {
@@ -216,8 +321,17 @@ async function readPage(
 		calendarId,
 		sendFrom,
 		location,
-		enabled: input.enabled === undefined ? (current?.enabled ?? true) : input.enabled === true
+		enabled: input.enabled === undefined ? (current?.enabled ?? true) : input.enabled === true,
+		locationKind,
+		askPhone,
+		questions,
+		allowGuests: input.allowGuests === undefined ? (current?.allowGuests ?? false) : input.allowGuests === true,
+		reminderMinutes
 	};
+}
+
+function v2Values(page: Omit<BookingPage, 'id'>): unknown[] {
+	return [page.locationKind, page.askPhone, JSON.stringify(page.questions), page.allowGuests ? 1 : 0, page.reminderMinutes];
 }
 
 export async function listBookingPages(db: D1Database, userId: string): Promise<BookingPage[]> {
@@ -254,8 +368,9 @@ export async function createBookingPage(
 		await db
 			.prepare(
 				`INSERT INTO booking_pages (id, user_id, slug, title, description, durations_json, timezone, hours_json, buffer_minutes,
-				   min_notice_minutes, horizon_days, max_per_day, calendar_id, send_from, location, enabled, created_at, updated_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+				   min_notice_minutes, horizon_days, max_per_day, calendar_id, send_from, location, enabled, created_at, updated_at,
+				   location_kind, ask_phone, questions_json, allow_guests, reminder_minutes)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 			)
 			.bind(
 				id,
@@ -275,7 +390,8 @@ export async function createBookingPage(
 				page.location,
 				page.enabled ? 1 : 0,
 				at,
-				at
+				at,
+				...v2Values(page)
 			)
 			.run();
 	} catch (error) {
@@ -300,7 +416,8 @@ export async function updateBookingPage(
 			.prepare(
 				`UPDATE booking_pages SET slug = ?, title = ?, description = ?, durations_json = ?, timezone = ?, hours_json = ?,
 				   buffer_minutes = ?, min_notice_minutes = ?, horizon_days = ?, max_per_day = ?, calendar_id = ?, send_from = ?,
-				   location = ?, enabled = ?, updated_at = ?
+				   location = ?, enabled = ?, updated_at = ?,
+				   location_kind = ?, ask_phone = ?, questions_json = ?, allow_guests = ?, reminder_minutes = ?
 				 WHERE id = ? AND user_id = ?`
 			)
 			.bind(
@@ -319,6 +436,7 @@ export async function updateBookingPage(
 				page.location,
 				page.enabled ? 1 : 0,
 				now.toISOString(),
+				...v2Values(page),
 				id,
 				userId
 			)
@@ -344,26 +462,66 @@ export type PublicPage = {
 	description: string | null;
 	durations: number[];
 	timezone: string;
-	location: string | null;
+	/** What visitors see before booking: "Zoom", "Phone call", an address. Links come in the invite. */
+	location: { kind: LocationKind; label: string } | null;
 	host: string;
+	askPhone: AskPhone;
+	questions: Question[];
+	allowGuests: boolean;
 };
 
-async function pageBySlug(db: D1Database, slug: string): Promise<(BookingPage & { userId: string; hostName: string }) | null> {
+/** How the location reads before booking (no links or numbers yet). */
+export function locationLabel(page: Pick<BookingPage, 'locationKind' | 'location'>): { kind: LocationKind; label: string } | null {
+	switch (page.locationKind) {
+		case 'video':
+			return { kind: 'video', label: videoProvider(page.location ?? '') };
+		case 'phone_guest':
+			return { kind: 'phone_guest', label: 'Phone call (they call you)' };
+		case 'phone_host':
+			return { kind: 'phone_host', label: 'Phone call' };
+		case 'in_person':
+			return { kind: 'in_person', label: page.location ?? 'In person' };
+		case 'custom':
+			return page.location ? { kind: 'custom', label: page.location } : null;
+		default:
+			return null;
+	}
+}
+
+/** What goes in the event's location for this booking. */
+function eventLocation(page: LivePage, phone: string | null): string | null {
+	switch (page.locationKind) {
+		case 'phone_guest':
+			// Their number stays with you (on the booking), not with everyone invited.
+			return `Phone call: ${page.hostName} will call you`;
+		case 'phone_host':
+			return `Phone call: ${page.location}`;
+		case 'none':
+			return null;
+		default:
+			return page.location;
+	}
+}
+
+export type LivePage = BookingPage & { userId: string; hostName: string };
+
+/** A page by its link. Turned-off pages only with `includeOff` (a guest changing what they already booked). */
+export async function pageBySlug(db: D1Database, slug: string, includeOff = false): Promise<LivePage | null> {
 	if (!/^[a-z0-9-]{3,40}$/.test(slug)) return null;
 	const row = await db
 		.prepare(
 			`SELECT p.*, u.name AS host_name FROM booking_pages p JOIN users u ON u.id = p.user_id
-			 WHERE p.slug = ? AND p.enabled = 1`
+			 WHERE p.slug = ? AND (p.enabled = 1 OR ?)`
 		)
-		.bind(slug)
+		.bind(slug, includeOff ? 1 : 0)
 		.first<PageRow & { host_name: string | null }>();
 	if (!row) return null;
 	return { ...toPage(row), userId: row.user_id, hostName: row.host_name?.trim() || 'Your host' };
 }
 
 /** What a visitor sees: no hours, calendars or addresses, just enough to pick a time. */
-export async function publicPage(db: D1Database, slug: string): Promise<PublicPage | null> {
-	const page = await pageBySlug(db, slug);
+export async function publicPage(db: D1Database, slug: string, includeOff = false): Promise<PublicPage | null> {
+	const page = await pageBySlug(db, slug, includeOff);
 	if (!page) return null;
 	return {
 		slug: page.slug,
@@ -371,23 +529,34 @@ export async function publicPage(db: D1Database, slug: string): Promise<PublicPa
 		description: page.description,
 		durations: page.durations,
 		timezone: page.timezone,
-		location: page.location,
-		host: page.hostName
+		location: locationLabel(page),
+		host: page.hostName,
+		askPhone: page.askPhone,
+		questions: page.questions,
+		allowGuests: page.allowGuests
 	};
 }
 
 /** Everything that blocks time for this person: every calendar, outside ones included, plus held slots. */
-async function busyFor(db: D1Database, userId: string, from: number, to: number, now: Date): Promise<Interval[]> {
+async function busyFor(
+	db: D1Database,
+	userId: string,
+	from: number,
+	to: number,
+	now: Date,
+	ignoreEventId: string | null = null
+): Promise<Interval[]> {
 	const calendars = await listCalendars(db, userId);
 	const occurrences = await occurrencesInRange(db, calendars, from, to);
 	const busy: Interval[] = occurrences
-		.filter((item) => item.transparency === 'busy' && item.myStatus !== 'declined')
+		// When rescheduling, the meeting being moved doesn't block itself.
+		.filter((item) => item.transparency === 'busy' && item.myStatus !== 'declined' && item.eventId !== ignoreEventId)
 		.map((item) => ({ start: Date.parse(item.start), end: Date.parse(item.end) }));
 	// A booking still being written (its event isn't there yet) holds its time for a couple of minutes.
 	const { results } = await db
 		.prepare(
 			`SELECT start_at, end_at FROM bookings
-			 WHERE user_id = ? AND event_id IS NULL AND created_at > ? AND start_at < ? AND end_at > ?`
+			 WHERE user_id = ? AND event_id IS NULL AND status = 'confirmed' AND created_at > ? AND start_at < ? AND end_at > ?`
 		)
 		.bind(userId, new Date(now.getTime() - HOLD_MS).toISOString(), new Date(to).toISOString(), new Date(from).toISOString())
 		.all<{ start_at: string; end_at: string }>();
@@ -397,13 +566,26 @@ async function busyFor(db: D1Database, userId: string, from: number, to: number,
 
 const HOLD_MS = 2 * 60_000;
 
-async function bookedPerDay(db: D1Database, page: BookingPage, from: number, to: number, now: Date): Promise<Record<string, number>> {
+async function bookedPerDay(
+	db: D1Database,
+	page: BookingPage,
+	from: number,
+	to: number,
+	now: Date,
+	ignoreEventId: string | null
+): Promise<Record<string, number>> {
 	const { results } = await db
 		.prepare(
-			`SELECT start_at FROM bookings WHERE page_id = ? AND start_at >= ? AND start_at < ?
-			   AND (event_id IS NOT NULL OR created_at > ?)`
+			`SELECT start_at FROM bookings WHERE page_id = ? AND start_at >= ? AND start_at < ? AND status = 'confirmed'
+			   AND (event_id IS NOT NULL OR created_at > ?) AND (event_id IS NULL OR event_id <> ?)`
 		)
-		.bind(page.id, new Date(from - 86_400_000).toISOString(), new Date(to + 86_400_000).toISOString(), new Date(now.getTime() - HOLD_MS).toISOString())
+		.bind(
+			page.id,
+			new Date(from - 86_400_000).toISOString(),
+			new Date(to + 86_400_000).toISOString(),
+			new Date(now.getTime() - HOLD_MS).toISOString(),
+			ignoreEventId ?? ''
+		)
 		.all<{ start_at: string }>();
 	const out: Record<string, number> = {};
 	for (const row of results) {
@@ -426,8 +608,8 @@ function rulesOf(page: BookingPage, duration: number): BookingRules {
 	};
 }
 
-/** At most two weeks of slots per request. */
-const MAX_WINDOW_MS = 15 * 86_400_000;
+/** At most six weeks of slots per request (a month on screen). */
+const MAX_WINDOW_MS = 43 * 86_400_000;
 
 export async function openSlots(
 	db: D1Database,
@@ -437,16 +619,27 @@ export async function openSlots(
 ): Promise<Slot[]> {
 	const page = await pageBySlug(db, slug);
 	if (!page) throw new BookingError('missing');
+	return slotsFor(db, page, input, now);
+}
+
+/** Open slots on a page. `ignoreEventId`: the meeting being moved, which doesn't count as busy. */
+export async function slotsFor(
+	db: D1Database,
+	page: LivePage,
+	input: { from: number; to: number; duration: number },
+	now = new Date(),
+	ignoreEventId: string | null = null
+): Promise<Slot[]> {
 	if (!page.durations.includes(input.duration)) throw new BookingError('durations');
 	const from = Math.max(input.from, now.getTime());
 	const to = Math.min(input.to, from + MAX_WINDOW_MS, now.getTime() + page.horizonDays * 86_400_000);
 	if (!(to > from)) return [];
 	const pad = (page.bufferMinutes + 24 * 60) * 60_000;
-	const busy = await busyFor(db, page.userId, from - pad, to + pad, now);
+	const busy = await busyFor(db, page.userId, from - pad, to + pad, now, ignoreEventId);
 	return freeSlots({
 		rules: rulesOf(page, input.duration),
 		busy,
-		booked: await bookedPerDay(db, page, from, to, now),
+		booked: await bookedPerDay(db, page, from, to, now, ignoreEventId),
 		from,
 		to,
 		now: now.getTime()
@@ -480,11 +673,116 @@ export function guestKey(email: string): string {
 }
 
 const PER_HOUR = 10;
-/** Invites one page may send in a day, whoever books. */
-const PER_DAY_SENT = 30;
+/** Emails one page may cause in a day (invites, updates, cancellations), counted per recipient. */
+export const SENDS_PER_DAY = 40;
+/** Upcoming bookings one person may be part of on a page, as booker or extra guest. */
 const AHEAD_PER_GUEST = 3;
 
 export type BookingResult = { start: string; end: string; invited: boolean };
+
+const MAX_EXTRA_GUESTS = 3;
+
+/** The manage link's token: 32 random bytes, URL-safe. Only its hash is stored. */
+export function newToken(): string {
+	const bytes = crypto.getRandomValues(new Uint8Array(32));
+	return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+export async function tokenHash(token: string): Promise<string> {
+	const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
+	return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+/** The token sits after "#", so it never reaches a server log; the page sends it in a request body. */
+export function manageUrl(origin: string, token: string): string {
+	return `${origin}/book/manage#${token}`;
+}
+
+/**
+ * Claims room in the page's daily email budget for `recipients` emails, in one
+ * statement. False: the page has sent its share today.
+ */
+export async function claimSends(
+	db: D1Database,
+	pageId: string,
+	bookingId: string | null,
+	kind: string,
+	recipients: number,
+	now: Date
+): Promise<boolean> {
+	if (recipients <= 0) return true;
+	const result = await db
+		.prepare(
+			`INSERT INTO booking_sends (id, page_id, booking_id, kind, recipients, created_at)
+			 SELECT ?, ?, ?, ?, ?, ?
+			 WHERE (SELECT COALESCE(SUM(recipients), 0) FROM booking_sends WHERE page_id = ? AND created_at > ?) + ? <= ?`
+		)
+		.bind(
+			crypto.randomUUID(),
+			pageId,
+			bookingId,
+			kind,
+			recipients,
+			now.toISOString(),
+			pageId,
+			new Date(now.getTime() - 86_400_000).toISOString(),
+			recipients,
+			SENDS_PER_DAY
+		)
+		.run();
+	return !!result.meta.changes;
+}
+
+/** The line the guest's invite carries, so they can change the meeting themselves. */
+export function manageLine(origin: string, token: string): string {
+	return `Need to make a change? Reschedule or cancel: ${manageUrl(origin, token)}`;
+}
+
+export function formatWhen(start: number, end: number, zone: string): string {
+	const day = new Intl.DateTimeFormat('en-US', { timeZone: zone, weekday: 'long', month: 'long', day: 'numeric' }).format(new Date(start));
+	const time = (ms: number, withZone: boolean) =>
+		new Intl.DateTimeFormat('en-US', {
+			timeZone: zone,
+			hour: 'numeric',
+			minute: '2-digit',
+			...(withZone ? { timeZoneName: 'short' as const } : {})
+		}).format(new Date(ms));
+	return `${day}, ${time(start, false)} – ${time(end, true)}`;
+}
+
+export type Answer = { id: string; label: string; value: string };
+
+/** The guest's answers to the page's questions, checked against what's required. */
+function readAnswers(page: BookingPage, value: unknown): Answer[] {
+	const given = value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+	const out: Answer[] = [];
+	for (const question of page.questions) {
+		const raw = given[question.id];
+		const text = typeof raw === 'string' ? raw.trim().slice(0, question.long ? 2000 : 300) : '';
+		if (!text) {
+			if (question.required) throw new BookingError('answers');
+			continue;
+		}
+		out.push({ id: question.id, label: question.label, value: text });
+	}
+	return out;
+}
+
+function readExtraGuests(page: BookingPage, value: unknown, main: string): Array<{ email: string; name: null }> {
+	if (value === undefined || value === null || (Array.isArray(value) && value.length === 0)) return [];
+	if (!page.allowGuests || !Array.isArray(value) || value.length > MAX_EXTRA_GUESTS) throw new BookingError('guests');
+	const seen = new Set([guestKey(main)]);
+	const out: Array<{ email: string; name: null }> = [];
+	for (const item of value) {
+		const email = typeof item === 'string' ? item.trim().toLowerCase() : '';
+		if (email.length > 254 || !EMAIL.test(email)) throw new BookingError('guests');
+		const key = guestKey(email);
+		if (seen.has(key)) continue;
+		seen.add(key);
+		out.push({ email, name: null });
+	}
+	return out;
+}
 
 /**
  * Books a slot. The time is checked again here, a short hold stops two people
@@ -495,10 +793,21 @@ export async function bookSlot(
 	db: D1Database,
 	provider: EmailProvider | null,
 	slug: string,
-	input: { start: unknown; duration: unknown; name: unknown; email: unknown; note: unknown },
-	options: { uidDomain: string; now?: Date }
+	input: {
+		start: unknown;
+		duration: unknown;
+		name: unknown;
+		email: unknown;
+		note: unknown;
+		phone?: unknown;
+		answers?: unknown;
+		guests?: unknown;
+		timezone?: unknown;
+	},
+	options: { uidDomain: string; origin?: string; now?: Date }
 ): Promise<BookingResult> {
 	const now = options.now ?? new Date();
+	const origin = options.origin ?? `https://${options.uidDomain}`;
 	const page = await pageBySlug(db, slug);
 	if (!page) throw new BookingError('missing');
 	const duration = Number(input.duration);
@@ -509,8 +818,21 @@ export async function bookSlot(
 	const email = typeof input.email === 'string' ? input.email.trim().toLowerCase() : '';
 	if (email.length > 254 || !EMAIL.test(email)) throw new BookingError('email');
 	const note = typeof input.note === 'string' ? input.note.trim().slice(0, 1000) || null : null;
+	let phone: string | null = null;
+	if (page.askPhone !== 'off') {
+		const typed = typeof input.phone === 'string' ? input.phone.trim() : '';
+		if (typed) {
+			phone = readPhone(typed);
+			if (!phone) throw new BookingError('phone');
+		} else if (page.askPhone === 'required') throw new BookingError('phone');
+	}
+	const answers = readAnswers(page, input.answers);
+	const extraGuests = readExtraGuests(page, input.guests, email);
+	const guestZone = isTimeZone(input.timezone) ? input.timezone : null;
 
 	const key = guestKey(email);
+	const keysJson = JSON.stringify([key, ...extraGuests.map((guest) => guestKey(guest.email))]);
+	const recipients = 1 + extraGuests.length;
 	const hourAgo = new Date(now.getTime() - 3_600_000).toISOString();
 	const dayAgo = new Date(now.getTime() - 86_400_000).toISOString();
 	const holdCutoff = new Date(now.getTime() - HOLD_MS).toISOString();
@@ -523,46 +845,54 @@ export async function bookSlot(
 			.first<{ n: number }>();
 		if ((recent?.n ?? 0) >= PER_HOUR) throw new BookingError('slow_down');
 		const today = await db
-			.prepare(`SELECT COUNT(*) AS n FROM bookings WHERE page_id = ? AND created_at > ?`)
+			.prepare(`SELECT COALESCE(SUM(recipients), 0) AS n FROM booking_sends WHERE page_id = ? AND created_at > ?`)
 			.bind(page.id, dayAgo)
 			.first<{ n: number }>();
-		if ((today?.n ?? 0) >= PER_DAY_SENT) throw new BookingError('slow_down');
-		const ahead = await db
+		if ((today?.n ?? 0) + recipients > SENDS_PER_DAY) throw new BookingError('slow_down');
+		const busiest = await db
 			.prepare(
-				`SELECT COUNT(*) AS n FROM bookings WHERE page_id = ? AND guest_key = ? AND start_at > ?
-				   AND (event_id IS NOT NULL OR created_at > ?)`
+				`SELECT COUNT(*) AS n FROM bookings b, json_each(b.guest_keys_json) k
+				 WHERE b.page_id = ? AND b.start_at > ? AND b.status = 'confirmed' AND (b.event_id IS NOT NULL OR b.created_at > ?)
+				   AND k.value IN (SELECT value FROM json_each(?))
+				 GROUP BY k.value ORDER BY n DESC LIMIT 1`
 			)
-			.bind(page.id, key, now.toISOString(), holdCutoff)
+			.bind(page.id, now.toISOString(), holdCutoff, keysJson)
 			.first<{ n: number }>();
-		if ((ahead?.n ?? 0) >= AHEAD_PER_GUEST) throw new BookingError('too_many');
+		if ((busiest?.n ?? 0) >= AHEAD_PER_GUEST) throw new BookingError('too_many');
 	};
 	await limits();
 
 	const end = start + duration * 60_000;
 	const day = 86_400_000;
-	const open = await openSlots(db, slug, { from: start - day, to: end + day, duration }, now);
-	if (!open.some((slot) => slot.start === start)) throw new BookingError('taken');
+	const open = await slotsFor(db, page, { from: start - day, to: end + day, duration }, now);
+	const slot = open.find((item) => item.start === start);
+	if (!slot) throw new BookingError('taken');
 
 	// The hold: one statement, so a second booking for an overlapping time can't slip in.
 	const bookingId = crypto.randomUUID();
+	const token = newToken();
 	const startIso = new Date(start).toISOString();
 	const endIso = new Date(end).toISOString();
-	const slot = open.find((item) => item.start === start)!;
 	const dayStart = localToUtc({ ...parseDate(slot.date)!, hour: 0, minute: 0 }, page.timezone);
 	const dayEnd = localToUtc({ ...addDays(parseDate(slot.date)!, 1), hour: 0, minute: 0 }, page.timezone);
 	const hold = await db
 		.prepare(
-			`INSERT INTO bookings (id, page_id, user_id, guest_name, guest_email, guest_key, note, start_at, end_at, created_at)
-			 SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+			`INSERT INTO bookings (id, page_id, user_id, guest_name, guest_email, guest_key, note, start_at, end_at, created_at,
+			                       guest_phone, answers_json, extra_guests_json, guest_timezone, manage_token_hash, guest_keys_json)
+			 SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 			 WHERE NOT EXISTS (
-			   SELECT 1 FROM bookings WHERE user_id = ? AND start_at < ? AND end_at > ?
+			   SELECT 1 FROM bookings WHERE user_id = ? AND start_at < ? AND end_at > ? AND status = 'confirmed'
 			     AND (event_id IS NOT NULL OR created_at > ?)
 			 )
 			 AND (SELECT COUNT(*) FROM bookings WHERE page_id = ? AND created_at > ?) < ?
-			 AND (SELECT COUNT(*) FROM bookings WHERE page_id = ? AND created_at > ?) < ?
-			 AND (SELECT COUNT(*) FROM bookings WHERE page_id = ? AND guest_key = ? AND start_at > ?
-			        AND (event_id IS NOT NULL OR created_at > ?)) < ?
-			 AND (SELECT COUNT(*) FROM bookings WHERE page_id = ? AND start_at >= ? AND start_at < ?
+			 AND (SELECT COALESCE(SUM(recipients), 0) FROM booking_sends WHERE page_id = ? AND created_at > ?) + ? <= ?
+			 AND NOT EXISTS (
+			   SELECT 1 FROM bookings b, json_each(b.guest_keys_json) k
+			   WHERE b.page_id = ? AND b.start_at > ? AND b.status = 'confirmed' AND (b.event_id IS NOT NULL OR b.created_at > ?)
+			     AND k.value IN (SELECT value FROM json_each(?))
+			   GROUP BY k.value HAVING COUNT(*) >= ?
+			 )
+			 AND (SELECT COUNT(*) FROM bookings WHERE page_id = ? AND start_at >= ? AND start_at < ? AND status = 'confirmed'
 			        AND (event_id IS NOT NULL OR created_at > ?)) < ?`
 		)
 		.bind(
@@ -576,6 +906,12 @@ export async function bookSlot(
 			startIso,
 			endIso,
 			now.toISOString(),
+			phone,
+			JSON.stringify(answers),
+			JSON.stringify(extraGuests.map((guest) => guest.email)),
+			guestZone,
+			await tokenHash(token),
+			keysJson,
 			page.userId,
 			endIso,
 			startIso,
@@ -585,11 +921,12 @@ export async function bookSlot(
 			PER_HOUR,
 			page.id,
 			dayAgo,
-			PER_DAY_SENT,
+			recipients,
+			SENDS_PER_DAY,
 			page.id,
-			key,
 			now.toISOString(),
 			holdCutoff,
+			keysJson,
 			AHEAD_PER_GUEST,
 			page.id,
 			new Date(dayStart).toISOString(),
@@ -602,6 +939,8 @@ export async function bookSlot(
 		await limits();
 		throw new BookingError('taken');
 	}
+	// The invites this booking sends count against the page's day. (The hold above already checked there's room.)
+	await claimSends(db, page.id, bookingId, 'booked', recipients, now);
 
 	try {
 		const owner = await db.prepare(`SELECT * FROM users WHERE id = ?`).bind(page.userId).first<User>();
@@ -613,8 +952,9 @@ export async function bookSlot(
 			{
 				calendarId: page.calendarId,
 				title: `${page.title}: ${name}`,
-				description: `Booked through your booking page by ${name} (${email}).`,
-				location: page.location,
+				// What every guest's invite says. Their answers, note and change link don't go here.
+				description: page.description,
+				location: eventLocation(page, phone),
 				start: local(start),
 				end: local(end),
 				timezone: page.timezone
@@ -623,19 +963,29 @@ export async function bookSlot(
 		);
 		await db.prepare(`UPDATE bookings SET event_id = ? WHERE id = ?`).bind(eventId, bookingId).run();
 		await setSendFrom(db, eventId, page.sendFrom);
-		await replaceAttendees(db, eventId, [{ email, name }]);
+		await replaceAttendees(db, eventId, [{ email, name }, ...extraGuests]);
 
 		let invited = false;
 		if (provider) {
 			const series = await seriesOf(db, page.userId, eventId);
-			const result = await sendInvites(db, provider, owner, series).catch((error) => {
+			// Only the booker's own copy carries the link to reschedule or cancel.
+			const result = await sendInvites(db, provider, owner, series, {
+				privateLines: { [email]: manageLine(origin, token) }
+			}).catch((error) => {
 				console.error('Booking invite failed', bookingId, error);
 				return { sent: 0, error: 'send' };
 			});
 			invited = result.sent > 0;
-			await notifyOwner(db, provider, owner, page, { name, email, note, start, end }).catch((error) =>
-				console.error('Booking notice failed', bookingId, error)
-			);
+			await notifyOwner(db, provider, owner, page, 'booked', {
+				name,
+				email,
+				phone,
+				note,
+				answers,
+				guests: extraGuests.map((guest) => guest.email),
+				start,
+				end
+			}).catch((error) => console.error('Booking notice failed', bookingId, error));
 		}
 		return { start: startIso, end: endIso, invited };
 	} catch (error) {
@@ -646,37 +996,59 @@ export async function bookSlot(
 	}
 }
 
-/** Tells you about the booking, from and to your own address; replying writes to the guest. */
-async function notifyOwner(
+export type OwnerNotice = {
+	name: string;
+	email: string;
+	phone: string | null;
+	note: string | null;
+	answers: Answer[];
+	guests: string[];
+	start: number;
+	end: number;
+	previous?: { start: number; end: number };
+	reason?: string | null;
+};
+
+/** Tells you about a booking, a move or a cancellation, from and to your own address; replying writes to the guest. */
+export async function notifyOwner(
 	db: D1Database,
 	provider: EmailProvider,
 	owner: User,
 	page: BookingPage,
-	booking: { name: string; email: string; note: string | null; start: number; end: number }
+	what: 'booked' | 'rescheduled' | 'cancelled',
+	booking: OwnerNotice
 ): Promise<void> {
 	const from = await resolveFromAddress(db, owner, null, page.sendFrom);
-	const when = new Intl.DateTimeFormat('en-US', {
-		timeZone: page.timezone,
-		weekday: 'long',
-		month: 'long',
-		day: 'numeric',
-		hour: 'numeric',
-		minute: '2-digit',
-		timeZoneName: 'short'
-	}).format(new Date(booking.start));
+	const when = formatWhen(booking.start, booking.end, page.timezone);
+	const head =
+		what === 'booked'
+			? `${booking.name} (${booking.email}) booked "${page.title}" for ${when}.`
+			: what === 'rescheduled'
+				? `${booking.name} (${booking.email}) moved "${page.title}" to ${when}.`
+				: `${booking.name} (${booking.email}) canceled "${page.title}" on ${when}.`;
 	const lines = [
-		`${booking.name} (${booking.email}) booked "${page.title}" for ${when}.`,
+		head,
+		...(booking.previous ? [`It was ${formatWhen(booking.previous.start, booking.previous.end, page.timezone)}.`] : []),
 		'',
-		"It's on your calendar, and they were sent an invite.",
+		what === 'cancelled'
+			? "It's off your calendar, and everyone invited was told."
+			: what === 'rescheduled'
+				? 'Your calendar is updated, and everyone invited got the new time.'
+				: "It's on your calendar, and they were sent an invite.",
+		...(booking.reason ? ['', 'Their reason:', booking.reason] : []),
+		...(booking.phone ? ['', `Phone: ${booking.phone}`] : []),
+		...(booking.guests.length ? ['', `Also invited: ${booking.guests.join(', ')}`] : []),
+		...booking.answers.flatMap((answer) => ['', `${answer.label}`, answer.value]),
 		...(booking.note ? ['', 'Their note:', booking.note] : []),
 		'',
 		'Reply to this email to write to them.'
 	];
+	const label = what === 'booked' ? 'New booking' : what === 'rescheduled' ? 'Rescheduled' : 'Canceled';
 	await sendOutboundEmail(provider, {
 		from,
 		senderName: 'CloudMail booking',
 		to: from.address,
-		subject: `New booking: ${page.title} with ${booking.name}`.slice(0, 200),
+		subject: `${label}: ${page.title} with ${booking.name}`.slice(0, 200),
 		text: lines.join('\n'),
 		headers: { 'Reply-To': booking.email }
 	});

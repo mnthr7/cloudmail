@@ -16,6 +16,7 @@ import { clientFor } from './lib/server/ai-providers';
 import { importMasterKey } from './lib/server/secret-box';
 import { deliverDue } from './lib/server/outbox-schedule';
 import { syncDueOutsideCalendars } from './lib/server/outside-calendars';
+import { sendDueReminders } from './lib/server/booking-manage';
 import { createVirusTotal } from './lib/server/virus-total';
 // Renamed from `_worker.js` by `scripts/wrap-cloudflare-worker.mjs` after `vite build`.
 // @ts-expect-error file is created at build time
@@ -88,10 +89,13 @@ export default {
 
 	async scheduled(_event: unknown, env: Env, ctx: ExecutionContext) {
 		ctx.waitUntil(
-			deliverDue(env.DB, getEmailProvider({ env }), new Date(), 20).then(
-				() => undefined,
-				(error) => console.error('Failed to deliver scheduled mail', error)
-			)
+			deliverDue(env.DB, getEmailProvider({ env }), new Date(), 20)
+				// Booking reminders go out from the host's own address, after scheduled mail.
+				.then(() => (env.DEMO_MODE === 'true' ? 0 : sendDueReminders(env.DB, getEmailProvider({ env }), new Date())))
+				.then(
+					() => undefined,
+					(error) => console.error('Failed to deliver scheduled mail', error)
+				)
 		);
 		// Proposals nobody approved in time are never sent late (A7). Allowed
 		// actions whose request was cut off are finished, once.

@@ -7,8 +7,8 @@ import path from 'node:path';
 import { avaDefinition } from '../src/lib/agents/ava';
 import { createAgent, decideAction, setAgentStatus, updateAgentDefinition } from '../src/lib/server/agents-store';
 import { executeAction } from '../src/lib/server/agent-executor';
-import { enqueueAskRun, enqueueMailRuns } from '../src/lib/server/agent-runs-store';
-import { cloudflareAuthResults, fromDomainVerified, parseAuthResults } from '../src/lib/security/phishing';
+import { enqueueAskRun, enqueueMailRuns, threadAgent } from '../src/lib/server/agent-runs-store';
+import { cloudflareAuthResults, fromDomainVerified, parseAuthResults, resendAuthResults } from '../src/lib/security/phishing';
 import { runDueAgents, type MessagesClient } from '../src/lib/server/agent-runner';
 import { toolsFor } from '../src/lib/server/agent-brain';
 import { DEFAULT_HOURS } from '../src/lib/calendar/availability';
@@ -466,5 +466,54 @@ describe('you ask Ava about a booking reply', () => {
 		await runDueAgents(db, { workspaces: ['default'], clientFor: async () => client, provider }, { now: () => NOW });
 		expect(JSON.stringify(requests[0].messages)).not.toContain('<booking id');
 		expect(requests[0].tools?.map((tool) => ('name' in tool ? tool.name : ''))).not.toContain('cancel_booking');
+	});
+});
+
+describe("Resend's own sender check", () => {
+	test("a Gmail reply Resend checked is verified for the From address's domain", () => {
+		const results = resendAuthResults({ spf: 'pass', dkim: 'pass', dmarc: 'pass' }, 'pat@gmail.com');
+		const auth = parseAuthResults(results ? [results] : []);
+		expect(auth).toEqual({ spf: 'pass', dkim: 'pass', dmarc: 'pass', dmarcFrom: ['gmail.com'] });
+		expect(fromDomainVerified(auth, 'pat@gmail.com')).toBe(true);
+	});
+
+	test('a failed or missing check is not', () => {
+		const failed = resendAuthResults({ spf: 'pass', dkim: 'fail', dmarc: 'fail' }, 'pat@gmail.com');
+		expect(fromDomainVerified(parseAuthResults(failed ? [failed] : []), 'pat@gmail.com')).toBe(false);
+		expect(resendAuthResults(null, 'pat@gmail.com')).toBeNull();
+		const unknown = resendAuthResults({ dmarc: 'processing_failed' }, 'pat@gmail.com');
+		expect(parseAuthResults(unknown ? [unknown] : []).dmarc).toBe('temperror');
+	});
+});
+
+describe('a note on a thread Ava is working', () => {
+	test('goes to her without an @mention', async () => {
+		const { sqlite, db, provider, ava } = await setup();
+		const email = inbound(sqlite, { from: 'pat@customer.test', body: 'Can we do Thursday?' });
+		await enqueueMailRuns(db, 'u1', email, {}, NOW);
+		const { client } = fakeClient([{ content: [text('Left a note.')] }]);
+		await runDueAgents(db, { workspaces: ['default'], clientFor: async () => client, provider }, { now: () => NOW });
+		expect(await threadAgent(db, 'u1', email, [ava.id], NOW)).toBe(ava.id);
+		// Not one you may ask, or another thread: nobody.
+		expect(await threadAgent(db, 'u1', email, [], NOW)).toBeNull();
+		expect(await threadAgent(db, 'u1', 'other-thread', [ava.id], NOW)).toBeNull();
+	});
+
+	test('asked from the invite you sent, she works from the guest\'s newest reply on the thread', async () => {
+		const { sqlite, db, provider, sent, ava, bookingId } = await setup();
+		const invite = inbound(sqlite, { from: 'pat@customer.test', body: 'x' });
+		sqlite.run(`UPDATE emails SET direction = 'outbound', from_addr = 'demo@acme.com' WHERE id = ?`, [invite]);
+		const reply = inbound(sqlite, { from: 'pat@customer.test', body: 'Can we do Thursday at noon?', security: UNSIGNED });
+		sqlite.run(`UPDATE emails SET thread_id = ? WHERE id = ?`, [invite, reply]);
+		await enqueueAskRun(db, { agentId: ava.id, byUserId: 'u1', emailId: invite, request: 'Just move the meeting per the request' }, NOW);
+		const { client, requests } = fakeClient([
+			{ content: [toolUse('reschedule_booking', { booking_id: bookingId, start: '2026-11-12T18:00:00.000Z', reason: 'Asked.' })] },
+			{ content: [text('Moved.')] }
+		]);
+		await runDueAgents(db, { workspaces: ['default'], clientFor: async () => client, provider }, { now: () => NOW });
+		expect(requests[0].tools?.map((tool) => ('name' in tool ? tool.name : ''))).toContain('reschedule_booking');
+		expect(await approveCalendar(sqlite, db, provider)).toBe(1);
+		expect((await range(db))[0].startLocal).toBe('2026-11-12T12:00');
+		expect(sent.find((mail) => mail.subject.startsWith('Rescheduled'))?.text).toContain('asked by Sada');
 	});
 });

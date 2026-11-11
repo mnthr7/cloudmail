@@ -372,3 +372,32 @@ export function cloudflareAuthResults(raw: ArrayBuffer | Uint8Array | string): s
 	}
 	return null;
 }
+
+/** Resend's words for a result, in RFC 8601's. */
+const RESEND_RESULTS: Record<string, AuthResult> = {
+	pass: 'pass',
+	fail: 'fail',
+	gray: 'neutral',
+	processing_failed: 'temperror',
+	unknown: 'none'
+};
+
+/**
+ * Resend's own SPF, DKIM and DMARC results for received mail, as
+ * Authentication-Results text. DMARC checks the header From domain by
+ * definition, so a pass is about the From address's domain.
+ */
+export function resendAuthResults(
+	authentication: { spf?: string | null; dkim?: string | null; dmarc?: string | null } | null | undefined,
+	fromAddress: string
+): string | null {
+	if (!authentication) return null;
+	const domain = fromAddress.trim().toLowerCase().split('@').pop()?.replace(/\.$/, '') ?? '';
+	const clauses: string[] = [];
+	for (const method of ['spf', 'dkim', 'dmarc'] as const) {
+		const result = RESEND_RESULTS[(authentication[method] ?? '').toLowerCase()];
+		if (!result) continue;
+		clauses.push(method === 'dmarc' && domain ? `dmarc=${result} header.from=${domain}` : `${method}=${result}`);
+	}
+	return clauses.length ? `resend; ${clauses.join('; ')}` : null;
+}

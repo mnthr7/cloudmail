@@ -688,3 +688,32 @@ export async function taskPatterns(db: D1Database, userId: string, since: Date, 
 		.all<TaskPattern>();
 	return results;
 }
+
+/**
+ * The agent working a thread: the one that most recently ran on it in the last
+ * two weeks, among the agents given (the ones this person may ask). A note on
+ * the thread that names no agent goes to it.
+ */
+export async function threadAgent(
+	db: D1Database,
+	userId: string,
+	threadId: string,
+	agentIds: string[],
+	now = new Date()
+): Promise<string | null> {
+	if (agentIds.length === 0) return null;
+	const since = new Date(now.getTime() - 14 * 86_400_000).toISOString();
+	const row = await db
+		.prepare(
+			`SELECT r.agent_principal_id AS id
+			 FROM agent_runs r
+			 JOIN emails e ON e.id = r.email_id AND e.user_id = r.mailbox_user_id
+			 WHERE r.mailbox_user_id = ? AND COALESCE(e.thread_id, e.id) = ? AND r.created_at >= ?
+			   AND r.agent_principal_id IN (SELECT value FROM json_each(?))
+			 ORDER BY r.created_at DESC
+			 LIMIT 1`
+		)
+		.bind(userId, threadId, since, JSON.stringify(agentIds))
+		.first<{ id: string }>();
+	return row?.id ?? null;
+}

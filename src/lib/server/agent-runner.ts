@@ -193,16 +193,24 @@ async function runOne(
 			: false;
 	const email = await getEmailForUser(db, run.mailbox_user_id, run.email_id);
 	if (!email || email.deleted_at) return skip('email_gone');
-	// Only a guest's mail can be about their booking.
-	const bookingMail = runsBookings && email.direction === 'inbound';
-	const tools = toolsFor(definition, trigger.kind, { bookings: bookingMail });
-	if (tools.length === 0) return skip('no_tools');
 	const thread = await listThreadMessages(db, run.mailbox_user_id, email);
 	// New mail only sees the part of the thread it provably belongs to.
 	const messages = verifiedContext(thread, email, run.trigger_kind);
 	if (messages.length === 0) return skip('email_gone');
 
 	const founderAddresses = [...(await liveWorkspaceAddresses(db, agent.workspaceId)).keys()];
+	// Only a guest's mail can be about their booking: new mail that woke the agent, or,
+	// when you ask, the newest message someone outside sent on the thread.
+	const ours = new Set(founderAddresses.map((address) => address.toLowerCase()));
+	const guestMail =
+		trigger.kind === 'ask'
+			? ([...messages].reverse().find((message) => message.direction === 'inbound' && !ours.has(message.from_addr.toLowerCase())) ?? null)
+			: email.direction === 'inbound'
+				? email
+				: null;
+	const bookingMail = runsBookings && !!guestMail;
+	const tools = toolsFor(definition, trigger.kind, { bookings: bookingMail });
+	if (tools.length === 0) return skip('no_tools');
 	const participants = threadParticipants(messages);
 	const threadId = email.thread_id ?? email.id;
 	const latest = messages[messages.length - 1];
@@ -213,16 +221,16 @@ async function runOne(
 
 	// An agent running a booking page sees the sender's bookings: on new mail only once
 	// their domain proved the mail is theirs; when a teammate asks, they vouch for it.
-	const security = (email as typeof email & { security_json?: string | null }).security_json ?? null;
+	const security = (guestMail as (typeof guestMail & { security_json?: string | null }) | null)?.security_json ?? null;
 	const vouched = trigger.kind === 'ask';
 	const booking =
-		bookingMail
+		bookingMail && guestMail
 			? {
-					senderVerified: vouched || senderVerified(security, email.from_addr),
+					senderVerified: vouched || senderVerified(security, guestMail.from_addr),
 					bookings: await bookingsForGuest(
 						db,
 						run.mailbox_user_id,
-						{ from_addr: email.from_addr, security_json: security },
+						{ from_addr: guestMail.from_addr, security_json: security },
 						definition.scope.sendAs,
 						now(),
 						vouched
@@ -384,7 +392,7 @@ async function runOne(
 			const proposal = offered && toProposal(call.name, call.input, {
 				threadId,
 				// A booking change is about the mail that asked for it, whose sender was checked.
-				emailId: call.name === 'reschedule_booking' || call.name === 'cancel_booking' ? run.email_id : latest.id,
+				emailId: (call.name === 'reschedule_booking' || call.name === 'cancel_booking') && guestMail ? guestMail.id : latest.id,
 				subject: latest.subject
 			});
 			if (!proposal) {
@@ -398,7 +406,8 @@ async function runOne(
 			}
 			// A booking change you asked for on mail whose sender couldn't be checked: you
 			// vouched by asking, so you see that and OK it yourself.
-			const unverifiedChange = proposal.capability === 'calendar' && trigger.kind === 'ask' && !senderVerified(security, email.from_addr);
+			const unverifiedChange =
+				proposal.capability === 'calendar' && trigger.kind === 'ask' && !senderVerified(security, guestMail?.from_addr ?? '');
 			const result = await proposeAction(
 				db,
 				{
@@ -411,7 +420,7 @@ async function runOne(
 					threadId,
 					payload: proposal.payload,
 					reason: unverifiedChange
-						? `Sender not verified: this email's domain didn't confirm it's from ${email.from_addr}. ${proposal.reason ?? ''}`.trim()
+						? `Sender not verified: this email's domain didn't confirm it's from ${guestMail?.from_addr ?? 'the guest'}. ${proposal.reason ?? ''}`.trim()
 						: proposal.reason,
 					threadParticipants: participants,
 					runId: run.id,

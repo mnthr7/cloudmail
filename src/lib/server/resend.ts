@@ -100,6 +100,11 @@ export type ReceivedEmail = {
 	message_id?: string | null;
 	received_for?: string[];
 	attachments?: ReceivedAttachment[];
+	/**
+	 * What Resend's receiving server found checking the sender. Computed by Resend,
+	 * not read from the message, so a sender can't forge it. Null on older mail.
+	 */
+	authentication?: { spf?: string | null; dkim?: string | null; dmarc?: string | null } | null;
 };
 
 type ListResponse<T> = { object: 'list'; has_more: boolean; data: T[] };

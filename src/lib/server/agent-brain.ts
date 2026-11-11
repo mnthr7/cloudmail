@@ -215,7 +215,7 @@ The sender has no upcoming bookings on your booking pages.
 		return [
 			`<booking id="${escapeData(booking.id)}" page="${escapeData(booking.page).replace(/"/g, "'")}" minutes="${booking.duration}">`,
 			`Now: ${booking.start} = ${show(booking.start)}`,
-			booking.canReschedule ? 'It can be moved to one of these open times (use the exact value before "="):' : 'It has been moved too many times to move again; offer to have the founder sort it out.',
+			booking.canReschedule ? 'Some of its open times (a sample; other times may be open too). Use the exact value before "=":' : 'It has been moved too many times to move again; offer to have the founder sort it out.',
 			booking.canReschedule ? open : '',
 			'</booking>'
 		]
@@ -245,7 +245,7 @@ export function buildUserMessage(input: BrainInput): string {
 			: input.trigger.kind === 'suggest'
 				? `${escapeData(input.trigger.requestedBy)} wants reply options for the message marked latest="true". Call suggest_replies once.`
 				: input.bookings
-					? 'A new message arrived at an address you watch. It is marked latest="true" below. If the sender wants to move or cancel a booking listed under <bookings>, do it with reschedule_booking or cancel_booking (only to an open time listed there), then reply to confirm. If no listed time fits what they asked for, reply offering two or three of the listed open times. For anything you can\'t handle from your job, write a note for the founder. If nothing needs doing, do nothing.'
+					? 'A new message arrived at an address you watch. It is marked latest="true" below. If the sender wants to move or cancel a booking listed under <bookings>, do it with reschedule_booking or cancel_booking, then reply to confirm. The open times listed are only a sample: if they ask for a specific time that is not listed, try it anyway (as an exact time like the listed ones); CloudMail checks it and, if it is taken, tells you the nearest open times. If nothing fits what they asked for, reply offering two or three open times. For anything you can\'t handle from your job, write a note for the founder. If nothing needs doing, do nothing.'
 					: suggesting
 					? 'A new message arrived at an address you watch. It is marked latest="true" below. Call suggest_replies once with what the sender wants and the replies the founder could send. If your job also calls for organizing it or leaving a note, do that too.'
 					: 'A new message arrived at an address you watch. It is marked latest="true" below. Decide whether your job calls for doing anything with it.';
@@ -369,12 +369,12 @@ export const CALENDAR_TOOLS: Anthropic.Beta.BetaTool[] = [
 	{
 		name: 'reschedule_booking',
 		description:
-			'Move one of the sender\'s bookings (listed under <bookings>) to one of its listed open times. Everyone invited gets the updated calendar invite and the founder is told. Only when the sender asked for it.',
+			'Move one of the sender\'s bookings (listed under <bookings>) to a new time: one of its listed open times or the exact time they asked for (CloudMail checks it is open and tells you the nearest open times if not). Everyone invited gets the updated calendar invite and the founder is told. Only when the sender or the founder asked for it.',
 		input_schema: {
 			type: 'object',
 			properties: {
 				booking_id: { type: 'string', description: 'The id of a booking listed under <bookings>.' },
-				start: { type: 'string', description: 'One of that booking\'s open times, exactly as listed before "=".' },
+				start: { type: 'string', description: 'The new start as an exact time in the same form as the listed ones (e.g. 2026-11-20T15:30:00.000Z).' },
 				reason: REASON
 			},
 			required: ['booking_id', 'start', 'reason'],

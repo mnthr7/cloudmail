@@ -35,7 +35,7 @@ import { saveSuggestions } from './reply-suggestions-store.ts';
 import { executeAction, type ExecuteResult } from './agent-executor.ts';
 import { isThreadTakenOver } from './thread-activity-store.ts';
 import { listMemory } from './agent-memory-store.ts';
-import { bookingsForGuest, senderVerified } from './booking-manage.ts';
+import { bookingsForGuest, checkMoveTime, senderVerified } from './booking-manage.ts';
 import type { EmailProvider } from './email-provider.ts';
 
 /**
@@ -168,6 +168,8 @@ async function runOne(
 		return skip('budget_reached');
 	}
 
+	// An ask someone made on the thread itself (not one read from a teammate's email).
+	const directAsk = run.trigger_kind === 'ask' && run.trigger_ref === run.id && !!run.request && !!run.requested_by_principal_id;
 	let trigger: RunTrigger = { kind: 'mail' };
 	if (run.trigger_kind === 'ask') {
 		const asker = run.requested_by_principal_id
@@ -401,6 +403,22 @@ async function runOne(
 				});
 				continue;
 			}
+			// The open times listed are a sample: check the exact time asked for before proposing it.
+			if (call.name === 'reschedule_booking') {
+				const payload = proposal.payload as { bookingId?: string; start?: unknown };
+				const check = await checkMoveTime(db, run.mailbox_user_id, payload.bookingId ?? '', payload.start, now());
+				if (!check.open) {
+					results.push({
+						type: 'tool_result',
+						tool_use_id: call.id,
+						is_error: true,
+						content: check.nearest.length
+							? `That time isn't open. The nearest open times are:\n${check.nearest.map((slot) => `${slot.start} = ${slot.label}`).join('\n')}`
+							: "That time isn't open, and nothing is open near it."
+					});
+					continue;
+				}
+			}
 			// A booking change you asked for on mail whose sender couldn't be checked: you
 			// vouched by asking, so you see that and OK it yourself.
 			const unverifiedChange =
@@ -422,7 +440,9 @@ async function runOne(
 					threadParticipants: participants,
 					runId: run.id,
 					mailboxUserId: run.mailbox_user_id,
-					mustApprove: unverifiedChange
+					mustApprove: unverifiedChange,
+					// Asked for in so many words, on the Ask form or in a note: that's the OK.
+					askedBy: directAsk ? (run.requested_by_principal_id ?? undefined) : undefined
 				},
 				now()
 			);

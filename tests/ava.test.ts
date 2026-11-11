@@ -280,23 +280,18 @@ describe('Ava handles booking replies', () => {
 		await approveCalendar(sqlite, db, provider);
 		expect(await range(db)).toHaveLength(1);
 
-		// Pat asks for a time that isn't open.
+		// Pat asks for a time that isn't open: refused before it's proposed, with the nearest open times.
 		const late = inbound(sqlite, { from: 'pat@customer.test', body: 'How about 3am?' });
 		await enqueueMailRuns(db, 'u1', late, {}, NOW);
-		await runDueAgents(
-			db,
-			{
-				workspaces: ['default'],
-				clientFor: async () =>
-					fakeClient([
-						{ content: [toolUse('reschedule_booking', { booking_id: bookingId, start: '2026-11-12T09:00:00.000Z', reason: 'x' })] },
-						{ content: [text('.')] }
-					]).client,
-				provider
-			},
-			{ now: () => NOW }
-		);
-		await approveCalendar(sqlite, db, provider);
+		const lateClient = fakeClient([
+			{ content: [toolUse('reschedule_booking', { booking_id: bookingId, start: '2026-11-12T09:00:00.000Z', reason: 'x' })] },
+			{ content: [text('.')] }
+		]);
+		await runDueAgents(db, { workspaces: ['default'], clientFor: async () => lateClient.client, provider }, { now: () => NOW });
+		const told = JSON.stringify(lateClient.requests[1].messages);
+		expect(told).toContain("That time isn't open. The nearest open times are:");
+		expect(told).toMatch(/2026-11-1\dT\d\d:\d\d:00\.000Z = /);
+		expect(await approveCalendar(sqlite, db, provider)).toBe(0);
 		expect((await range(db))[0].startLocal).toBe('2026-11-12T10:00');
 
 		// You make it a weekly meeting: it's yours now, Ava's hands are off.
@@ -315,7 +310,7 @@ describe('Ava handles booking replies', () => {
 		const errors = (sqlite.query(`SELECT exec_error FROM agent_actions ORDER BY created_at`).all() as Array<{ exec_error: string }>).map(
 			(row) => row.exec_error
 		);
-		expect(errors).toEqual(['booking_missing', 'booking_taken', 'booking_changed']);
+		expect(errors).toEqual(['booking_missing', 'booking_changed']);
 	});
 });
 
@@ -541,5 +536,38 @@ describe('what an ask vouches for', () => {
 		expect(JSON.stringify(requests[0].messages)).not.toContain(`<booking id`);
 		await approveCalendar(sqlite, db, provider);
 		expect(await range(db)).toHaveLength(1);
+	});
+});
+
+describe('times and your own asks', () => {
+	test('a time the guest asks for that is open but not in the sample is accepted', async () => {
+		const { sqlite, db, provider, bookingId } = await setup();
+		const email = inbound(sqlite, { from: 'pat@customer.test', body: 'Could we do Friday at 9:30?' });
+		await enqueueMailRuns(db, 'u1', email, {}, NOW);
+		const { client, requests } = fakeClient([
+			{ content: [toolUse('reschedule_booking', { booking_id: bookingId, start: '2026-11-13T15:30:00.000Z', reason: 'Pat asked.' })] },
+			{ content: [text('Queued.')] }
+		]);
+		await runDueAgents(db, { workspaces: ['default'], clientFor: async () => client, provider }, { now: () => NOW });
+		expect(JSON.stringify(requests[1].messages)).not.toContain("isn't open");
+		expect(await approveCalendar(sqlite, db, provider)).toBe(1);
+		expect((await range(db))[0].startLocal).toBe('2026-11-13T09:30');
+	});
+
+	test('"Move it to 9:30": asking her is your OK, so a verified guest\'s meeting moves at once', async () => {
+		const { sqlite, db, provider, sent, ava, bookingId } = await setup();
+		const email = inbound(sqlite, { from: 'pat@customer.test', body: 'Can we go earlier on Friday?' });
+		await enqueueAskRun(db, { agentId: ava.id, byUserId: 'u1', emailId: email, request: 'Move it to Friday 9:30' }, NOW);
+		const { client } = fakeClient([
+			{ content: [toolUse('reschedule_booking', { booking_id: bookingId, start: '2026-11-13T15:30:00.000Z', reason: 'Sada asked.' })] },
+			{ content: [text('Moved.')] }
+		]);
+		await runDueAgents(db, { workspaces: ['default'], clientFor: async () => client, provider }, { now: () => NOW });
+		expect((await range(db))[0].startLocal).toBe('2026-11-13T09:30');
+		expect(sqlite.query(`SELECT status, decided_by_principal_id FROM agent_actions WHERE capability = 'calendar'`).get()).toEqual({
+			status: 'executed',
+			decided_by_principal_id: 'p_u1'
+		});
+		expect(sent.find((mail) => mail.subject.startsWith('Rescheduled'))?.text).toContain('asked by Sada');
 	});
 });

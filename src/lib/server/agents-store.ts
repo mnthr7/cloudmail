@@ -310,6 +310,11 @@ export type ProposeInput = {
 	mailboxUserId?: string;
 	/** A person must OK this one, whatever the agent's settings allow. */
 	mustApprove?: boolean;
+	/**
+	 * The person who asked for this directly. What would wait for their OK is
+	 * approved by them now: asking was the OK. Memory still waits for a yes.
+	 */
+	askedBy?: string;
 };
 
 export type ProposeResult = { actionId: string; decision: PolicyDecision };
@@ -428,7 +433,26 @@ export async function proposeAction(db: D1Database, input: ProposeInput, now = n
 				.bind(agent.id, input.runId ?? null, input.runId ?? null)
 		);
 	}
+	const approvedByAsking =
+		!!input.askedBy &&
+		!input.mustApprove &&
+		decision.outcome === 'queue' &&
+		decision.reason === 'needs_approval' &&
+		capability !== 'propose_memory';
+	if (approvedByAsking) {
+		statements.push(
+			db
+				.prepare(
+					`UPDATE agent_actions SET status = 'approved', decided_by_principal_id = ?, decided_at = ?
+					 WHERE id = ? AND status = 'queued'`
+				)
+				.bind(input.askedBy, now.toISOString(), actionId)
+		);
+	}
 	await db.batch(statements);
+	if (approvedByAsking && decision.outcome === 'queue') {
+		decision = { outcome: 'execute', reason: 'auto', addresses: decision.addresses };
+	}
 
 	if (limit !== undefined) {
 		const row = await db

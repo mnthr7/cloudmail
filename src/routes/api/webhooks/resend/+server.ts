@@ -3,6 +3,7 @@ import { getEmailProvider, getResendClient, getWebhookSecret } from '#lib/server
 import type { EmailProvider } from '#lib/server/email-provider.ts';
 import { claimWebhookEvent, handleResendWebhook, type ResendWebhookEvent } from '#lib/server/inbound.ts';
 import { verifyWebhookSignature } from '#lib/server/webhook.ts';
+import { startAgentsNow } from '#lib/server/start-agents.ts';
 
 /**
  * Resend webhook receiver — used when EMAIL_PROVIDER=resend.
@@ -67,6 +68,8 @@ export const POST: RequestHandler = async ({ request, platform }) => {
 			{ DB: db, ATTACHMENTS: bucket, provider },
 			client
 		);
+		// New mail may have woken an agent: start it now rather than on the next minute's cron.
+		if (event.type === 'email.received') startAgentsNow(platform);
 		return json({ ok: true, ...outcome });
 	} catch (error) {
 		// Release the claim so Resend's retry can succeed.

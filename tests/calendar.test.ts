@@ -5,7 +5,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { localToUtc, utcToLocal } from '../src/lib/calendar/time';
 import { describeRule, expandRule, formatRule, parseRule, RuleError } from '../src/lib/calendar/recurrence';
-import { calendarFile, escapeText, foldLine } from '../src/lib/calendar/ics';
+import { calendarFile, escapeText, foldLine, timezoneLines } from '../src/lib/calendar/ics';
 import { presetLabels, presetOf, ruleFor } from '../src/lib/calendar/presets';
 import {
 	CalendarError,
@@ -221,6 +221,32 @@ describe('iCalendar output', () => {
 		expect(file).toContain('EXDATE;TZID=America/Chicago:20261124T090000\r\n');
 		expect(file).toContain('RECURRENCE-ID;TZID=America/Chicago:20261117T090000\r\n');
 		expect(file.endsWith('END:VCALENDAR\r\n')).toBe(true);
+		// The zone is spelled out, or Gmail shows the invite in UTC.
+		expect(file).toContain('BEGIN:VTIMEZONE\r\nTZID:America/Chicago\r\n');
+		expect(file).toContain('BEGIN:STANDARD\r\nDTSTART:20261101T020000\r\nTZOFFSETFROM:-0500\r\nTZOFFSETTO:-0600\r\nEND:STANDARD');
+		expect(file).toContain('BEGIN:DAYLIGHT\r\nDTSTART:20260308T020000\r\nTZOFFSETFROM:-0600\r\nTZOFFSETTO:-0500\r\nEND:DAYLIGHT');
+		expect(file.indexOf('END:VTIMEZONE')).toBeLessThan(file.indexOf('BEGIN:VEVENT'));
+		expect(file.match(/BEGIN:VTIMEZONE/g)).toHaveLength(1);
+	});
+
+	test('a zone without daylight time gets its one offset', () => {
+		expect(timezoneLines('Asia/Kolkata', [2026])).toEqual([
+			'BEGIN:VTIMEZONE',
+			'TZID:Asia/Kolkata',
+			'BEGIN:STANDARD',
+			'DTSTART:19700101T000000',
+			'TZOFFSETFROM:+0530',
+			'TZOFFSETTO:+0530',
+			'END:STANDARD',
+			'END:VTIMEZONE'
+		]);
+	});
+
+	test('far-off years are left out of the zone, so a feed date like 9999 costs nothing', () => {
+		const started = performance.now();
+		const lines = timezoneLines('America/Chicago', [1, 2026, 9999, 50_000]);
+		expect(lines.filter((line) => line.startsWith('DTSTART:'))).toEqual(['DTSTART:20260308T020000', 'DTSTART:20261101T020000']);
+		expect(performance.now() - started).toBeLessThan(2000);
 	});
 });
 

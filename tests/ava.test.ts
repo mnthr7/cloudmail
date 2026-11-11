@@ -221,7 +221,11 @@ describe('Ava handles booking replies', () => {
 		const [event] = await range(db);
 		expect(event.startLocal).toBe('2026-11-12T12:00');
 		expect(sent.find((mail) => mail.subject.startsWith('Updated invitation'))).toBeTruthy();
-		expect(sent.find((mail) => mail.subject.startsWith('Rescheduled'))?.text).toContain('Done by Ava, from their email.');
+		const notice = sent.find((mail) => mail.subject.startsWith('Rescheduled'));
+		expect(notice?.text).toContain('Done by Ava, from their email.');
+		// Ava did it, not the guest; and the notice is marked so it doesn't wake her again.
+		expect(notice?.text).toMatch(/^"[^"]+" with .+ was moved to /);
+		expect(notice?.headers?.['X-CloudMail-Notice']).toBe('rescheduled');
 		// Her reply waits for your OK.
 		const actions = sqlite.query(`SELECT capability, status FROM agent_actions ORDER BY created_at`).all();
 		expect(actions).toEqual([

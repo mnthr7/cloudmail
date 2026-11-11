@@ -161,6 +161,7 @@ async function handleInboundEmail(
 				listUnsubscribe,
 				precedence: readInboundHeader(received.headers, 'precedence'),
 				autoSubmitted: readInboundHeader(received.headers, 'auto-submitted'),
+				appNotice: readInboundHeader(received.headers, 'x-cloudmail-notice'),
 				// Resend's own results. Authentication-Results and Received-SPF headers in the
 				// message could only have come from the sender, so they aren't read.
 				authenticationResults: resendAuthResults(received.authentication, from),

@@ -11,6 +11,7 @@ import {
 } from '#lib/calendar/availability.ts';
 import { addDays, formatLocal, isTimeZone, localToUtc, parseDate, utcToLocal } from '#lib/calendar/time.ts';
 import type { User } from '#lib/types.ts';
+import { APP_NOTICE_HEADER } from '#lib/organizing/categories.ts';
 import { CalendarError, createEvent, listCalendars, occurrencesInRange, seriesOf, setSendFrom } from './calendar-store.ts';
 import { replaceAttendees, sendInvites } from './calendar-invites.ts';
 import type { EmailProvider } from './email-provider.ts';
@@ -1055,8 +1056,10 @@ export async function notifyOwner(
 ): Promise<void> {
 	const from = await resolveFromAddress(db, owner, null, page.sendFrom);
 	const when = formatWhen(booking.start, booking.end, page.timezone);
-	const head =
-		what === 'booked'
+	// When someone did it for the guest, the guest didn't: name the booking, then who did it below.
+	const head = booking.via
+		? `"${page.title}" with ${booking.name} (${booking.email}) was ${what === 'booked' ? 'booked for' : what === 'rescheduled' ? 'moved to' : 'canceled on'} ${when}.`
+		: what === 'booked'
 			? `${booking.name} (${booking.email}) booked "${page.title}" for ${when}.`
 			: what === 'rescheduled'
 				? `${booking.name} (${booking.email}) moved "${page.title}" to ${when}.`
@@ -1086,6 +1089,6 @@ export async function notifyOwner(
 		to: from.address,
 		subject: `${label}: ${page.title} with ${booking.name}`.slice(0, 200),
 		text: lines.join('\n'),
-		headers: { 'Reply-To': booking.email }
+		headers: { 'Reply-To': booking.email, [APP_NOTICE_HEADER]: what }
 	});
 }

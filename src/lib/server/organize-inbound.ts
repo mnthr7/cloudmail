@@ -21,6 +21,8 @@ export type OrganizeInboundHeaders = CategoryHeaders & {
 	/** The receiving server's SPF, DKIM and DMARC results, for the phishing checks. */
 	authenticationResults?: string | null;
 	receivedSpf?: string | null;
+	/** Set on this app's own notices to the owner (APP_NOTICE_HEADER). */
+	appNotice?: string | null;
 };
 
 /**

@@ -121,6 +121,7 @@ export async function handleCloudflareInbound(
 				listUnsubscribe,
 				precedence: readInboundHeader(message.headers, 'precedence'),
 				autoSubmitted: readInboundHeader(message.headers, 'auto-submitted'),
+				appNotice: readInboundHeader(message.headers, 'x-cloudmail-notice'),
 				// Cloudflare's own results, from the ARC set it added. An Authentication-Results
 				// header here could only have come from the sender, so it isn't read.
 				authenticationResults: cloudflareAuthResults(raw),

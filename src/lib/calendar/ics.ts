@@ -4,6 +4,8 @@
  * repeating events keep their wall-clock time on the phone too.
  */
 
+import { offsetMinutes } from './time.ts';
+
 export type IcsEvent = {
 	uid: string;
 	sequence: number;
@@ -62,6 +64,111 @@ function utcStamp(iso: string): string {
 	return iso.replace(/[-:]/g, '').replace(/\.\d{3}/, '');
 }
 
+const HOUR = 3_600_000;
+const DAY = 24 * HOUR;
+
+function offsetText(minutes: number): string {
+	const sign = minutes < 0 ? '-' : '+';
+	const abs = Math.abs(minutes);
+	return `${sign}${String(Math.floor(abs / 60)).padStart(2, '0')}${String(abs % 60).padStart(2, '0')}`;
+}
+
+function wallStamp(ms: number, offset: number): string {
+	// The wall clock just before the change, in the offset that was in force.
+	return utcStamp(new Date(ms + offset * 60_000).toISOString()).replace('Z', '');
+}
+
+/** Offset changes in one zone in one year, worked out once per worker. */
+const yearChanges = new Map<string, Array<{ at: number; from: number; to: number }>>();
+/** Years a VTIMEZONE may cover: a feed can carry any date, and each year costs ~365 Intl calls. */
+const MIN_YEAR = 1970;
+const MAX_YEAR = 2200;
+const MAX_YEARS_PER_ZONE = 12;
+const MAX_ZONES = 8;
+
+function changesIn(timezone: string, year: number): Array<{ at: number; from: number; to: number }> {
+	const key = `${timezone}|${year}`;
+	const cached = yearChanges.get(key);
+	if (cached) return cached;
+	const start = Date.UTC(year, 0, 1);
+	const end = Date.UTC(year + 1, 0, 1);
+	const changes: Array<{ at: number; from: number; to: number }> = [];
+	let previous = offsetMinutes(start, timezone);
+	for (let day = start + DAY; day <= end; day += DAY) {
+		const offset = offsetMinutes(day, timezone);
+		if (offset === previous) continue;
+		// Narrow the change down to the minute.
+		let low = day - DAY;
+		let high = day;
+		while (high - low > 60_000) {
+			const middle = low + Math.floor((high - low) / 120_000) * 60_000;
+			if (offsetMinutes(middle, timezone) === previous) low = middle;
+			else high = middle;
+		}
+		changes.push({ at: high, from: previous, to: offset });
+		previous = offset;
+	}
+	if (yearChanges.size > 500) yearChanges.clear();
+	yearChanges.set(key, changes);
+	return changes;
+}
+
+/**
+ * The VTIMEZONE block a TZID needs (RFC 5545 3.6.5). Without it Gmail shows
+ * the invite in UTC. Lists each offset change in the years given, found
+ * from Intl, so no time zone tables ship with the app.
+ */
+export function timezoneLines(timezone: string, years: number[]): string[] {
+	if (timezone === 'UTC' || timezone === 'Etc/UTC') {
+		return ['BEGIN:VTIMEZONE', `TZID:${timezone}`, 'BEGIN:STANDARD', 'DTSTART:19700101T000000', 'TZOFFSETFROM:+0000', 'TZOFFSETTO:+0000', 'TZNAME:UTC', 'END:STANDARD', 'END:VTIMEZONE'];
+	}
+	const chosen = [...new Set(years.filter((year) => Number.isInteger(year) && year >= MIN_YEAR && year <= MAX_YEAR))]
+		.sort((a, b) => a - b)
+		.slice(0, MAX_YEARS_PER_ZONE);
+	const changes = chosen.flatMap((year) => changesIn(timezone, year));
+	const lines = ['BEGIN:VTIMEZONE', `TZID:${timezone}`];
+	if (changes.length === 0) {
+		const offset = offsetText(offsetMinutes(Date.UTC(chosen[0] ?? 2026, 0, 1), timezone));
+		lines.push('BEGIN:STANDARD', 'DTSTART:19700101T000000', `TZOFFSETFROM:${offset}`, `TZOFFSETTO:${offset}`, 'END:STANDARD');
+	}
+	for (const change of changes) {
+		const kind = change.to > change.from ? 'DAYLIGHT' : 'STANDARD';
+		lines.push(
+			`BEGIN:${kind}`,
+			`DTSTART:${wallStamp(change.at, change.from)}`,
+			`TZOFFSETFROM:${offsetText(change.from)}`,
+			`TZOFFSETTO:${offsetText(change.to)}`,
+			`END:${kind}`
+		);
+	}
+	lines.push('END:VTIMEZONE');
+	return lines;
+}
+
+/** VTIMEZONE blocks for the zones timed events use: each event's year and the ones either side. */
+function zonesFor(events: Array<{ allDay: boolean; timezone: string; local: string }>): string[] {
+	const years = new Map<string, Set<number>>();
+	for (const event of events) {
+		if (event.allDay) continue;
+		const year = Number(event.local.slice(0, 4));
+		if (!Number.isInteger(year)) continue;
+		let set = years.get(event.timezone);
+		if (!set) {
+			if (years.size >= MAX_ZONES) continue;
+			set = new Set();
+			years.set(event.timezone, set);
+		}
+		for (const near of [year - 1, year, year + 1]) set.add(near);
+	}
+	return [...years].flatMap(([zone, set]) => {
+		try {
+			return timezoneLines(zone, [...set]);
+		} catch {
+			return [];
+		}
+	});
+}
+
 function timeProperty(name: string, local: string, event: IcsEvent): string {
 	return event.allDay ? `${name};VALUE=DATE:${compact(local.slice(0, 10))}` : `${name};TZID=${event.timezone}:${compact(local)}`;
 }
@@ -112,6 +219,7 @@ export function calendarFile(input: {
 		`X-WR-TIMEZONE:${input.timezone}`,
 		'REFRESH-INTERVAL;VALUE=DURATION:PT15M',
 		'X-PUBLISHED-TTL:PT15M',
+		...zonesFor(input.events.map((event) => ({ allDay: event.allDay, timezone: event.timezone, local: event.startLocal }))),
 		...input.events.flatMap((event) => eventLines(event, input.extra?.(event) ?? [])),
 		'END:VCALENDAR'
 	];
@@ -173,6 +281,7 @@ export function replyFile(input: {
 		'VERSION:2.0',
 		'PRODID:-//CloudMail//Calendar//EN',
 		'METHOD:REPLY',
+		...zonesFor([input.start]),
 		'BEGIN:VEVENT',
 		`UID:${input.uid}`,
 		`SEQUENCE:${input.sequence}`,
@@ -208,6 +317,7 @@ export function declineCounterFile(input: {
 		'VERSION:2.0',
 		'PRODID:-//CloudMail//Calendar//EN',
 		'METHOD:DECLINECOUNTER',
+		...zonesFor([input.start]),
 		'BEGIN:VEVENT',
 		`UID:${input.uid}`,
 		`SEQUENCE:${input.sequence}`,

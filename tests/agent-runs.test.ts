@@ -350,6 +350,14 @@ describe('waking agents for new mail', () => {
 		expect(runs).toEqual([{ agent_principal_id: agent.id, trigger_kind: 'mail', email_id: id, status: 'pending' }]);
 	});
 
+	test("this app's own notice to you (a booking was moved) doesn't wake an agent", async () => {
+		const { sqlite, db } = open();
+		await hireSupport(db);
+		const id = addMail(sqlite, {});
+		expect(await enqueueMailRuns(db, 'u1', id, { appNotice: 'rescheduled' }, NOW)).toBe(0);
+		expect(sqlite.query(`SELECT COUNT(*) AS n FROM agent_runs`).get()).toEqual({ n: 0 });
+	});
+
 	test('auto-replies, bulk mail, sent mail, and unwatched addresses wake nobody', async () => {
 		const { sqlite, db } = open();
 		await hireSupport(db);

@@ -77,6 +77,8 @@ export type BookingPage = {
 	location: string | null;
 	enabled: boolean;
 	locationKind: LocationKind;
+	/** How the location reads on the page, in the host's words. Null: the default wording. */
+	locationText: string | null;
 	askPhone: AskPhone;
 	questions: Question[];
 	allowGuests: boolean;
@@ -107,6 +109,7 @@ type PageRow = {
 	location: string | null;
 	enabled: number;
 	location_kind?: string | null;
+	location_label?: string | null;
 	ask_phone?: string | null;
 	questions_json?: string | null;
 	allow_guests?: number | null;
@@ -147,6 +150,7 @@ function toPage(row: PageRow): BookingPage {
 			: row.location
 				? 'custom'
 				: 'none',
+		locationText: row.location_label ?? null,
 		askPhone: row.ask_phone === 'optional' || row.ask_phone === 'required' ? row.ask_phone : 'off',
 		questions: parseQuestions(row.questions_json),
 		allowGuests: row.allow_guests === 1,
@@ -323,6 +327,12 @@ async function readPage(
 		location,
 		enabled: input.enabled === undefined ? (current?.enabled ?? true) : input.enabled === true,
 		locationKind,
+		locationText:
+			locationKind === 'none'
+				? null
+				: input.locationText === undefined
+					? (current?.locationText ?? null)
+					: readText(input.locationText, 120),
 		askPhone,
 		questions,
 		allowGuests: input.allowGuests === undefined ? (current?.allowGuests ?? false) : input.allowGuests === true,
@@ -331,7 +341,14 @@ async function readPage(
 }
 
 function v2Values(page: Omit<BookingPage, 'id'>): unknown[] {
-	return [page.locationKind, page.askPhone, JSON.stringify(page.questions), page.allowGuests ? 1 : 0, page.reminderMinutes];
+	return [
+		page.locationKind,
+		page.askPhone,
+		JSON.stringify(page.questions),
+		page.allowGuests ? 1 : 0,
+		page.reminderMinutes,
+		page.locationText
+	];
 }
 
 export async function listBookingPages(db: D1Database, userId: string): Promise<BookingPage[]> {
@@ -369,8 +386,8 @@ export async function createBookingPage(
 			.prepare(
 				`INSERT INTO booking_pages (id, user_id, slug, title, description, durations_json, timezone, hours_json, buffer_minutes,
 				   min_notice_minutes, horizon_days, max_per_day, calendar_id, send_from, location, enabled, created_at, updated_at,
-				   location_kind, ask_phone, questions_json, allow_guests, reminder_minutes)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+				   location_kind, ask_phone, questions_json, allow_guests, reminder_minutes, location_label)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 			)
 			.bind(
 				id,
@@ -417,7 +434,7 @@ export async function updateBookingPage(
 				`UPDATE booking_pages SET slug = ?, title = ?, description = ?, durations_json = ?, timezone = ?, hours_json = ?,
 				   buffer_minutes = ?, min_notice_minutes = ?, horizon_days = ?, max_per_day = ?, calendar_id = ?, send_from = ?,
 				   location = ?, enabled = ?, updated_at = ?,
-				   location_kind = ?, ask_phone = ?, questions_json = ?, allow_guests = ?, reminder_minutes = ?
+				   location_kind = ?, ask_phone = ?, questions_json = ?, allow_guests = ?, reminder_minutes = ?, location_label = ?
 				 WHERE id = ? AND user_id = ?`
 			)
 			.bind(
@@ -471,14 +488,20 @@ export type PublicPage = {
 };
 
 /** How the location reads before booking (no links or numbers yet). */
-export function locationLabel(page: Pick<BookingPage, 'locationKind' | 'location'>): { kind: LocationKind; label: string } | null {
+export function locationLabel(
+	page: Pick<BookingPage, 'locationKind' | 'location'> & { locationText?: string | null; hostName?: string }
+): { kind: LocationKind; label: string } | null {
+	if (page.locationKind === 'none') return null;
+	// The host's own words, if they wrote some.
+	if (page.locationText) return { kind: page.locationKind, label: page.locationText };
+	const host = page.hostName?.trim().split(/\s+/)[0] || 'your host';
 	switch (page.locationKind) {
 		case 'video':
 			return { kind: 'video', label: videoProvider(page.location ?? '') };
 		case 'phone_guest':
-			return { kind: 'phone_guest', label: 'Phone call (they call you)' };
+			return { kind: 'phone_guest', label: `Phone call: ${host} will call you` };
 		case 'phone_host':
-			return { kind: 'phone_host', label: 'Phone call' };
+			return { kind: 'phone_host', label: `Phone call: you call ${host} (number in your invite)` };
 		case 'in_person':
 			return { kind: 'in_person', label: page.location ?? 'In person' };
 		case 'custom':

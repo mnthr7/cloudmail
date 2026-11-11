@@ -18,6 +18,7 @@ import {
 import {
 	addOutsideCalendar,
 	eventsToKeep,
+	FeedRejected,
 	readFeedUrl,
 	refreshOutsideCalendar,
 	removeOutsideCalendar,
@@ -304,6 +305,19 @@ describe('outside calendars on your calendar', () => {
 		expect(await syncDueOutsideCalendars(db, key, fetcher, minutes(12 + 16))).toBe(1);
 		expect(calls).toHaveLength(1);
 		expect((await listCalendars(db, 'u1')).find((item) => item.id === calendar.id)?.source?.error).toBeNull();
+	});
+
+	test("a link that doesn't work isn't kept, and Google's public address says what to use instead", async () => {
+		const { db } = open();
+		await ensureCalendars(db, 'u1', { name: 'Sada', timezone: CHICAGO });
+		const { fetcher } = feedFetcher(() => new Response('Not Found', { status: 404 }));
+		const publicLink = 'https://calendar.google.com/calendar/ical/someone%40example.com/public/basic.ics';
+		const failure = await addOutsideCalendar(db, key, 'u1', { url: publicLink, name: 'G', timezone: CHICAGO }, fetcher, NOW).catch((error) => error);
+		expect(failure).toBeInstanceOf(FeedRejected);
+		expect(failure.message).toContain('Secret address in iCal format');
+		const other = await addOutsideCalendar(db, key, 'u1', { url: LINK, name: 'G', timezone: CHICAGO }, fetcher, NOW).catch((error) => error);
+		expect(other.message).toContain('no longer works');
+		expect((await listCalendars(db, 'u1')).filter((item) => item.source)).toEqual([]);
 	});
 
 	test('your own calendar is still made when an outside one exists first', async () => {
@@ -633,6 +647,16 @@ describe('booking v2', () => {
 				{ label: 'What would you like to see?', value: 'Pricing and the agent setup' }
 			]
 		});
+	});
+
+	test('the location reads clearly by default, or in your own words', async () => {
+		const { db, page } = await setup({ locationKind: 'phone_guest', location: null });
+		expect((await publicPage(db, 'demo'))?.location).toEqual({ kind: 'phone_guest', label: 'Phone call: Sada will call you' });
+		await updateBookingPage(db, 'u1', OWN, page.id, { locationText: 'I’ll call your cell from a 615 number' }, NOW);
+		expect((await publicPage(db, 'demo'))?.location?.label).toBe('I’ll call your cell from a 615 number');
+		await updateBookingPage(db, 'u1', OWN, page.id, { locationKind: 'phone_host', location: '+1 615 555 0100', locationText: null }, NOW);
+		expect((await publicPage(db, 'demo'))?.location?.label).toBe('Phone call: you call Sada (number in your invite)');
+		await expect(updateBookingPage(db, 'u1', OWN, page.id, { locationText: 'x'.repeat(121) }, NOW)).rejects.toMatchObject({ code: 'text' });
 	});
 
 	test("when you call them, their number stays with you, not every invitee", async () => {

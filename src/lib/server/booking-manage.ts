@@ -342,6 +342,7 @@ type ReminderRow = BookingRow & {
 	location: string | null;
 	created_at: string;
 	location_kind: string | null;
+	location_label: string | null;
 	page_location: string | null;
 };
 
@@ -355,7 +356,7 @@ export async function sendDueReminders(db: D1Database, provider: EmailProvider, 
 	const { results } = await db
 		.prepare(
 			`SELECT b.*, p.slug, p.max_per_day, p.timezone AS page_timezone, p.reminder_minutes, p.title, p.send_from,
-			        p.location_kind, p.location AS page_location, e.location
+			        p.location_kind, p.location_label, p.location AS page_location, e.location
 			 FROM bookings b
 			 JOIN booking_pages p ON p.id = b.page_id
 			 JOIN calendar_events e ON e.id = b.event_id
@@ -382,7 +383,12 @@ export async function sendDueReminders(db: D1Database, provider: EmailProvider, 
 			const from = await resolveFromAddress(db, owner, null, row.send_from);
 			const zone = row.guest_timezone ?? row.page_timezone;
 			const host = owner.name?.trim() || from.address;
-			const where = locationLabel({ locationKind: (row.location_kind ?? 'none') as never, location: row.page_location });
+			const where = locationLabel({
+				locationKind: (row.location_kind ?? 'none') as never,
+				location: row.page_location,
+				locationText: row.location_label,
+				hostName: host
+			});
 			const lines = [
 				`Hi ${row.guest_name},`,
 				'',

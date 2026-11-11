@@ -22,6 +22,7 @@
 		location: string | null;
 		enabled: boolean;
 		locationKind: string;
+		locationText: string | null;
 		askPhone: 'off' | 'optional' | 'required';
 		questions: Array<{ id: string; label: string; long: boolean; required: boolean }>;
 		allowGuests: boolean;
@@ -41,6 +42,14 @@
 		phone_host: 'Your phone number',
 		in_person: 'Address',
 		custom: 'Where or how you’ll meet'
+	};
+	/** What the default wording says, as a starting point for your own. */
+	const TEXT_EXAMPLES: Record<string, string> = {
+		video: 'Default: the service’s name, e.g. “Zoom”',
+		phone_guest: 'Default: “Phone call: [your first name] will call you”',
+		phone_host: 'Default: “Phone call: you call [your first name]”',
+		in_person: 'Default: the address',
+		custom: 'Default: what you wrote above'
 	};
 	const REMINDERS = [
 		[0, 'No reminder'],
@@ -93,6 +102,7 @@
 		location: string;
 		enabled: boolean;
 		locationKind: string;
+		locationText: string;
 		askPhone: 'off' | 'optional' | 'required';
 		questions: Array<{ id?: string; label: string; long: boolean; required: boolean }>;
 		allowGuests: boolean;
@@ -119,6 +129,7 @@
 			location: '',
 			enabled: true,
 			locationKind: 'video',
+			locationText: '',
 			askPhone: 'off',
 			questions: [],
 			allowGuests: true,
@@ -149,6 +160,7 @@
 			location: page.location ?? '',
 			enabled: page.enabled,
 			locationKind: page.locationKind,
+			locationText: page.locationText ?? '',
 			askPhone: page.askPhone,
 			questions: page.questions.map((question) => ({ ...question })),
 			allowGuests: page.allowGuests,
@@ -233,6 +245,7 @@
 			location: form.location,
 			enabled: form.enabled,
 			locationKind: form.locationKind,
+			locationText: form.locationText.trim() || null,
 			askPhone: form.locationKind === 'phone_guest' ? 'required' : form.askPhone,
 			questions: form.questions.filter((question) => question.label.trim()),
 			allowGuests: form.allowGuests,
@@ -411,7 +424,13 @@
 						<input type={form.locationKind === 'video' ? 'url' : 'text'} maxlength="500" required bind:value={form.location} />
 					</label>
 				{:else if form.locationKind === 'phone_guest'}
-					<p class="hint grow">They’ll be asked for their number, and it goes in the invite.</p>
+					<p class="hint grow">They’ll be asked for their number. Only you see it, on the event and in your booking email.</p>
+				{/if}
+				{#if form.locationKind !== 'none'}
+					<label class="field grow">
+						<span>How it reads on your page (optional)</span>
+						<input type="text" maxlength="120" placeholder={TEXT_EXAMPLES[form.locationKind] ?? ''} bind:value={form.locationText} />
+					</label>
 				{/if}
 				{#if calendars.length > 1}
 					<label class="field">

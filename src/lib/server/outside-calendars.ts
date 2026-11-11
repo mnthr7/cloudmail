@@ -91,6 +91,14 @@ async function readCapped(response: Response, maxBytes: number): Promise<string 
 
 class FeedError extends Error {}
 
+/** The link was read and didn't work, so nothing was added. The message says why. */
+export class FeedRejected extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = 'FeedRejected';
+	}
+}
+
 const MAX_REDIRECTS = 3;
 
 async function download(fetcher: Fetcher, first: URL): Promise<string> {
@@ -123,6 +131,12 @@ async function download(fetcher: Fetcher, first: URL): Promise<string> {
 		}
 		if (!response) throw new FeedError("Couldn't reach that calendar link.");
 		if (response.status === 401 || response.status === 403 || response.status === 404) {
+			// Google's "public address" only works for calendars shared publicly; the secret one always does.
+			if (first.hostname === 'calendar.google.com' && /\/public\/basic\.ics$/i.test(first.pathname)) {
+				throw new FeedError(
+					'That’s your calendar’s public address, and the calendar isn’t public. In Google Calendar settings, copy “Secret address in iCal format” instead (it has “private-” in it).'
+				);
+			}
 			throw new FeedError('That link no longer works. It may have been reset; paste the new one.');
 		}
 		if (!response.ok) throw new FeedError('The calendar service answered with an error. It will try again soon.');
@@ -299,8 +313,13 @@ export async function addOutsideCalendar(
 	if (!inserted.meta.changes) throw new CalendarError('limit');
 	const sealed = await db.prepare(`SELECT * FROM calendars WHERE id = ?`).bind(id).first<SourceRow>();
 	const result = await syncOutsideCalendar(db, key, sealed!, fetcher, now);
+	// A link that doesn't work the first time isn't kept: there'd be nothing to show.
+	if (!result.ok) {
+		await db.prepare(`DELETE FROM calendars WHERE id = ?`).bind(id).run();
+		throw new FeedRejected(result.error ?? "Couldn't read that calendar link.");
+	}
 	const calendar = (await listCalendars(db, userId)).find((item) => item.id === id)!;
-	return { calendar, error: result.error };
+	return { calendar, error: null };
 }
 
 async function ownedSource(db: D1Database, userId: string, calendarId: string): Promise<SourceRow> {

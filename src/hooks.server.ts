@@ -14,7 +14,8 @@ import {
 import { SKIN_COOKIE, isSkin, parseSkin } from '#lib/skin.ts';
 
 // /api/calendar/feed: secret subscribe links, authenticated by the token in the path.
-const PUBLIC_PREFIXES = ['/login', '/setup', '/api/auth', '/api/setup', '/api/webhooks', '/api/calendar/feed'];
+// /book and /api/book: public booking pages, open to anyone with the link.
+const PUBLIC_PREFIXES = ['/login', '/setup', '/api/auth', '/api/setup', '/api/webhooks', '/api/calendar/feed', '/book', '/api/book'];
 
 function isPublicPath(pathname: string): boolean {
 	return PUBLIC_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));

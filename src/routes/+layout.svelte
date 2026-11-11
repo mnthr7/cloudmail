@@ -21,7 +21,9 @@
 	let { children, data }: { children: import('svelte').Snippet; data: LayoutData } = $props();
 
 	// Onboarding runs before the user has an address, so the shell would be empty.
-	const showShell = $derived(Boolean(data.user) && page.url.pathname !== '/onboarding');
+	const showShell = $derived(
+		Boolean(data.user) && page.url.pathname !== '/onboarding' && !page.url.pathname.startsWith('/book/')
+	);
 
 	// Pages that read better centred than full-bleed.
 	const NARROW = ['/compose', '/mail', '/settings'];

@@ -15,6 +15,7 @@ import { loadProviderKey, markProviderKeyRejected, workspacesWithWorkingKey } fr
 import { clientFor } from './lib/server/ai-providers';
 import { importMasterKey } from './lib/server/secret-box';
 import { deliverDue } from './lib/server/outbox-schedule';
+import { syncDueOutsideCalendars } from './lib/server/outside-calendars';
 import { createVirusTotal } from './lib/server/virus-total';
 // Renamed from `_worker.js` by `scripts/wrap-cloudflare-worker.mjs` after `vite build`.
 // @ts-expect-error file is created at build time
@@ -108,6 +109,17 @@ export default {
 				(error) => console.error('Failed to run agents', error)
 			)
 		);
+		// Outside calendars (Google, iCloud, Outlook links): a few due ones each minute.
+		if (env.AI_KEY_ENCRYPTION_KEY && env.DEMO_MODE !== 'true') {
+			ctx.waitUntil(
+				importMasterKey(env.AI_KEY_ENCRYPTION_KEY)
+					.then((key) => syncDueOutsideCalendars(env.DB, key, (url, init) => fetch(url, init)))
+					.then(
+						() => undefined,
+						(error) => console.error('Failed to refresh outside calendars', error)
+					)
+			);
+		}
 		ctx.waitUntil(
 			scanDueAttachments(env).then(
 				() => undefined,

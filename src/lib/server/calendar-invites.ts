@@ -621,7 +621,7 @@ export async function invitesForEmails(db: D1Database, userId: string, emailIds:
 			`SELECT i.*, e.from_addr,
 			        EXISTS (SELECT 1 FROM calendar_events ev JOIN calendars c ON c.id = ev.calendar_id
 			                JOIN principals p ON p.id = c.owner_principal_id
-			                WHERE p.user_id = i.user_id AND ev.uid = i.uid AND ev.parent_id IS NULL) AS on_calendar
+			                WHERE p.user_id = i.user_id AND ev.uid = i.uid AND ev.parent_id IS NULL AND c.source_url_sealed IS NULL) AS on_calendar
 			 FROM calendar_invites i JOIN emails e ON e.id = i.email_id
 			 WHERE i.user_id = ? AND i.email_id IN (SELECT value FROM json_each(?))`
 		)

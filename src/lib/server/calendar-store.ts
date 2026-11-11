@@ -46,6 +46,9 @@ export class CalendarError extends Error {
 			| 'guests'
 			| 'from'
 			| 'conflict'
+			| 'source'
+			| 'limit'
+			| 'key'
 	) {
 		super(code);
 		this.name = 'CalendarError';
@@ -58,6 +61,8 @@ const MAX_LOCATION = 500;
 const MAX_DESCRIPTION = 10_000;
 /** The widest range one request may ask for. */
 const MAX_RANGE_MS = 120 * 86_400_000;
+/** Most rows one outside calendar's copy may hold. */
+const MAX_COPIED_ROWS = 2_500;
 
 type CalendarRow = {
 	id: string;
@@ -68,6 +73,11 @@ type CalendarRow = {
 	timezone: string;
 	is_default: number;
 	feed_token_hash: string | null;
+	source_url_sealed?: string | null;
+	source_host?: string | null;
+	source_details?: number | null;
+	source_synced_at?: string | null;
+	source_error?: string | null;
 };
 
 function toInfo(row: CalendarRow): CalendarInfo {
@@ -77,7 +87,15 @@ function toInfo(row: CalendarRow): CalendarInfo {
 		color: (CALENDAR_COLORS as readonly string[]).includes(row.color) ? (row.color as CalendarColor) : 'blue',
 		timezone: row.timezone,
 		isDefault: row.is_default === 1,
-		hasFeed: row.feed_token_hash !== null
+		hasFeed: row.feed_token_hash !== null,
+		source: row.source_url_sealed
+			? {
+					host: row.source_host ?? '',
+					details: row.source_details === 1,
+					syncedAt: row.source_synced_at ?? null,
+					error: row.source_error ?? null
+				}
+			: null
 	};
 }
 
@@ -98,7 +116,8 @@ export async function ensureCalendars(
 	now = new Date()
 ): Promise<CalendarInfo[]> {
 	const existing = await listCalendars(db, userId);
-	if (existing.length) return existing;
+	// Outside calendars are copies; everyone still gets a calendar of their own.
+	if (existing.some((calendar) => !calendar.source)) return existing;
 	try {
 		await createCalendar(db, userId, { ...defaults, timezone: isTimeZone(defaults.timezone) ? defaults.timezone : 'UTC', isDefault: true }, now);
 	} catch (error) {
@@ -137,7 +156,8 @@ export async function createCalendar(
 		color: color as string,
 		timezone: input.timezone as string,
 		is_default: input.isDefault ? 1 : 0,
-		feed_token_hash: null
+		feed_token_hash: null,
+		source_url_sealed: null
 	});
 }
 
@@ -182,6 +202,8 @@ async function sha256(text: string): Promise<string> {
  */
 export async function rotateFeedToken(db: D1Database, userId: string, calendarId: string, now = new Date()): Promise<string> {
 	const calendar = await ownedCalendar(db, userId, calendarId);
+	// Someone else's calendar isn't yours to republish.
+	if (calendar.source_url_sealed) throw new CalendarError('calendar');
 	const bytes = crypto.getRandomValues(new Uint8Array(24));
 	const token = btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 	await db
@@ -200,7 +222,7 @@ export async function removeFeedToken(db: D1Database, userId: string, calendarId
 export async function calendarForFeedToken(db: D1Database, token: string): Promise<CalendarInfo | null> {
 	if (!/^[A-Za-z0-9_-]{20,64}$/.test(token)) return null;
 	const row = await db
-		.prepare(`SELECT * FROM calendars WHERE feed_token_hash = ?`)
+		.prepare(`SELECT * FROM calendars WHERE feed_token_hash = ? AND source_url_sealed IS NULL`)
 		.bind(await sha256(token))
 		.first<CalendarRow>();
 	return row ? toInfo(row) : null;
@@ -321,9 +343,11 @@ function iso(ms: number): string {
 	return new Date(ms).toISOString();
 }
 
-/** Writable calendars: the person's own. */
+/** Writable calendars: the person's own, not copies of outside ones. */
 async function writableCalendarIds(db: D1Database, userId: string): Promise<Set<string>> {
-	return new Set((await listCalendars(db, userId)).map((calendar) => calendar.id));
+	return new Set(
+		(await listCalendars(db, userId)).filter((calendar) => !calendar.source).map((calendar) => calendar.id)
+	);
 }
 
 export async function createEvent(
@@ -335,6 +359,8 @@ export async function createEvent(
 	const now = options.now ?? new Date();
 	const calendarId = typeof input.calendarId === 'string' ? input.calendarId : '';
 	const calendar = await ownedCalendar(db, userId, calendarId);
+	// Outside calendars are read-only copies.
+	if (calendar.source_url_sealed) throw new CalendarError('calendar');
 	const timing = readTiming({ ...input, timezone: input.timezone ?? calendar.timezone });
 	const repeat = readRule(input.rrule, timing.timezone);
 	const human = await humanPrincipalForUser(db, userId);
@@ -896,6 +922,85 @@ export async function upsertImportedEvent(
 	return id;
 }
 
+/**
+ * Replaces everything on an outside calendar's copy with what its feed holds
+ * now. Each group is a series (or one-off) and its edited occurrences.
+ * `details` false keeps only the times, as "Busy". Returns how many were kept.
+ */
+export async function replaceCalendarEvents(
+	db: D1Database,
+	calendarId: string,
+	groups: Array<{ series: ImportedEvent; edits: ImportedEvent[] }>,
+	options: { details: boolean },
+	now = new Date()
+): Promise<number> {
+	const at = now.toISOString();
+	const statements = [db.prepare(`DELETE FROM calendar_events WHERE calendar_id = ?`).bind(calendarId)];
+	const insert = (
+		id: string,
+		event: ImportedEvent,
+		timing: Timing & { rrule: string | null; until: number | undefined },
+		parentId: string | null
+	) =>
+		db
+			.prepare(
+				`INSERT INTO calendar_events
+				 (id, calendar_id, uid, sequence, title, description, location, all_day, start_local, end_local, timezone,
+				  start_at, end_at, rrule, exdates_json, repeat_until_at, parent_id, recurrence_local, transparency,
+				  created_at, updated_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+			)
+			.bind(
+				id,
+				calendarId,
+				event.uid,
+				event.sequence,
+				options.details ? event.title.slice(0, MAX_TITLE) || '(No title)' : 'Busy',
+				options.details ? (event.description?.slice(0, MAX_DESCRIPTION) ?? null) : null,
+				options.details ? (event.location?.slice(0, MAX_LOCATION) ?? null) : null,
+				timing.allDay ? 1 : 0,
+				timing.startLocal,
+				timing.endLocal,
+				timing.timezone,
+				iso(timing.startAt),
+				iso(timing.endAt),
+				parentId ? null : timing.rrule,
+				JSON.stringify(!parentId && timing.rrule ? event.exdates.slice(0, 500) : []),
+				!parentId && timing.until !== undefined ? iso(timing.until) : null,
+				parentId,
+				parentId ? event.recurrenceLocal : null,
+				event.transparency,
+				at,
+				at
+			);
+	let kept = 0;
+	const seen = new Set<string>();
+	for (const group of groups) {
+		// Rows written per refresh stay bounded, edits included.
+		if (statements.length > MAX_COPIED_ROWS) break;
+		if (seen.has(group.series.uid)) continue;
+		const timing = importTiming(group.series);
+		if (!timing) continue;
+		seen.add(group.series.uid);
+		const id = crypto.randomUUID();
+		statements.push(insert(id, group.series, timing, null));
+		kept++;
+		const done = new Set<string>();
+		for (const edit of timing.rrule ? group.edits.slice(0, 200) : []) {
+			const editTiming = importTiming({ ...edit, rrule: null });
+			if (!editTiming || !edit.recurrenceLocal || done.has(edit.recurrenceLocal)) continue;
+			done.add(edit.recurrenceLocal);
+			statements.push(insert(crypto.randomUUID(), edit, editTiming, id));
+		}
+	}
+	// In slices, so a big calendar stays within what one batch may hold. The first
+	// slice clears the old copy and starts the new one in a single transaction.
+	for (let i = 0; i < statements.length; i += 100) {
+		await db.batch(statements.slice(i, i + 100));
+	}
+	return kept;
+}
+
 /** The series row for an event row (itself, or the series an edited occurrence belongs to). */
 export async function seriesOf(db: D1Database, userId: string, eventId: string): Promise<EventRow> {
 	const row = await ownedEvent(db, userId, eventId);
@@ -919,7 +1024,7 @@ export async function eventsByUid(db: D1Database, userId: string, uid: string): 
 	const { results } = await db
 		.prepare(
 			`SELECT e.* FROM calendar_events e JOIN calendars c ON c.id = e.calendar_id
-			 WHERE c.owner_principal_id = ? AND e.uid = ? AND e.parent_id IS NULL`
+			 WHERE c.owner_principal_id = ? AND e.uid = ? AND e.parent_id IS NULL AND c.source_url_sealed IS NULL`
 		)
 		.bind(human.id, uid)
 		.all<EventRow>();

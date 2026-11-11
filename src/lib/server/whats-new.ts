@@ -151,10 +151,10 @@ export async function calendarNews(db: D1Database, userId: string, now = new Dat
 			        e.from_addr, e.from_name,
 			        EXISTS (SELECT 1 FROM calendar_events ev JOIN calendars c ON c.id = ev.calendar_id
 			                JOIN principals p ON p.id = c.owner_principal_id
-			                WHERE p.user_id = i.user_id AND ev.uid = i.uid AND ev.parent_id IS NULL) AS on_calendar,
+			                WHERE p.user_id = i.user_id AND ev.uid = i.uid AND ev.parent_id IS NULL AND c.source_url_sealed IS NULL) AS on_calendar,
 			        EXISTS (SELECT 1 FROM calendar_events ev JOIN calendars c ON c.id = ev.calendar_id
 			                JOIN principals p ON p.id = c.owner_principal_id
-			                WHERE p.user_id = i.user_id AND ev.uid = i.uid AND ev.parent_id IS NULL
+			                WHERE p.user_id = i.user_id AND ev.uid = i.uid AND ev.parent_id IS NULL AND c.source_url_sealed IS NULL
 			                  AND ev.organizer_email IS NULL) AS mine,
 			        EXISTS (SELECT 1 FROM calendar_invites o JOIN emails oe ON oe.id = o.email_id
 			                WHERE o.user_id = i.user_id AND o.uid = i.uid AND o.method = i.method

@@ -5,6 +5,7 @@ import type { User } from '#lib/types.ts';
 import {
 	BookingError,
 	claimSends,
+	guestKey,
 	formatWhen,
 	locationLabel,
 	manageLine,
@@ -23,6 +24,7 @@ import { listAttendees, sendInvites } from './calendar-invites.ts';
 import type { EmailProvider } from './email-provider.ts';
 import { resolveFromAddress } from './outbox.ts';
 import { sendOutboundEmail } from './send-mail.ts';
+import { fromDomainVerified, parseSecurity } from '#lib/security/phishing.ts';
 
 /**
  * The guest's side of a booking: a private link (/book/manage#<token>) to
@@ -49,6 +51,7 @@ type BookingRow = {
 	status: string;
 	reschedule_count: number;
 	reminder_sent_at: string | null;
+	manage_token_hash: string | null;
 	slug: string;
 	max_per_day: number;
 	page_timezone: string;
@@ -173,11 +176,7 @@ export async function manageSlots(
 	now = new Date()
 ): Promise<Slot[]> {
 	const { row } = await changeable(db, token, now);
-	const page = await pageBySlug(db, row.slug, true);
-	if (!page) throw new BookingError('missing');
-	const duration = Math.round((Date.parse(row.end_at) - Date.parse(row.start_at)) / 60_000);
-	const withLength = { ...page, durations: [...new Set([...page.durations, duration])] };
-	return slotsFor(db, withLength, { ...input, duration }, now, row.event_id);
+	return openFor(db, row, input, now);
 }
 
 export async function cancelBooking(
@@ -188,6 +187,19 @@ export async function cancelBooking(
 	now = new Date()
 ): Promise<void> {
 	const { row, event } = await changeable(db, token, now);
+	await cancelCore(db, provider, row, event, reason, now, null);
+}
+
+/** Cancels a booking that may still be changed. `via`: an agent acting on the guest's email, named in your note. */
+async function cancelCore(
+	db: D1Database,
+	provider: EmailProvider | null,
+	row: BookingRow,
+	event: EventRow,
+	reason: unknown,
+	now: Date,
+	via: string | null
+): Promise<void> {
 	const why = typeof reason === 'string' ? reason.trim().slice(0, 500) || null : null;
 	// Claim it, so two clicks don't cancel twice.
 	const claim = await db
@@ -227,7 +239,8 @@ export async function cancelBooking(
 			guests: guestsOf(row),
 			start: Date.parse(row.start_at),
 			end: Date.parse(row.end_at),
-			reason: why
+			reason: why,
+			via
 		}).catch((error) => console.error('Booking cancel notice failed', row.id, error instanceof Error ? error.message : 'unknown'));
 	}
 }
@@ -241,12 +254,30 @@ export async function rescheduleBooking(
 ): Promise<{ start: string; end: string; manageUrl: string }> {
 	const now = options.now ?? new Date();
 	const { row, event } = await changeable(db, token, now);
-	if (row.reschedule_count >= MAX_RESCHEDULES) throw new BookingError('too_many');
+	const moved = await moveCore(db, provider, row, event, startInput, { origin: options.origin, now, limit: MAX_RESCHEDULES, via: null });
+	return { start: moved.start, end: moved.end, manageUrl: manageUrl(options.origin, moved.token!) };
+}
+
+/**
+ * Moves a booking that may still be changed to an open time of the same
+ * length. With an origin, the guest's link changes and their updated invite
+ * carries the new one; without, the old link keeps working.
+ */
+async function moveCore(
+	db: D1Database,
+	provider: EmailProvider | null,
+	row: BookingRow,
+	event: EventRow,
+	startInput: unknown,
+	options: { origin: string | null; now: Date; limit: number; via: string | null }
+): Promise<{ start: string; end: string; token: string | null }> {
+	const { now } = options;
+	if (row.reschedule_count >= options.limit) throw new BookingError('too_many');
 	const start = typeof startInput === 'string' ? Date.parse(startInput) : NaN;
 	if (!Number.isFinite(start)) throw new BookingError('taken');
 	const previous = { start: Date.parse(row.start_at), end: Date.parse(row.end_at) };
 	const end = start + (previous.end - previous.start);
-	const open = await manageSlots(db, token, { from: start - 86_400_000, to: end + 86_400_000 }, now);
+	const open = await openFor(db, row, { from: start - 86_400_000, to: end + 86_400_000 }, now);
 	const slot = open.find((item) => item.start === start);
 	if (!slot) throw new BookingError('taken');
 	const attendees = await listAttendees(db, event.id);
@@ -259,7 +290,8 @@ export async function rescheduleBooking(
 	const dayEnd = new Date(localToUtc({ ...addDays(parseDate(slot.date)!, 1), hour: 0, minute: 0 }, row.page_timezone)).toISOString();
 	const holdCutoff = new Date(now.getTime() - HOLD_MS).toISOString();
 	// A new link: the old one (in the old invite) stops working.
-	const token2 = newToken();
+	const token = options.origin ? newToken() : null;
+	const nextHash = token ? await tokenHash(token) : row.manage_token_hash;
 	// Moved in one statement, so it can't land on a time another booking just took, or a full day.
 	const moved = await db
 		.prepare(
@@ -276,9 +308,9 @@ export async function rescheduleBooking(
 		.bind(
 			startIso,
 			endIso,
-			await tokenHash(token2),
+			nextHash,
 			row.id,
-			MAX_RESCHEDULES,
+			options.limit,
 			row.user_id,
 			row.id,
 			endIso,
@@ -305,14 +337,14 @@ export async function rescheduleBooking(
 				`UPDATE bookings SET start_at = ?, end_at = ?, reschedule_count = reschedule_count - 1, reminder_sent_at = ?,
 				   manage_token_hash = ? WHERE id = ?`
 			)
-			.bind(row.start_at, row.end_at, row.reminder_sent_at, await tokenHash(token as string), row.id)
+			.bind(row.start_at, row.end_at, row.reminder_sent_at, row.manage_token_hash, row.id)
 			.run();
 		throw error instanceof BookingError ? error : new BookingError('calendar');
 	}
 	if (provider) {
 		try {
 			await sendInvites(db, provider, owner, await seriesOf(db, row.user_id, event.id), {
-				privateLines: { [row.guest_email]: manageLine(options.origin, token2) }
+				privateLines: token && options.origin ? { [row.guest_email]: manageLine(options.origin, token) } : {}
 			});
 		} catch (error) {
 			console.error('Booking update failed to send', row.id, error instanceof Error ? error.message : 'unknown');
@@ -329,10 +361,169 @@ export async function rescheduleBooking(
 			guests: guestsOf(row),
 			start,
 			end,
-			previous
+			previous,
+			via: options.via
 		}).catch((error) => console.error('Booking move notice failed', row.id, error instanceof Error ? error.message : 'unknown'));
 	}
-	return { start: startIso, end: endIso, manageUrl: manageUrl(options.origin, token2) };
+	return { start: startIso, end: endIso, token };
+}
+
+/** Open times for a booking's own length, its own time not blocking itself. */
+async function openFor(db: D1Database, row: BookingRow, input: { from: number; to: number }, now: Date): Promise<Slot[]> {
+	const page = await pageBySlug(db, row.slug, true);
+	if (!page) throw new BookingError('missing');
+	const duration = Math.round((Date.parse(row.end_at) - Date.parse(row.start_at)) / 60_000);
+	const withLength = { ...page, durations: [...new Set([...page.durations, duration])] };
+	return slotsFor(db, withLength, { ...input, duration }, now, row.event_id);
+}
+
+// ---------------------------------------------------------------------------
+// An agent acting on the guest's own email (Ava)
+
+/**
+ * Moves a guest may ask for by email, in all: two more than the link allows,
+ * since an agent reading their words is the fallback when the link is used up.
+ */
+export const MAX_AGENT_RESCHEDULES = MAX_RESCHEDULES + 2;
+
+/** A booking as an agent sees it: enough to act on, nothing private beyond what the guest gave. */
+export type GuestBooking = {
+	id: string;
+	page: string;
+	timezone: string;
+	start: string;
+	end: string;
+	duration: number;
+	guestTimezone: string | null;
+	canReschedule: boolean;
+	/** Open times to move it to, same length, the next two weeks. */
+	openTimes: string[];
+};
+
+/** At most `perDay` open times a day, spread from morning to evening. */
+function spread(slots: Slot[], perDay: number): Slot[] {
+	const byDay = new Map<string, Slot[]>();
+	for (const slot of slots) byDay.set(slot.date, [...(byDay.get(slot.date) ?? []), slot]);
+	const out: Slot[] = [];
+	for (const day of byDay.values()) {
+		if (day.length <= perDay) out.push(...day);
+		else for (let i = 0; i < perDay; i++) out.push(day[Math.round((i * (day.length - 1)) / (perDay - 1))]);
+	}
+	return out;
+}
+
+/**
+ * Who may act on a booking by email: the exact address that booked. Gmail is
+ * the one exception, where dots and +tags reach the same mailbox.
+ */
+function identity(email: string): { column: 'guest_key' | 'guest_email'; value: string } {
+	const address = email.trim().toLowerCase();
+	const domain = address.split('@').pop();
+	return domain === 'gmail.com' || domain === 'googlemail.com'
+		? { column: 'guest_key', value: guestKey(address) }
+		: { column: 'guest_email', value: address };
+}
+
+/** Upcoming bookings this person made on pages that send from one of `sendFrom` (the agent's addresses). */
+async function guestRows(db: D1Database, userId: string, guestEmail: string, sendFrom: string[], now: Date): Promise<BookingRow[]> {
+	if (sendFrom.length === 0) return [];
+	const who = identity(guestEmail);
+	const { results } = await db
+		.prepare(
+			`SELECT b.*, p.slug, p.max_per_day, p.timezone AS page_timezone, p.title AS page_title
+			 FROM bookings b JOIN booking_pages p ON p.id = b.page_id
+			 WHERE b.user_id = ? AND b.status = 'confirmed' AND b.event_id IS NOT NULL AND b.start_at > ?
+			   AND lower(b.${who.column}) = ? AND lower(p.send_from) IN (SELECT value FROM json_each(?))
+			 ORDER BY b.start_at LIMIT 5`
+		)
+		.bind(userId, now.toISOString(), who.value, JSON.stringify(sendFrom.map((a) => a.toLowerCase())))
+		.all<BookingRow & { page_title: string }>();
+	return results;
+}
+
+/**
+ * What an agent may know about the sender's bookings, for a reply it's
+ * handling. Empty unless the mail provably comes from that address (DMARC
+ * pass, not flagged as phishing): a forged "please cancel" can't move anyone's meeting.
+ */
+export async function bookingsForGuest(
+	db: D1Database,
+	userId: string,
+	email: { from_addr: string; security_json: string | null },
+	sendFrom: string[],
+	now = new Date()
+): Promise<GuestBooking[]> {
+	if (!senderVerified(email.security_json, email.from_addr)) return [];
+	const out: GuestBooking[] = [];
+	for (const row of await guestRows(db, userId, email.from_addr, sendFrom, now)) {
+		if (!(await bookedEvent(db, row))) continue;
+		const start = Date.parse(row.start_at);
+		const end = Date.parse(row.end_at);
+		const canReschedule = row.reschedule_count < MAX_AGENT_RESCHEDULES;
+		const open = canReschedule ? await openFor(db, row, { from: now.getTime(), to: now.getTime() + 14 * 86_400_000 }, now) : [];
+		out.push({
+			id: row.id,
+			page: (row as BookingRow & { page_title?: string }).page_title ?? row.slug,
+			timezone: row.page_timezone,
+			start: row.start_at,
+			end: row.end_at,
+			duration: Math.round((end - start) / 60_000),
+			guestTimezone: row.guest_timezone,
+			canReschedule,
+			// Spread over the two weeks, a handful a day, so the prompt stays small.
+			openTimes: spread(open, 6).slice(0, 60).map((slot) => new Date(slot.start).toISOString())
+		});
+	}
+	return out;
+}
+
+/**
+ * The sender's own domain proved the mail is theirs (DMARC passed, for that
+ * domain), and it isn't flagged as phishing or suspicious.
+ */
+export function senderVerified(securityJson: string | null, fromAddress: string): boolean {
+	const security = parseSecurity(securityJson);
+	return !!security && security.verdict === null && fromDomainVerified(security.auth, fromAddress);
+}
+
+/**
+ * An agent moving or canceling a booking for the guest who emailed. Checked
+ * again here, whatever the model said: the booking is the sender's own, on a
+ * page the agent sends from, unchanged by the host, and the mail is verified.
+ */
+export async function agentBookingChange(
+	db: D1Database,
+	provider: EmailProvider | null,
+	input: {
+		userId: string;
+		bookingId: string;
+		email: { from_addr: string; security_json: string | null };
+		sendFrom: string[];
+		agentName: string;
+		op: 'reschedule' | 'cancel';
+		start?: unknown;
+		reason?: unknown;
+	},
+	now = new Date()
+): Promise<{ start: string; end: string } | null> {
+	if (!senderVerified(input.email.security_json, input.email.from_addr)) throw new BookingError('not_verified');
+	const row = (await guestRows(db, input.userId, input.email.from_addr, input.sendFrom, now)).find((item) => item.id === input.bookingId);
+	if (!row) throw new BookingError('missing');
+	const event = await bookedEvent(db, row);
+	if (!event) throw new BookingError('changed');
+	const via = `${input.agentName}, from their email`;
+	if (input.op === 'cancel') {
+		await cancelCore(db, provider, row, event, input.reason, now, via);
+		return null;
+	}
+	const origin = await db.prepare(`SELECT site_origin FROM booking_pages WHERE id = ?`).bind(row.page_id).first<{ site_origin: string | null }>();
+	const moved = await moveCore(db, provider, row, event, input.start, {
+		origin: origin?.site_origin ?? null,
+		now,
+		limit: MAX_AGENT_RESCHEDULES,
+		via
+	});
+	return { start: moved.start, end: moved.end };
 }
 
 type ReminderRow = BookingRow & {

@@ -62,6 +62,9 @@ export function isAutomatedMail(headers: Pick<CategoryHeaders, 'autoSubmitted' |
  * owner's name and the agent's author could still hand it out.
  * Returns the number of runs added.
  */
+/** Runs one outside sender's mail may start in an hour, across agents. */
+export const MAIL_RUNS_PER_SENDER_PER_HOUR = 5;
+
 export async function enqueueMailRuns(
 	db: D1Database,
 	userId: string,
@@ -88,6 +91,17 @@ export async function enqueueMailRuns(
 			security_json: string | null;
 		}>();
 	if (!email || email.direction !== 'inbound') return 0;
+	// Mail flagged as phishing or suspicious doesn't wake an agent.
+	if (parseSecurity(email.security_json)?.verdict) return 0;
+	// One sender can't keep an agent busy (and spend its budget): a few runs an hour each.
+	const recent = await db
+		.prepare(
+			`SELECT COUNT(*) AS n FROM agent_runs r JOIN emails e ON e.id = r.email_id
+			 WHERE r.mailbox_user_id = ? AND r.trigger_kind = 'mail' AND r.created_at > ? AND lower(e.from_addr) = ?`
+		)
+		.bind(userId, new Date(now.getTime() - 3_600_000).toISOString(), email.from_addr.trim().toLowerCase())
+		.first<{ n: number }>();
+	if ((recent?.n ?? 0) >= MAIL_RUNS_PER_SENDER_PER_HOUR) return 0;
 	// Out-of-office notes and bounces don't always set the headers (A14).
 	if (looksLikeAutoReply(email.subject)) return 0;
 	const recipients = new Set(parseEmailAddresses([email.to_addr, email.cc_addr ?? '']).map((a) => a.toLowerCase()));
@@ -616,7 +630,7 @@ async function teamRequest(
 	if (!senderUserId) return null;
 
 	// DMARC passed for the From domain: not just signed by someone, and not outvoted by a forged header.
-	if (!fromDomainVerified(parseSecurity(email.security_json)?.auth)) return null;
+	if (!fromDomainVerified(parseSecurity(email.security_json)?.auth, from)) return null;
 
 	const agents = await db
 		.prepare(

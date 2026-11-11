@@ -101,7 +101,7 @@ export default {
 		// actions whose request was cut off are finished, once.
 		ctx.waitUntil(
 			expireActions(env.DB)
-				.then(() => (env.DEMO_MODE === 'true' ? 0 : executePending(env.DB)))
+				.then(() => (env.DEMO_MODE === 'true' ? 0 : executePending(env.DB, new Date(), 10, { provider: providerOrNull(env) })))
 				.then(
 					() => undefined,
 					(error) => console.error('Failed to expire or finish agent actions', error)
@@ -144,6 +144,7 @@ async function runAgents(env: Env): Promise<void> {
 	if (workspaces.length === 0) return;
 	await runDueAgents(env.DB, {
 		workspaces,
+		provider: providerOrNull(env),
 		async clientFor(workspaceId) {
 			try {
 				const apiKey = await loadProviderKey(env.DB, masterKey, workspaceId, 'anthropic');
@@ -161,4 +162,13 @@ async function runAgents(env: Env): Promise<void> {
 async function scanDueAttachments(env: Env): Promise<void> {
 	if (!env.VIRUSTOTAL_API_KEY || env.DEMO_MODE === 'true') return;
 	await scanPending(env.DB, env.ATTACHMENTS, createVirusTotal(env.VIRUSTOTAL_API_KEY), readVtThreshold);
+}
+
+/** The mail provider, or null when sending isn't set up (calendar changes still happen; updates aren't sent). */
+function providerOrNull(env: Env): EmailProvider | null {
+	try {
+		return getEmailProvider({ env });
+	} catch {
+		return null;
+	}
 }

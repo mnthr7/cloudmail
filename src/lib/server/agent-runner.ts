@@ -34,6 +34,8 @@ import { saveSuggestions } from './reply-suggestions-store.ts';
 import { executeAction, type ExecuteResult } from './agent-executor.ts';
 import { isThreadTakenOver } from './thread-activity-store.ts';
 import { listMemory } from './agent-memory-store.ts';
+import { bookingsForGuest, senderVerified } from './booking-manage.ts';
+import type { EmailProvider } from './email-provider.ts';
 
 /**
  * Carries out agent runs (docs/specs/agent-staff-platform.md, §8.2): loads the
@@ -53,6 +55,8 @@ export type MessagesClient = {
  */
 export type RunClients = {
 	workspaces: string[];
+	/** Sends calendar updates when an agent moves or cancels a booking. */
+	provider?: EmailProvider | null;
 	clientFor(workspaceId: string): Promise<MessagesClient | null>;
 	/** The provider turned the workspace's key down. */
 	keyRejected?(workspaceId: string): Promise<void>;
@@ -120,7 +124,7 @@ export async function runDueAgents(
 			continue;
 		}
 		try {
-			await runOne(db, client, run, now);
+			await runOne(db, client, run, now, clients.provider ?? null);
 		} catch (error) {
 			if (keyRejected(error)) {
 				// Not the run's fault: it waits until an admin saves a working key.
@@ -139,7 +143,13 @@ export async function runDueAgents(
 	return runs.length;
 }
 
-async function runOne(db: D1Database, client: MessagesClient, run: AgentRun, now: () => Date): Promise<void> {
+async function runOne(
+	db: D1Database,
+	client: MessagesClient,
+	run: AgentRun,
+	now: () => Date,
+	provider: EmailProvider | null
+): Promise<void> {
 	const skip = (outcome: string) => finishRun(db, run.id, { status: 'skipped', outcome }, now());
 
 	const agent = await getAgent(db, run.agent_principal_id);
@@ -170,7 +180,18 @@ async function runOne(db: D1Database, client: MessagesClient, run: AgentRun, now
 		trigger = run.request ? { kind: 'ask', request: run.request, requestedBy } : { kind: 'suggest', requestedBy };
 	}
 
-	const tools = toolsFor(definition, trigger.kind);
+	// Booking mode: the calendar is on and one of the owner's booking pages sends from this agent's address.
+	const calendarOn = !!definition.capabilities.calendar && definition.capabilities.calendar.level !== 'off';
+	const runsBookings =
+		trigger.kind === 'mail' && calendarOn && definition.scope.sendAs.length > 0
+			? !!(await db
+					.prepare(
+						`SELECT 1 AS ok FROM booking_pages WHERE user_id = ? AND lower(send_from) IN (SELECT value FROM json_each(?)) LIMIT 1`
+					)
+					.bind(run.mailbox_user_id, JSON.stringify(definition.scope.sendAs.map((address) => address.toLowerCase())))
+					.first<{ ok: number }>())
+			: false;
+	const tools = toolsFor(definition, trigger.kind, { bookings: runsBookings });
 	if (tools.length === 0) return skip('no_tools');
 
 	const email = await getEmailForUser(db, run.mailbox_user_id, run.email_id);
@@ -189,6 +210,23 @@ async function runOne(db: D1Database, client: MessagesClient, run: AgentRun, now
 		return skip('taken_over');
 	}
 
+	// An agent running a booking page, handling new mail, sees the sender's bookings
+	// (only once their domain proved the mail is theirs).
+	const security = (email as typeof email & { security_json?: string | null }).security_json ?? null;
+	const booking =
+		runsBookings
+			? {
+					senderVerified: senderVerified(security, email.from_addr),
+					bookings: await bookingsForGuest(
+						db,
+						run.mailbox_user_id,
+						{ from_addr: email.from_addr, security_json: security },
+						definition.scope.sendAs,
+						now()
+					)
+				}
+			: {};
+
 	const [memory, recentTasks] = await Promise.all([
 		listMemory(db, agent.id),
 		definition.kind === 'generalist' ? recentTaskLabels(db, agent.id) : Promise.resolve([])
@@ -205,7 +243,8 @@ async function runOne(db: D1Database, client: MessagesClient, run: AgentRun, now
 				triggerEmailId: run.email_id,
 				founderAddresses,
 				memory: memory.map((item) => item.fact),
-				recentTasks
+				recentTasks,
+				...booking
 			})
 		}
 	];
@@ -341,7 +380,8 @@ async function runOne(db: D1Database, client: MessagesClient, run: AgentRun, now
 			const offered = tools.some((tool) => tool.name === call.name);
 			const proposal = offered && toProposal(call.name, call.input, {
 				threadId,
-				emailId: latest.id,
+				// A booking change is about the mail that asked for it, whose sender was checked.
+				emailId: call.name === 'reschedule_booking' || call.name === 'cancel_booking' ? run.email_id : latest.id,
 				subject: latest.subject
 			});
 			if (!proposal) {
@@ -373,7 +413,7 @@ async function runOne(db: D1Database, client: MessagesClient, run: AgentRun, now
 			);
 			proposals++;
 			const executed =
-				result.decision.outcome === 'execute' ? await executeAction(db, result.actionId, now()) : undefined;
+				result.decision.outcome === 'execute' ? await executeAction(db, result.actionId, now(), { provider }) : undefined;
 			results.push({ type: 'tool_result', tool_use_id: call.id, content: describe(result.decision, executed) });
 		}
 		// Suggesting or logging was all that was left: another call would only cost money to say so.

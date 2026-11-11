@@ -117,7 +117,7 @@ function addMail(
 
 
 const NOW = new Date('2026-11-10T15:00:00Z');
-const VERIFIED = JSON.stringify({ auth: { spf: 'pass', dkim: 'pass', dmarc: 'pass' }, verdict: null, reasons: [] });
+const VERIFIED = JSON.stringify({ auth: { spf: 'pass', dkim: 'pass', dmarc: 'pass', dmarcFrom: ['acme.com'] }, verdict: null, reasons: [] });
 
 function withSam(sqlite: Database) {
 	sqlite.run(`INSERT INTO addresses (id, user_id, domain_id, address) VALUES ('ad_sam', 'u1', 'd1', 'sam@acme.com')`);
@@ -379,11 +379,17 @@ describe('Sam wakes only for the team', () => {
 		expect(await enqueueMailRuns(db, 'u1', send({ spf: 'pass', dkim: 'pass', dmarc: 'none' }), {}, NOW)).toBe(0);
 		expect(await enqueueMailRuns(db, 'u1', send({ spf: 'pass', dkim: 'pass', dmarc: 'fail' }), {}, NOW)).toBe(0);
 		expect(await enqueueMailRuns(db, 'u1', send({ spf: 'pass', dkim: 'pass', dmarc: null }), {}, NOW)).toBe(0);
-		expect(await enqueueMailRuns(db, 'u1', send({ spf: 'pass', dkim: 'pass', dmarc: 'pass' }), {}, NOW)).toBe(1);
+		// A pass that isn't about your domain (another From than the one stored), or doesn't say which, counts for nothing.
+		expect(await enqueueMailRuns(db, 'u1', send({ spf: 'pass', dkim: 'pass', dmarc: 'pass' }), {}, NOW)).toBe(0);
+		expect(await enqueueMailRuns(db, 'u1', send({ spf: 'pass', dkim: 'pass', dmarc: 'pass', dmarcFrom: ['evil.test'] }), {}, NOW)).toBe(0);
+		expect(await enqueueMailRuns(db, 'u1', send({ spf: 'pass', dkim: 'pass', dmarc: 'pass', dmarcFrom: ['acme.com', 'evil.test'] }), {}, NOW)).toBe(0);
+		expect(await enqueueMailRuns(db, 'u1', send({ spf: 'pass', dkim: 'pass', dmarc: 'pass', dmarcFrom: ['acme.com'] }), {}, NOW)).toBe(1);
 
-		expect(fromDomainVerified({ spf: 'pass', dkim: 'pass', dmarc: 'pass' })).toBe(true);
-		expect(fromDomainVerified({ spf: 'pass', dkim: 'pass', dmarc: null })).toBe(false);
-		expect(fromDomainVerified(null)).toBe(false);
+		expect(fromDomainVerified({ spf: 'pass', dkim: 'pass', dmarc: 'pass', dmarcFrom: ['acme.com'] }, 'sada@acme.com')).toBe(true);
+		expect(fromDomainVerified({ spf: 'pass', dkim: 'pass', dmarc: 'pass', dmarcFrom: ['acme.com'] }, 'victim@gmail.com')).toBe(false);
+		expect(fromDomainVerified({ spf: 'pass', dkim: 'pass', dmarc: 'pass' }, 'sada@acme.com')).toBe(false);
+		expect(fromDomainVerified({ spf: 'pass', dkim: 'pass', dmarc: null }, 'sada@acme.com')).toBe(false);
+		expect(fromDomainVerified(null, 'sada@acme.com')).toBe(false);
 	});
 
 	test("a teammate who can't direct Sam isn't obeyed", async () => {

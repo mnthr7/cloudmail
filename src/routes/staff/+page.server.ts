@@ -22,6 +22,7 @@ import { providerStatusForUser } from '#lib/server/ai-provider-store.ts';
 import { suggestionStats, type SuggestionStats } from '#lib/server/reply-suggestions-store.ts';
 import { memoryByAgent, type MemoryFact } from '#lib/server/agent-memory-store.ts';
 import { SPECIALIST_AFTER } from '#lib/agents/sam.ts';
+import { listBookingPages } from '#lib/server/booking-store.ts';
 
 export const load: PageServerLoad = async ({ locals, platform }) => {
 	const empty: {
@@ -44,8 +45,11 @@ export const load: PageServerLoad = async ({ locals, platform }) => {
 		memory: Record<string, MemoryFact[]>;
 		/** Kinds of task a generalist keeps getting: candidates for a specialist. */
 		patterns: TaskPattern[];
+		/** Booking pages Ava could run. */
+		bookingPages: Array<{ id: string; title: string; slug: string; sendFrom: string | null }>;
 		demo: boolean;
 	} = {
+		bookingPages: [],
 		memory: {},
 		patterns: [],
 		usage: {},
@@ -86,6 +90,12 @@ export const load: PageServerLoad = async ({ locals, platform }) => {
 		memoryByAgent(db, agents.map((agent) => agent.id)).catch(() => empty.memory),
 		taskPatterns(db, locals.user.id, since, SPECIALIST_AFTER).catch(() => [])
 	]);
+	const bookingPages = (await listBookingPages(db, locals.user.id).catch(() => [])).map((page) => ({
+		id: page.id,
+		title: page.title,
+		slug: page.slug,
+		sendFrom: page.sendFrom
+	}));
 	const key = providers.find((row) => row.provider === 'anthropic');
 	const aiKey: 'ready' | 'missing' | 'rejected' =
 		!key || !platform?.env.AI_KEY_ENCRYPTION_KEY ? 'missing' : key.rejectedAt ? 'rejected' : 'ready';
@@ -103,6 +113,7 @@ export const load: PageServerLoad = async ({ locals, platform }) => {
 		memory,
 		patterns,
 		suggestions,
+		bookingPages,
 		demo: false
 	};
 };

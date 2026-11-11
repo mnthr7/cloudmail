@@ -10,18 +10,52 @@
 	import { clampDragWidth, widthForPreset, type ImageSizePreset } from '#lib/utils/image-size.ts';
 	import { EDITOR_COMMANDS, type EditorCommand } from '#lib/writing/editor-commands.ts';
 	import { sanitizeEmailHtml } from '#lib/security/email-html.ts';
+	import OfferTimes from './booking/OfferTimes.svelte';
 
 	let {
 		html = $bindable(''),
 		placeholder = 'Write your message…',
 		minHeight = 240,
-		embedded = false
+		embedded = false,
+		offerTimes = false
 	}: {
 		html?: string;
 		placeholder?: string;
 		minHeight?: number;
 		embedded?: boolean;
+		/** Show "Offer times": open times from your booking page, as buttons in the message. */
+		offerTimes?: boolean;
 	} = $props();
+
+	let offerOpen = $state(false);
+	/** Where the cursor was when "Offer times" opened, so the times land there. */
+	let offerRange: Range | null = null;
+
+	function openOffer() {
+		const selection = window.getSelection();
+		const range = selection && selection.rangeCount ? selection.getRangeAt(0) : null;
+		offerRange = range && editor?.contains(range.commonAncestorContainer) ? range.cloneRange() : null;
+		offerOpen = !offerOpen;
+	}
+
+	function insertOffer(block: string) {
+		offerOpen = false;
+		if (!editor) return;
+		editor.focus();
+		const selection = window.getSelection();
+		if (selection) {
+			selection.removeAllRanges();
+			if (offerRange) selection.addRange(offerRange);
+			else {
+				const end = document.createRange();
+				end.selectNodeContents(editor);
+				end.collapse(false);
+				selection.addRange(end);
+			}
+		}
+		document.execCommand('insertHTML', false, block);
+		html = editor.innerHTML;
+	}
 
 	let editor = $state<HTMLDivElement | null>(null);
 	let shell = $state<HTMLDivElement | null>(null);
@@ -299,7 +333,27 @@
 				{/if}
 			</button>
 		{/each}
+		{#if offerTimes}
+			<button
+				type="button"
+				class="icon-btn offer-btn"
+				class:active={offerOpen}
+				title="Offer times"
+				aria-label="Offer times"
+				aria-expanded={offerOpen}
+				onmousedown={(event) => event.preventDefault()}
+				onclick={openOffer}
+			>
+				<Icon name="calendar-schedule-line" size={16} />
+				<span class="offer-label">Offer times</span>
+			</button>
+		{/if}
 	</div>
+	{#if offerOpen}
+		<div class="offer-pop">
+			<OfferTimes onInsert={insertOffer} onClose={() => (offerOpen = false)} />
+		</div>
+	{/if}
 
 	<div
 		bind:this={editor}
@@ -420,6 +474,32 @@
 {/if}
 
 <style>
+	.offer-btn {
+		display: inline-flex;
+		flex-shrink: 0;
+		width: auto !important;
+		align-items: center;
+		gap: 0.25rem;
+		margin-left: auto;
+	}
+
+	.offer-label {
+		font-size: 0.75rem;
+		font-weight: 600;
+		white-space: nowrap;
+	}
+
+	.offer-btn.active {
+		color: var(--color-link);
+	}
+
+	.offer-pop {
+		position: absolute;
+		z-index: 40;
+		top: 2.75rem;
+		right: 0.5rem;
+	}
+
 	.editor-shell {
 		position: relative;
 		overflow: visible;

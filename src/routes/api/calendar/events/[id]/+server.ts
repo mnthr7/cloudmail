@@ -2,6 +2,7 @@ import { json, type RequestHandler } from '@sveltejs/kit';
 import { calendarCaller, calendarFailure, inviteProvider, readJson } from '#lib/server/calendar-http.ts';
 import { deleteEvent, editedOccurrences, seriesOf, setSendFrom, updateEvent } from '#lib/server/calendar-store.ts';
 import { listAttendees, readGuests, replaceAttendees, sendInvites, type Guest } from '#lib/server/calendar-invites.ts';
+import { bookingForEvent } from '#lib/server/booking-manage.ts';
 
 /** An event's guests and who invites go out from, for the editor. */
 export const GET: RequestHandler = async ({ params, locals, platform }) => {
@@ -9,7 +10,12 @@ export const GET: RequestHandler = async ({ params, locals, platform }) => {
 	if ('response' in who) return who.response;
 	try {
 		const series = await seriesOf(who.db, who.userId, params.id ?? '');
-		return json({ attendees: await listAttendees(who.db, series.id), sendFrom: series.send_from });
+		return json({
+			attendees: await listAttendees(who.db, series.id),
+			sendFrom: series.send_from,
+			// Booked through a booking page: who, their phone, answers and note.
+			booking: await bookingForEvent(who.db, who.userId, series.id)
+		});
 	} catch (error) {
 		return calendarFailure(error);
 	}

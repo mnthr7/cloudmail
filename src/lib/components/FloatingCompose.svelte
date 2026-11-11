@@ -282,7 +282,7 @@
 
 			<!-- Assigning HTML does not fire input. Only typing does. -->
 			<div class="compose-body" oninput={markEdited}>
-				<RichTextEditor bind:html minHeight={240} />
+				<RichTextEditor offerTimes bind:html minHeight={240} />
 			</div>
 
 			<div class="compose-attachments">

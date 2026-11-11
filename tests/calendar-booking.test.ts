@@ -27,6 +27,7 @@ import {
 } from '../src/lib/server/outside-calendars';
 import { BookingError, bookSlot, cleanName, guestKey, createBookingPage, openSlots, publicPage, updateBookingPage } from '../src/lib/server/booking-store';
 import { listAttendees } from '../src/lib/server/calendar-invites';
+import { cancelBooking, manageSlots, manageView, rescheduleBooking, sendDueReminders, bookingForEvent } from '../src/lib/server/booking-manage';
 import { importMasterKey } from '../src/lib/server/secret-box';
 import type { EmailProvider } from '../src/lib/server/email-provider';
 import type { OutboundMailInput } from '../src/lib/server/send-mail';
@@ -396,7 +397,10 @@ describe('booking pages', () => {
 			durations: [30, 60],
 			timezone: CHICAGO,
 			location: null,
-			host: 'Sada'
+			host: 'Sada',
+			askPhone: 'off',
+			questions: [],
+			allowGuests: false
 		});
 		expect(await publicPage(db, 'nobody')).toBeNull();
 	});
@@ -426,7 +430,7 @@ describe('booking pages', () => {
 			{ start: '2026-11-12T16:00:00.000Z', duration: 60, name: 'Pat <script>Lee', email: 'Pat@Customer.com', note: 'About pricing' },
 			{ uidDomain: 'mail.acme.com', now: NOW }
 		);
-		expect(result).toEqual({ start: '2026-11-12T16:00:00.000Z', end: '2026-11-12T17:00:00.000Z', invited: true });
+		expect(result).toMatchObject({ start: '2026-11-12T16:00:00.000Z', end: '2026-11-12T17:00:00.000Z', invited: true });
 		const list = await occurrencesInRange(db, await listCalendars(db, 'u1'), ...range('2026-11-12T00:00Z', '2026-11-13T00:00Z'));
 		expect(list.map((item) => [item.title, item.startLocal, item.endLocal])).toEqual([['Intro call: Pat scriptLee', '2026-11-12T10:00', '2026-11-12T11:00']]);
 		expect(await listAttendees(db, list[0].eventId)).toMatchObject([{ email: 'pat@customer.com', name: 'Pat scriptLee' }]);
@@ -507,5 +511,279 @@ describe('calendar page', () => {
 		expect(body).toContain('viewing = item');
 		expect(body).toContain('editor = { occurrence: item, start: null }');
 		expect(body.slice(body.indexOf('{'))).not.toContain('openOccurrence(');
+	});
+});
+
+describe('booking v2', () => {
+	const OWN = ['sada@acme.com', 'support@acme.com'];
+	async function setup(extra: Record<string, unknown> = {}) {
+		const env = open();
+		await ensureCalendars(env.db, 'u1', { name: 'Sada', timezone: CHICAGO });
+		const page = await createBookingPage(
+			env.db,
+			'u1',
+			OWN,
+			{
+				slug: 'demo',
+				title: 'Product demo',
+				durations: [30],
+				timezone: CHICAGO,
+				hours: DEFAULT_HOURS,
+				minNoticeMinutes: 60,
+				locationKind: 'video',
+				location: 'https://us02web.zoom.us/j/123456789',
+				askPhone: 'required',
+				questions: [
+					{ label: 'Company', required: true },
+					{ label: 'What would you like to see?', long: true }
+				],
+				allowGuests: true,
+				...extra
+			},
+			NOW
+		);
+		return { ...env, page };
+	}
+
+	const base = {
+		start: '2026-11-12T16:00:00.000Z',
+		duration: 30,
+		name: 'Pat Lee',
+		email: 'pat@customer.test',
+		note: 'Looking forward',
+		phone: '+1 (615) 555-0100',
+		answers: { q1: 'Acme Corp', q2: 'Pricing and the agent setup' },
+		guests: ['lee@customer.test'],
+		timezone: 'Europe/London'
+	};
+	const opts = { uidDomain: 'mail.acme.com', origin: 'https://mail.acme.com', now: NOW };
+	const toOf = (mail: OutboundMailInput) => (Array.isArray(mail.to) ? mail.to : [mail.to]);
+	/** The change link, from the copy of the invite only the booker gets. */
+	function linkFor(sent: OutboundMailInput[], email = 'pat@customer.test'): string {
+		const mine = sent.filter((mail) => toOf(mail).includes(email) && /\/book\/manage#/.test(mail.text)).at(-1);
+		const match = mine?.text.match(/https:\/\/mail\.acme\.com\/book\/manage#([A-Za-z0-9_-]{43})/);
+		if (!match) throw new Error('no link');
+		return match[1];
+	}
+
+	test('settings: locations, questions and reminders are checked', async () => {
+		const { db } = await setup();
+		const make = (input: Record<string, unknown>) =>
+			createBookingPage(db, 'u1', OWN, { title: 'x', slug: 'other', timezone: CHICAGO, ...input }, NOW);
+		await expect(make({ locationKind: 'video', location: 'http://zoom.us/j/1' })).rejects.toMatchObject({ code: 'location' });
+		await expect(make({ locationKind: 'video' })).rejects.toMatchObject({ code: 'location' });
+		await expect(make({ locationKind: 'phone_host', location: 'call me' })).rejects.toMatchObject({ code: 'location' });
+		await expect(make({ locationKind: 'teleport' })).rejects.toMatchObject({ code: 'location' });
+		await expect(make({ questions: Array.from({ length: 6 }, () => ({ label: 'q' })) })).rejects.toMatchObject({ code: 'questions' });
+		await expect(make({ questions: [{ label: '' }] })).rejects.toMatchObject({ code: 'questions' });
+		await expect(make({ reminderMinutes: 7 })).rejects.toMatchObject({ code: 'numbers' });
+		const call = await make({ locationKind: 'phone_guest', askPhone: 'off' });
+		expect(call.askPhone).toBe('required');
+		expect(call.location).toBeNull();
+	});
+
+	test('the public page names the provider, never the link', async () => {
+		const { db } = await setup();
+		const page = (await publicPage(db, 'demo'))!;
+		expect(page.location).toEqual({ kind: 'video', label: 'Zoom' });
+		expect(JSON.stringify(page)).not.toContain('123456789');
+		expect(page.questions.map((question) => [question.id, question.required])).toEqual([['q1', true], ['q2', false]]);
+	});
+
+	test('phone, answers and guests are checked, then shared only where they belong', async () => {
+		const { db, sqlite } = await setup();
+		const { provider, sent } = fakeProvider();
+		const book = (input: Record<string, unknown>) => bookSlot(db, provider, 'demo', { ...base, ...input }, opts);
+		await expect(book({ phone: '' })).rejects.toMatchObject({ code: 'phone' });
+		await expect(book({ phone: 'call me maybe' })).rejects.toMatchObject({ code: 'phone' });
+		await expect(book({ answers: { q2: 'only this' } })).rejects.toMatchObject({ code: 'answers' });
+		await expect(book({ guests: ['a@x.test', 'b@x.test', 'c@x.test', 'd@x.test'] })).rejects.toMatchObject({ code: 'guests' });
+		await expect(book({ guests: ['not-an-email'] })).rejects.toMatchObject({ code: 'guests' });
+
+		const result = await book({});
+		// The change link is never handed back to the browser; it goes to the booker's inbox.
+		expect(JSON.stringify(result)).not.toContain('manage');
+		const [event] = await occurrencesInRange(db, await listCalendars(db, 'u1'), ...range('2026-11-12T00:00Z', '2026-11-13T00:00Z'));
+		expect(event.location).toBe('https://us02web.zoom.us/j/123456789');
+		expect(event.description ?? '').not.toContain('/book/manage');
+		expect((await listAttendees(db, event.eventId)).map((guest) => guest.email).sort()).toEqual(['lee@customer.test', 'pat@customer.test']);
+
+		// The booker's copy has the link; the extra guest's doesn't.
+		const invites = sent.filter((mail) => mail.subject.startsWith('Invitation'));
+		expect(invites.map(toOf)).toEqual([['lee@customer.test'], ['pat@customer.test']]);
+		expect(invites[0].text).not.toContain('/book/manage');
+		const token = linkFor(sent);
+		const stored = sqlite.query(`SELECT manage_token_hash FROM bookings`).get() as { manage_token_hash: string };
+		expect(stored.manage_token_hash).toMatch(/^[0-9a-f]{64}$/);
+		expect(stored.manage_token_hash).not.toBe(token);
+		for (const invite of invites) {
+			expect(invite.text).toContain('Where: https://us02web.zoom.us/j/123456789');
+			for (const secret of ['Acme Corp', 'Pricing and the agent', '615', 'Looking forward']) expect(JSON.stringify(invite)).not.toContain(secret);
+		}
+		const notice = sent.find((mail) => mail.subject.startsWith('New booking'))!;
+		for (const shown of ['Acme Corp', 'Pricing and the agent setup', 'Phone: +1 (615) 555-0100', 'Also invited: lee@customer.test', 'Looking forward']) {
+			expect(notice.text).toContain(shown);
+		}
+		expect(await bookingForEvent(db, 'u1', event.eventId)).toMatchObject({
+			name: 'Pat Lee',
+			phone: '+1 (615) 555-0100',
+			guests: ['lee@customer.test'],
+			answers: [
+				{ label: 'Company', value: 'Acme Corp' },
+				{ label: 'What would you like to see?', value: 'Pricing and the agent setup' }
+			]
+		});
+	});
+
+	test("when you call them, their number stays with you, not every invitee", async () => {
+		const { db } = await setup({ locationKind: 'phone_guest', location: null });
+		const { provider, sent } = fakeProvider();
+		await bookSlot(db, provider, 'demo', base, opts);
+		const [event] = await occurrencesInRange(db, await listCalendars(db, 'u1'), ...range('2026-11-12T00:00Z', '2026-11-13T00:00Z'));
+		expect(event.location).toBe('Phone call: Sada will call you');
+		for (const invite of sent.filter((mail) => mail.subject.startsWith('Invitation'))) expect(invite.text).not.toContain('615');
+		expect(sent.find((mail) => mail.subject.startsWith('New booking'))?.text).toContain('+1 (615) 555-0100');
+	});
+
+	test('the booker can move it twice; each move changes the link, and everyone follows', async () => {
+		const { db } = await setup();
+		const { provider, sent } = fakeProvider();
+		await bookSlot(db, provider, 'demo', base, opts);
+		const token = linkFor(sent);
+		expect((await manageView(db, token, NOW))?.booking).toMatchObject({ status: 'confirmed', canChange: true, canReschedule: true, duration: 30 });
+
+		// Its own time doesn't block a move to a time overlapping it.
+		const open = await manageSlots(db, token, { from: Date.parse('2026-11-12T06:00Z'), to: Date.parse('2026-11-13T06:00Z') }, NOW);
+		expect(open.map((slot) => new Date(slot.start).toISOString())).toContain('2026-11-12T16:00:00.000Z');
+
+		const later = new Date(NOW.getTime() + 60_000);
+		const moved = await rescheduleBooking(db, provider, token, '2026-11-12T18:00:00.000Z', { origin: 'https://mail.acme.com', now: later });
+		const [event] = await occurrencesInRange(db, await listCalendars(db, 'u1'), ...range('2026-11-12T00:00Z', '2026-11-13T00:00Z'));
+		expect([event.startLocal, event.endLocal]).toEqual(['2026-11-12T12:00', '2026-11-12T12:30']);
+		const updates = sent.filter((mail) => mail.subject.startsWith('Updated invitation'));
+		expect(updates.map(toOf)).toEqual([['lee@customer.test'], ['pat@customer.test']]);
+		expect(sent.find((mail) => mail.subject.startsWith('Rescheduled'))?.text).toContain('It was Thursday, November 12, 10:00');
+
+		// The old link is dead; the new one is in the booker's updated invite (and returned to the page that moved it).
+		const token2 = linkFor(sent);
+		expect(token2).not.toBe(token);
+		expect(moved.manageUrl).toBe(`https://mail.acme.com/book/manage#${token2}`);
+		expect(await manageView(db, token, later)).toBeNull();
+		await expect(rescheduleBooking(db, provider, token, '2026-11-12T19:00:00.000Z', { origin: 'https://x.test', now: later })).rejects.toMatchObject({
+			code: 'missing'
+		});
+
+		// A taken or made-up time is refused.
+		await expect(
+			rescheduleBooking(db, provider, token2, '2026-11-12T18:10:00.000Z', { origin: 'https://mail.acme.com', now: later })
+		).rejects.toMatchObject({ code: 'taken' });
+
+		// Twice, then the guest writes instead.
+		await rescheduleBooking(db, provider, token2, '2026-11-12T19:00:00.000Z', { origin: 'https://mail.acme.com', now: later });
+		const token3 = linkFor(sent);
+		expect((await manageView(db, token3, later))?.booking.canReschedule).toBe(false);
+		await expect(
+			rescheduleBooking(db, provider, token3, '2026-11-12T20:00:00.000Z', { origin: 'https://mail.acme.com', now: later })
+		).rejects.toMatchObject({ code: 'too_many' });
+	});
+
+	test('the booker can cancel: it leaves your calendar, everyone is told, the time opens up', async () => {
+		const { db, sqlite } = await setup();
+		const { provider, sent } = fakeProvider();
+		await bookSlot(db, provider, 'demo', base, opts);
+		const token = linkFor(sent);
+		await cancelBooking(db, provider, token, 'Something came up', NOW);
+		expect(await occurrencesInRange(db, await listCalendars(db, 'u1'), ...range('2026-11-12T00:00Z', '2026-11-13T00:00Z'))).toEqual([]);
+		const cancel = sent.find((mail) => mail.subject.startsWith('Canceled: Product demo: Pat Lee'))!;
+		expect(cancel.attachments?.[0].type).toContain('method=CANCEL');
+		expect(sent.find((mail) => mail.subject.startsWith('Canceled: Product demo with'))?.text).toContain('Something came up');
+		expect(sqlite.query(`SELECT status, cancel_reason FROM bookings`).get()).toEqual({ status: 'cancelled', cancel_reason: 'Something came up' });
+		expect((await manageView(db, token, NOW))?.booking.status).toBe('cancelled');
+		await expect(cancelBooking(db, provider, token, null, NOW)).rejects.toMatchObject({ code: 'cancelled' });
+		await bookSlot(db, provider, 'demo', { ...base, email: 'new@x.test', guests: [] }, opts);
+	});
+
+	test("once you change the meeting yourself, the guest's link can't touch it", async () => {
+		const { db } = await setup();
+		const { provider, sent } = fakeProvider();
+		await bookSlot(db, provider, 'demo', base, opts);
+		const token = linkFor(sent);
+		const [event] = await occurrencesInRange(db, await listCalendars(db, 'u1'), ...range('2026-11-12T00:00Z', '2026-11-13T00:00Z'));
+		// You make it a weekly meeting.
+		await updateEvent(db, 'u1', event.eventId, { rrule: 'FREQ=WEEKLY' });
+		expect((await manageView(db, token, NOW))?.booking).toMatchObject({ status: 'changed', canChange: false });
+		await expect(cancelBooking(db, provider, token, null, NOW)).rejects.toMatchObject({ code: 'changed' });
+		await expect(
+			rescheduleBooking(db, provider, token, '2026-11-12T18:00:00.000Z', { origin: 'https://mail.acme.com', now: NOW })
+		).rejects.toMatchObject({ code: 'changed' });
+		expect(await occurrencesInRange(db, await listCalendars(db, 'u1'), ...range('2026-11-12T00:00Z', '2026-11-20T00:00Z'))).toHaveLength(2);
+	});
+
+	test('one person is in at most three upcoming bookings, extra guest or not; a page mails at most 40 people a day', async () => {
+		const { db } = await setup({ maxPerDay: 20 });
+		const { provider } = fakeProvider();
+		const at = (hour: number, minute = 0) => `2026-11-1${2 + Math.floor(hour / 24)}T${String(hour % 24).padStart(2, '0')}:${minute ? '30' : '00'}:00.000Z`;
+		const book = (start: string, email: string, guests: string[]) =>
+			bookSlot(db, provider, 'demo', { ...base, start, email, guests }, opts);
+		await book(at(15), 'a1@x.test', ['victim+1@gmail.com']);
+		await book(at(15, 30), 'a2@x.test', ['v.i.c.t.i.m@gmail.com']);
+		await book(at(16), 'a3@x.test', ['victim@googlemail.com']);
+		await expect(book(at(16, 30), 'a4@x.test', ['victim@gmail.com'])).rejects.toMatchObject({ code: 'too_many' });
+		await expect(book(at(16, 30), 'victim+9@gmail.com', [])).rejects.toMatchObject({ code: 'too_many' });
+	});
+
+	test('the daily email budget counts every recipient', async () => {
+		const { db, sqlite } = await setup({ maxPerDay: 20 });
+		const { provider } = fakeProvider();
+		const page = sqlite.query(`SELECT id FROM booking_pages WHERE slug = 'demo'`).get() as { id: string };
+		sqlite.run(`INSERT INTO booking_sends (id, page_id, kind, recipients, created_at) VALUES ('s1', ?, 'booked', 38, ?)`, [
+			page.id,
+			NOW.toISOString()
+		]);
+		// Two more fit; three don't.
+		await expect(
+			bookSlot(db, provider, 'demo', { ...base, guests: ['g1@x.test', 'g2@x.test'] }, opts)
+		).rejects.toMatchObject({ code: 'slow_down' });
+		await bookSlot(db, provider, 'demo', { ...base, guests: ['g1@x.test'] }, opts);
+		await expect(bookSlot(db, provider, 'demo', { ...base, email: 'z@x.test', guests: [], start: '2026-11-12T18:00:00.000Z' }, opts)).rejects.toMatchObject({
+			code: 'slow_down'
+		});
+	});
+
+	test('no changes once it has started; bad links find nothing; a turned-off page still lets guests manage', async () => {
+		const { db, page } = await setup();
+		const { provider, sent } = fakeProvider();
+		await bookSlot(db, provider, 'demo', base, opts);
+		const token = linkFor(sent);
+		expect(await manageView(db, 'x'.repeat(43), NOW)).toBeNull();
+		expect(await manageView(db, null, NOW)).toBeNull();
+		await updateBookingPage(db, 'u1', OWN, page.id, { enabled: false }, NOW);
+		expect((await manageView(db, token, NOW))?.booking.canChange).toBe(true);
+		const during = new Date('2026-11-12T16:10:00Z');
+		expect((await manageView(db, token, during))?.booking.canChange).toBe(false);
+		await expect(cancelBooking(db, provider, token, null, during)).rejects.toMatchObject({ code: 'past' });
+	});
+
+	test('a reminder goes out once, from you, in their time zone', async () => {
+		const { db } = await setup({ reminderMinutes: 1440 });
+		const { provider, sent } = fakeProvider();
+		await bookSlot(db, provider, 'demo', base, opts);
+		sent.length = 0;
+		expect(await sendDueReminders(db, provider, new Date('2026-11-11T15:00:00Z'))).toBe(0);
+		expect(await sendDueReminders(db, provider, new Date('2026-11-11T16:30:00Z'))).toBe(1);
+		expect(sent[0]).toMatchObject({ to: ['pat@customer.test'] });
+		expect(sent[0].from.address).toBe('sada@acme.com');
+		expect(sent[0].subject).toContain('Reminder: Product demo, Thursday, November 12, 4:00');
+		expect(sent[0].text).toContain('Where: https://us02web.zoom.us/j/123456789');
+		expect(sent[0].text).toContain('use the link in your invitation email');
+		expect(await sendDueReminders(db, provider, new Date('2026-11-11T17:00:00Z'))).toBe(0);
+
+		await bookSlot(db, provider, 'demo', { ...base, email: 'late@x.test', guests: [], start: '2026-11-11T20:00:00.000Z' }, {
+			...opts,
+			now: new Date('2026-11-11T15:00:00Z')
+		});
+		sent.length = 0;
+		await sendDueReminders(db, provider, new Date('2026-11-11T16:00:00Z'));
+		expect(sent.filter((mail) => toOf(mail).includes('late@x.test'))).toEqual([]);
 	});
 });

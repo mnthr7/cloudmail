@@ -20,8 +20,18 @@ export const POST: RequestHandler = async ({ params, request, url, platform, get
 			db,
 			inviteProvider(platform),
 			params.slug ?? '',
-			{ start: body.start, duration: body.duration, name: body.name, email: body.email, note: body.note },
-			{ uidDomain: url.hostname }
+			{
+				start: body.start,
+				duration: body.duration,
+				name: body.name,
+				email: body.email,
+				note: body.note,
+				phone: body.phone,
+				answers: body.answers,
+				guests: body.guests,
+				timezone: body.timezone
+			},
+			{ uidDomain: url.hostname, origin: url.origin }
 		);
 		return json(result, { status: 201 });
 	} catch (error) {

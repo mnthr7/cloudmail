@@ -484,7 +484,7 @@
 					<p class="reply-status">{error}</p>
 				{/if}
 
-				<RichTextEditor bind:html={replyHtml} embedded minHeight={160} placeholder="Reply…" />
+				<RichTextEditor offerTimes bind:html={replyHtml} embedded minHeight={160} placeholder="Reply…" />
 			</form>
 		{:else}
 			<button type="button" class="reply-prompt" onclick={() => (replyOpen = true)}>

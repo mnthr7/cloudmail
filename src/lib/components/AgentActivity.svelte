@@ -24,6 +24,76 @@
 	let noteText = $state('');
 	let noteBusy = $state(false);
 	let noteMessage = $state('');
+	/** Keep the note to yourself even though an agent is working the thread. */
+	let justForMe = $state(false);
+	let noteBox = $state<HTMLTextAreaElement | null>(null);
+
+	/** The agent working this thread: the last one that did or noted something here. */
+	const workingAgent = $derived.by(() => {
+		for (const item of [...items].reverse()) {
+			const name = item.kind === 'action' ? item.agentName : item.kind === 'note' && !item.byHuman ? item.agentName : null;
+			if (name && agentNames.includes(name)) return name;
+		}
+		return null;
+	});
+	/** Agents the note names, longest names first so "@Sam Billing" isn't "@Sam". */
+	const named = $derived(
+		[...agentNames]
+			.sort((a, b) => b.length - a.length)
+			.filter((name) => new RegExp(`(^|[^\\w@])@${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?!\\w)`, 'i').test(noteText))
+	);
+	const goesTo = $derived(named.length ? named : !justForMe && workingAgent ? [workingAgent] : []);
+
+	// The @ picker: open while the word before the caret starts with @.
+	let picker = $state<{ query: string; start: number } | null>(null);
+	let pickIndex = $state(0);
+	const choices = $derived(
+		picker ? agentNames.filter((name) => name.toLowerCase().startsWith(picker!.query.toLowerCase())).slice(0, 6) : []
+	);
+
+	function updatePicker() {
+		if (!noteBox) return;
+		const caret = noteBox.selectionStart ?? noteText.length;
+		const match = noteText.slice(0, caret).match(/(^|[^\w@])@(\w*)$/);
+		picker = match && agentNames.length ? { query: match[2], start: caret - match[2].length - 1 } : null;
+		pickIndex = 0;
+	}
+
+	async function pick(name: string) {
+		if (!picker || !noteBox) return;
+		const caret = noteBox.selectionStart ?? noteText.length;
+		const insert = `@${name} `;
+		noteText = noteText.slice(0, picker.start) + insert + noteText.slice(caret);
+		const at = picker.start + insert.length;
+		picker = null;
+		await Promise.resolve();
+		noteBox.focus();
+		noteBox.setSelectionRange(at, at);
+	}
+
+	function noteKeydown(event: KeyboardEvent) {
+		if (picker && choices.length) {
+			if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+				event.preventDefault();
+				pickIndex = (pickIndex + (event.key === 'ArrowDown' ? 1 : choices.length - 1)) % choices.length;
+				return;
+			}
+			if (event.key === 'Enter' || event.key === 'Tab') {
+				event.preventDefault();
+				void pick(choices[pickIndex]);
+				return;
+			}
+			if (event.key === 'Escape') {
+				event.preventDefault();
+				picker = null;
+				return;
+			}
+		}
+		if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+			event.preventDefault();
+			(event.currentTarget as HTMLTextAreaElement).form?.requestSubmit();
+		}
+	}
 
 	const MENTION_ERRORS: Record<string, string> = {
 		not_allowed: "isn't yours to direct",
@@ -43,7 +113,7 @@
 			const res = await fetch(`/api/mail/${emailId}/notes`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ body: noteText })
+				body: JSON.stringify({ body: noteText, private: justForMe })
 			});
 			const body = await res.json().catch(() => null);
 			if (!res.ok || !body?.activity) {
@@ -52,11 +122,13 @@
 			}
 			override = body.activity;
 			noteText = '';
+			justForMe = false;
+			picker = null;
 			const mentions = (body.mentions ?? []) as Array<{ agent: string; outcome: string; error?: string }>;
 			noteMessage = mentions
 				.map((mention) =>
 					mention.outcome === 'asked'
-						? `${mention.agent} is on it.`
+						? `${mention.agent} is on it now.`
 						: mention.outcome === 'remembered'
 							? `${mention.agent} will remember that.`
 							: `${mention.agent} ${MENTION_ERRORS[mention.error ?? ''] ?? "couldn't take it"}.`
@@ -217,17 +289,63 @@
 
 		{#if emailId}
 			<form class="note-form" onsubmit={saveNote}>
-				<textarea
-					bind:value={noteText}
-					rows="2"
-					maxlength="2000"
-					placeholder={agentNames.length
-						? `Private note. "@${agentNames[0]} …" hands this over; "@${agentNames[0]} remember: …" saves a fact.`
-						: 'Private note, only you see it.'}
-					aria-label="Private note"
-				></textarea>
-				<button type="submit" class="btn-ghost" disabled={noteBusy || !noteText.trim()}>Save note</button>
+				<div class="note-box">
+					<textarea
+						bind:this={noteBox}
+						bind:value={noteText}
+						oninput={updatePicker}
+						onclick={updatePicker}
+						onkeydown={noteKeydown}
+						onblur={() => setTimeout(() => (picker = null), 150)}
+						rows="2"
+						maxlength="2000"
+						placeholder={workingAgent && !justForMe
+							? `Tell ${workingAgent} what to do, e.g. "Move it to Thursday at 2". Type @ to pick another agent.`
+							: agentNames.length
+								? `Private note. Type @ to hand this to an agent; "@${agentNames[0]} remember: …" saves a fact.`
+								: 'Private note, only you see it.'}
+						aria-label="Private note"
+						aria-autocomplete="list"
+						aria-controls="mention-list"
+					></textarea>
+					{#if picker && choices.length}
+						<ul class="mentions" id="mention-list" role="listbox" aria-label="Agents">
+							{#each choices as name, index (name)}
+								<li role="option" aria-selected={index === pickIndex}>
+									<button
+										type="button"
+										class:active={index === pickIndex}
+										onmousedown={(event) => {
+											event.preventDefault();
+											void pick(name);
+										}}
+									>
+										<Icon name="robot-2-line" size={14} />
+										{name}
+									</button>
+								</li>
+							{/each}
+						</ul>
+					{/if}
+				</div>
+				<button type="submit" class="btn-ghost" disabled={noteBusy || !noteText.trim()}>
+					{goesTo.length ? `Send to ${goesTo.join(' and ')}` : 'Save note'}
+				</button>
 			</form>
+			<p class="hint note-route">
+				{#if goesTo.length}
+					<Icon name="flashlight-line" size={13} />
+					{goesTo.join(' and ')} {goesTo.length === 1 ? 'starts' : 'start'} on this as soon as you send it.
+				{:else}
+					Only you see this note.
+				{/if}
+				{#if workingAgent && !named.length}
+					<label class="just-me">
+						<input type="checkbox" bind:checked={justForMe} />
+						Just a note for me
+					</label>
+				{/if}
+			</p>
 			{#if noteMessage}<p class="hint" role="status">{noteMessage}</p>{/if}
 		{/if}
 	</section>
@@ -354,6 +472,61 @@
 		gap: 0.5rem;
 		align-items: flex-end;
 		margin-top: 0.75rem;
+	}
+
+	.note-box {
+		position: relative;
+		flex: 1;
+		min-width: 0;
+		display: flex;
+	}
+
+	.mentions {
+		position: absolute;
+		left: 0.5rem;
+		bottom: calc(100% + 0.25rem);
+		z-index: 20;
+		min-width: 11rem;
+		margin: 0;
+		padding: 0.25rem;
+		list-style: none;
+		border-radius: 0.5rem;
+		background: var(--color-surface, var(--color-bg));
+		box-shadow:
+			0 0 0 1px var(--color-line),
+			0 8px 24px rgb(0 0 0 / 0.12);
+	}
+
+	.mentions button {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		width: 100%;
+		padding: 0.375rem 0.5rem;
+		border-radius: 0.375rem;
+		font: inherit;
+		text-align: left;
+		color: var(--color-text);
+	}
+
+	.mentions button.active,
+	.mentions button:hover {
+		background: var(--color-surface-muted);
+	}
+
+	.note-route {
+		display: flex;
+		align-items: center;
+		flex-wrap: wrap;
+		gap: 0.375rem;
+	}
+
+	.just-me {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.25rem;
+		margin-left: auto;
+		cursor: pointer;
 	}
 
 	.note-form textarea {

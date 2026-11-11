@@ -10,6 +10,7 @@ import type { EmailProvider } from './email-provider';
 import { emailExistsByProviderId, insertEmail, updateEmailStatusByProviderId } from './mail-store';
 import { organizeInbound, readInboundHeader } from './organize-inbound';
 import type { ResendClient } from './resend';
+import { resendAuthResults } from '#lib/security/phishing.ts';
 
 export type ResendWebhookEvent = {
 	type: string;
@@ -160,8 +161,9 @@ async function handleInboundEmail(
 				listUnsubscribe,
 				precedence: readInboundHeader(received.headers, 'precedence'),
 				autoSubmitted: readInboundHeader(received.headers, 'auto-submitted'),
-				authenticationResults: readInboundHeader(received.headers, 'authentication-results'),
-				receivedSpf: readInboundHeader(received.headers, 'received-spf'),
+				// Resend's own results. Authentication-Results and Received-SPF headers in the
+				// message could only have come from the sender, so they aren't read.
+				authenticationResults: resendAuthResults(received.authentication, from),
 				hasAttachment
 			},
 			env.provider

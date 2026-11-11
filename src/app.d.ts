@@ -25,6 +25,8 @@ declare global {
 				/** When set, first-run setup asks for this value. */
 				SETUP_TOKEN?: string;
 			};
+			/** For work that finishes after the response, like starting an agent run. */
+			ctx?: { waitUntil(promise: Promise<unknown>): void };
 		}
 		interface Locals {
 			user: User | null;

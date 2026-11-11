@@ -591,4 +591,22 @@ describe('times and your own asks', () => {
 			{ capability: 'organize', status: 'queued' }
 		]);
 	});
+
+	test('one ask approves one booking change: a second one she tries waits for you', async () => {
+		const { sqlite, db, provider, ava, bookingId } = await setup();
+		const email = inbound(sqlite, { from: 'pat@customer.test', body: 'Earlier on Friday?' });
+		await enqueueAskRun(db, { agentId: ava.id, byUserId: 'u1', emailId: email, request: 'Move it to Friday 9:30' }, NOW);
+		const { client } = fakeClient([
+			{ content: [toolUse('reschedule_booking', { booking_id: bookingId, start: '2026-11-13T15:30:00.000Z', reason: 'Asked.' }, 'tu_1')] },
+			{ content: [toolUse('cancel_booking', { booking_id: bookingId, reason: 'Changed my mind.' }, 'tu_2')] },
+			{ content: [text('Done.')] }
+		]);
+		await runDueAgents(db, { workspaces: ['default'], clientFor: async () => client, provider }, { now: () => NOW });
+		expect(sqlite.query(`SELECT status FROM agent_actions WHERE capability = 'calendar' ORDER BY created_at`).all()).toEqual([
+			{ status: 'executed' },
+			{ status: 'queued' }
+		]);
+		expect((await range(db))[0].startLocal).toBe('2026-11-13T09:30');
+	});
 });
+

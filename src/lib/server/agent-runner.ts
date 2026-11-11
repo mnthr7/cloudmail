@@ -263,6 +263,8 @@ async function runOne(
 	let summary = '';
 	let outcome = 'turn_limit';
 	let proposals = 0;
+	/** What this ask has already approved: one booking change and one reply. */
+	const askApproved = new Set<string>();
 	let suggested = false;
 
 	for (let turn = 0; turn < MAX_TURNS; turn++) {
@@ -441,12 +443,15 @@ async function runOne(
 					runId: run.id,
 					mailboxUserId: run.mailbox_user_id,
 					mustApprove: unverifiedChange,
-					// Asked for in so many words, on the Ask form or in a note: that's the OK.
-					askedBy: directAsk ? (run.requested_by_principal_id ?? undefined) : undefined
+					// Asked for in so many words, on the Ask form or in a note: that's the OK, for one
+					// booking change and one reply per ask.
+					askedBy:
+						directAsk && !askApproved.has(proposal.capability) ? (run.requested_by_principal_id ?? undefined) : undefined
 				},
 				now()
 			);
 			proposals++;
+			if (directAsk && result.decision.outcome === 'execute') askApproved.add(proposal.capability);
 			const executed =
 				result.decision.outcome === 'execute' ? await executeAction(db, result.actionId, now(), { provider }) : undefined;
 			results.push({ type: 'tool_result', tool_use_id: call.id, content: describe(result.decision, executed) });

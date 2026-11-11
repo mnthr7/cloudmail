@@ -442,12 +442,33 @@ export async function proposeAction(db: D1Database, input: ProposeInput, now = n
 				.bind(agent.id, input.runId ?? null, input.runId ?? null)
 		);
 	}
-	const approvedByAsking =
+	let approvedByAsking =
 		!!input.askedBy &&
 		!input.mustApprove &&
 		decision.outcome === 'queue' &&
 		decision.reason === 'needs_approval' &&
 		ASK_APPROVES.has(capability);
+	if (approvedByAsking) {
+		// The asker must be someone who could press Approve on it themselves.
+		const asker = await db
+			.prepare(
+				`SELECT p.id, p.workspace_id, p.user_id, u.is_admin
+				 FROM principals p JOIN users u ON u.id = p.user_id
+				 WHERE p.id = ? AND p.kind = 'human' AND p.workspace_id = ?`
+			)
+			.bind(input.askedBy, agent.workspaceId)
+			.first<HumanPrincipal>();
+		approvedByAsking =
+			!!asker &&
+			(await assertCanApprove(db, asker, {
+				owner_principal_id: agent.ownerPrincipalId,
+				mailbox_user_id: input.mailboxUserId ?? null,
+				authorized_json: authorized
+			}).then(
+				() => true,
+				() => false
+			));
+	}
 	if (approvedByAsking) {
 		statements.push(
 			db
@@ -490,7 +511,11 @@ type ActionRow = {
  * the agent's owner or an admin, who could also send from the address the
  * action would go out from. Declining only stops it, so anyone may.
  */
-async function assertCanApprove(db: D1Database, human: HumanPrincipal, action: ActionRow): Promise<void> {
+async function assertCanApprove(
+	db: D1Database,
+	human: HumanPrincipal,
+	action: Pick<ActionRow, 'owner_principal_id' | 'mailbox_user_id' | 'authorized_json'>
+): Promise<void> {
 	if (!canManage({ ownerPrincipalId: action.owner_principal_id }, human)) throw new NotAllowedError();
 	// Only the mailbox owner sees a run's proposal, so only they can approve it.
 	if (action.mailbox_user_id && action.mailbox_user_id !== human.user_id) throw new NotAllowedError();

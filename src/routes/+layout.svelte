@@ -80,6 +80,7 @@
 		<Sidebar
 			counts={data.counts}
 			labels={data.labels}
+			calendarNew={data.calendar.waiting.length + data.calendar.updates}
 			domains={data.domains}
 			activeDomainId={data.activeDomainId}
 			isAdmin={(data.user!).is_admin}

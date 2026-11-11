@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
+	import { page } from '$app/state';
 	import Icon from '#lib/components/Icon.svelte';
 	import EventEditor from '#lib/components/calendar/EventEditor.svelte';
 	import type { CalendarInfo, Occurrence } from '#lib/calendar/types.ts';
@@ -20,6 +21,10 @@
 	let editor = $state<{ occurrence: Occurrence | null; start: string | null } | null>(null);
 	let now = $state(new Date());
 	let scroller = $state<HTMLDivElement | null>(null);
+
+	/** Invites and proposed new times that need your answer (from the layout). */
+	type WaitingItem = { inviteId: string; emailId: string; method: string; title: string; from: string };
+	const waiting = $derived(((page.data.calendar as { waiting?: WaitingItem[] } | undefined)?.waiting ?? []));
 
 	// --- dates, in the viewer's own time zone ---------------------------------
 
@@ -303,6 +308,19 @@
 		</div>
 	</header>
 
+	{#if waiting.length}
+		<section class="waiting" aria-label="Waiting on you">
+			<Icon name="mail-unread-line" size={16} />
+			<span class="waiting-title">Waiting on you</span>
+			{#each waiting.slice(0, 5) as item (item.inviteId)}
+				<a class="waiting-item" href={`/mail/${item.emailId}`}>
+					{item.method === 'COUNTER' ? `${item.from} proposed a new time: ` : `${item.from} invited you: `}<strong>{item.title}</strong>
+				</a>
+			{/each}
+			{#if waiting.length > 5}<span class="waiting-more">and {waiting.length - 5} more in your inbox</span>{/if}
+		</section>
+	{/if}
+
 	{#if subscribeOpen}
 		<section class="subscribe surface-lg">
 			<p>
@@ -550,6 +568,44 @@
 	.views button.active {
 		color: var(--color-text);
 		background: var(--color-surface-muted);
+	}
+
+	.waiting {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.375rem 0.75rem;
+		padding: 0.625rem 0.875rem;
+		border-radius: 0.75rem;
+		font-size: 0.8125rem;
+		color: var(--color-text);
+		background: var(--color-surface-muted);
+		box-shadow: inset 0 0 0 1px var(--color-line);
+	}
+
+	.waiting > :global(i) {
+		color: var(--color-accent);
+	}
+
+	.waiting-title {
+		font-weight: 600;
+	}
+
+	.waiting-item {
+		padding: 0.125rem 0.625rem;
+		border-radius: 9999px;
+		color: var(--color-link);
+		text-decoration: none;
+		background: var(--color-surface);
+		box-shadow: inset 0 0 0 1px var(--color-line);
+	}
+
+	.waiting-item:hover {
+		text-decoration: underline;
+	}
+
+	.waiting-more {
+		color: var(--color-text-secondary);
 	}
 
 	.subscribe {

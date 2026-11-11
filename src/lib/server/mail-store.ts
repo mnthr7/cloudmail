@@ -154,7 +154,7 @@ export async function updateEmailStatusByProviderId(
  * Spam is `is_spam`, Trash is anything with `deleted_at`, and the rest hide
  * both. A conversation shows up in a mailbox when any of its messages match.
  */
-function viewFilter(view: MailboxView): string {
+export function viewFilter(view: MailboxView): string {
 	const live = 'e.deleted_at IS NULL AND e.is_spam = 0';
 	const awake = "(e.snoozed_until IS NULL OR datetime(e.snoozed_until) <= datetime('now'))";
 	switch (view) {

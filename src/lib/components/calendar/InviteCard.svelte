@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { invalidateAll } from '$app/navigation';
 	import Icon from '#lib/components/Icon.svelte';
 	import type { InviteView } from '#lib/calendar/types.ts';
 

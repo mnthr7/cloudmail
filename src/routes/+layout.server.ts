@@ -5,6 +5,7 @@ import { listLabels, type LabelRecord } from '#lib/server/labels-store.ts';
 import { demoThreadInView } from '#lib/mailbox-view.ts';
 import { DEMO_LABELS, DEMO_MODE, DEMO_USER, demoStore } from '#lib/server/demo.ts';
 import type { MailboxCounts } from '#lib/types.ts';
+import { calendarBadge, type CalendarNews } from '#lib/server/whats-new.ts';
 
 const EMPTY_COUNTS: MailboxCounts = {
 	inbox: 0,
@@ -55,6 +56,13 @@ export const load: LayoutServerLoad = async ({ locals, platform, url }) => {
 		labels = await listLabels(db, locals.user.id);
 	}
 
+	// Invites waiting on you, and calendar changes since you last opened it.
+	let calendar: CalendarNews = { waiting: [], updates: 0 };
+	if (db && locals.user && !(isDemoMode && locals.user.id === DEMO_USER.id)) {
+		const onCalendarPage = url.pathname === '/calendar' || url.pathname.startsWith('/calendar/');
+		calendar = await calendarBadge(db, locals.user.id, onCalendarPage);
+	}
+
 	let trustedAddresses: string[] = [];
 	if (db && locals.user) {
 		trustedAddresses = await listImageSenders(db, locals.user.id);
@@ -68,6 +76,7 @@ export const load: LayoutServerLoad = async ({ locals, platform, url }) => {
 		skin: locals.skin,
 		counts,
 		labels,
+		calendar,
 		trustedAddresses
 	};
 };

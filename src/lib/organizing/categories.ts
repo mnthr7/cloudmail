@@ -1,3 +1,10 @@
+/**
+ * Marks mail this app sends to a mailbox owner about their own things (a
+ * booking was made or moved). Agents don't treat it as new mail to act on.
+ * A sender who forges it only keeps agents off their own message.
+ */
+export const APP_NOTICE_HEADER = 'X-CloudMail-Notice';
+
 export const CATEGORIES = ['primary', 'social', 'promotions', 'updates', 'forums'] as const;
 export type MailCategory = (typeof CATEGORIES)[number];
 

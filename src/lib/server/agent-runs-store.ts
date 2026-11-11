@@ -69,10 +69,12 @@ export async function enqueueMailRuns(
 	db: D1Database,
 	userId: string,
 	emailId: string,
-	headers: Pick<CategoryHeaders, 'autoSubmitted' | 'precedence'>,
+	headers: Pick<CategoryHeaders, 'autoSubmitted' | 'precedence'> & { appNotice?: string | null },
 	now = new Date()
 ): Promise<number> {
 	if (isAutomatedMail(headers)) return 0;
+	// This app's own notice to the owner ("Ava moved the booking"): news, not work.
+	if (headers.appNotice?.trim()) return 0;
 
 	const email = await db
 		.prepare(

@@ -183,7 +183,7 @@ async function runOne(
 	// Booking mode: the calendar is on and one of the owner's booking pages sends from this agent's address.
 	const calendarOn = !!definition.capabilities.calendar && definition.capabilities.calendar.level !== 'off';
 	const runsBookings =
-		trigger.kind === 'mail' && calendarOn && definition.scope.sendAs.length > 0
+		(trigger.kind === 'mail' || trigger.kind === 'ask') && calendarOn && definition.scope.sendAs.length > 0
 			? !!(await db
 					.prepare(
 						`SELECT 1 AS ok FROM booking_pages WHERE user_id = ? AND lower(send_from) IN (SELECT value FROM json_each(?)) LIMIT 1`
@@ -191,11 +191,12 @@ async function runOne(
 					.bind(run.mailbox_user_id, JSON.stringify(definition.scope.sendAs.map((address) => address.toLowerCase())))
 					.first<{ ok: number }>())
 			: false;
-	const tools = toolsFor(definition, trigger.kind, { bookings: runsBookings });
-	if (tools.length === 0) return skip('no_tools');
-
 	const email = await getEmailForUser(db, run.mailbox_user_id, run.email_id);
 	if (!email || email.deleted_at) return skip('email_gone');
+	// Only a guest's mail can be about their booking.
+	const bookingMail = runsBookings && email.direction === 'inbound';
+	const tools = toolsFor(definition, trigger.kind, { bookings: bookingMail });
+	if (tools.length === 0) return skip('no_tools');
 	const thread = await listThreadMessages(db, run.mailbox_user_id, email);
 	// New mail only sees the part of the thread it provably belongs to.
 	const messages = verifiedContext(thread, email, run.trigger_kind);
@@ -210,19 +211,21 @@ async function runOne(
 		return skip('taken_over');
 	}
 
-	// An agent running a booking page, handling new mail, sees the sender's bookings
-	// (only once their domain proved the mail is theirs).
+	// An agent running a booking page sees the sender's bookings: on new mail only once
+	// their domain proved the mail is theirs; when a teammate asks, they vouch for it.
 	const security = (email as typeof email & { security_json?: string | null }).security_json ?? null;
+	const vouched = trigger.kind === 'ask';
 	const booking =
-		runsBookings
+		bookingMail
 			? {
-					senderVerified: senderVerified(security, email.from_addr),
+					senderVerified: vouched || senderVerified(security, email.from_addr),
 					bookings: await bookingsForGuest(
 						db,
 						run.mailbox_user_id,
 						{ from_addr: email.from_addr, security_json: security },
 						definition.scope.sendAs,
-						now()
+						now(),
+						vouched
 					)
 				}
 			: {};
@@ -393,6 +396,9 @@ async function runOne(
 				});
 				continue;
 			}
+			// A booking change you asked for on mail whose sender couldn't be checked: you
+			// vouched by asking, so you see that and OK it yourself.
+			const unverifiedChange = proposal.capability === 'calendar' && trigger.kind === 'ask' && !senderVerified(security, email.from_addr);
 			const result = await proposeAction(
 				db,
 				{
@@ -404,10 +410,13 @@ async function runOne(
 					},
 					threadId,
 					payload: proposal.payload,
-					reason: proposal.reason,
+					reason: unverifiedChange
+						? `Sender not verified: this email's domain didn't confirm it's from ${email.from_addr}. ${proposal.reason ?? ''}`.trim()
+						: proposal.reason,
 					threadParticipants: participants,
 					runId: run.id,
-					mailboxUserId: run.mailbox_user_id
+					mailboxUserId: run.mailbox_user_id,
+					mustApprove: unverifiedChange
 				},
 				now()
 			);

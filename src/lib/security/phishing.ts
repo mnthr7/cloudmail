@@ -331,3 +331,44 @@ export function parseSecurity(json: string | null | undefined): MessageSecurity 
 		return null;
 	}
 }
+
+/** The name Cloudflare Email Routing signs its results with. */
+export const CLOUDFLARE_AUTHSERV_ID = 'mx.cloudflare.net';
+
+/**
+ * Cloudflare Email Routing's own SPF, DKIM and DMARC results for a message, from
+ * the raw MIME, as Authentication-Results text. Email Routing doesn't hand a Worker
+ * an Authentication-Results header; it records what it checked in the ARC set it
+ * adds on top of the message. Each hop adds its headers above the ones already
+ * there, so the first ARC-Authentication-Results from the top is the one Cloudflare
+ * just added, and anything a sender wrote sits below it. Only that header counts,
+ * and only when it names Cloudflare: a sender can't put a header above it.
+ *
+ * Checking the ARC-Seal signature wouldn't add to this: a sender could copy a
+ * genuine Cloudflare-sealed set from mail they once received, and only being on
+ * top tells a fresh set from a copied one. What this relies on is Cloudflare
+ * adding its set to every message it routes; booking changes still wait for a
+ * person's OK by default.
+ */
+export function cloudflareAuthResults(raw: ArrayBuffer | Uint8Array | string): string | null {
+	const text =
+		typeof raw === 'string'
+			? raw.slice(0, 256 * 1024)
+			: new TextDecoder().decode((raw instanceof Uint8Array ? raw : new Uint8Array(raw)).subarray(0, 256 * 1024));
+	const end = text.search(/\r?\n\r?\n/);
+	const head = end === -1 ? text : text.slice(0, end);
+	// Unfold continuation lines, then walk the headers in order.
+	const lines = head.replace(/\r?\n[ \t]+/g, ' ').split(/\r?\n/);
+	for (const line of lines) {
+		const match = line.match(/^arc-authentication-results\s*:\s*(.*)$/i);
+		if (!match) continue;
+		// "i=1; mx.cloudflare.net; dkim=pass ...": instance, then who checked.
+		const [instance, authserv, ...results] = match[1].split(';');
+		const index = Number(instance.trim().match(/^i\s*=\s*(\d+)$/i)?.[1]);
+		// ARC stops at 50 hops; a set at 50 can't have had Cloudflare's added above it.
+		if (!Number.isInteger(index) || index < 1 || index >= 50) return null;
+		if (authserv?.trim().toLowerCase() !== CLOUDFLARE_AUTHSERV_ID) return null;
+		return `${CLOUDFLARE_AUTHSERV_ID}; ${results.join(';').trim()}`;
+	}
+	return null;
+}

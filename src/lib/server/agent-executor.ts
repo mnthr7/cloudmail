@@ -22,7 +22,7 @@ import { resolveFromAddress } from './outbox.ts';
 import { queueOutbound } from './queue-outbound.ts';
 import { buildReferences } from './threads.ts';
 import { addThreadNote, isThreadTakenOver } from './thread-activity-store.ts';
-import { agentBookingChange } from './booking-manage.ts';
+import { agentBookingChange, senderVerified } from './booking-manage.ts';
 import { BookingError } from './booking-store.ts';
 import type { EmailProvider } from './email-provider.ts';
 
@@ -69,6 +69,8 @@ type ClaimedAction = {
 	trigger_kind: string | null;
 	/** The mail that started the run. */
 	trigger_email_id: string | null;
+	/** Who asked, for an ask. */
+	asked_by_name: string | null;
 };
 
 class StopError extends Error {
@@ -110,11 +112,13 @@ export async function executeAction(
 		.prepare(
 			`SELECT x.id, x.workspace_id, x.agent_principal_id, x.status, x.capability, x.thread_id, x.payload_json,
 			        x.authorized_json, x.mailbox_user_id, x.decided_by_principal_id,
-			        p.display_name AS agent_name, a.status AS agent_status, r.trigger_kind, r.email_id AS trigger_email_id
+			        p.display_name AS agent_name, a.status AS agent_status, r.trigger_kind, r.email_id AS trigger_email_id,
+			        CASE WHEN asker.id IS NULL THEN NULL ELSE coalesce(asker.display_name, 'a teammate') END AS asked_by_name
 			 FROM agent_actions x
 			 JOIN principals p ON p.id = x.agent_principal_id
 			 JOIN agents a ON a.principal_id = x.agent_principal_id
 			 LEFT JOIN agent_runs r ON r.id = x.run_id
+			 LEFT JOIN principals asker ON asker.id = r.requested_by_principal_id AND r.trigger_kind = 'ask'
 			 WHERE x.id = ?`
 		)
 		.bind(actionId)
@@ -338,8 +342,15 @@ async function carryOut(db: D1Database, action: ClaimedAction, now: Date, deps: 
 			const bookingId = typeof payload.bookingId === 'string' ? payload.bookingId : '';
 			if (!op || !bookingId) throw new StopError('empty');
 			if (email.direction !== 'inbound') throw new StopError('not_from_guest');
-			// Only the mail that woke the agent, from new mail (not an ask), can change a booking.
-			if (action.trigger_kind !== 'mail' || action.trigger_email_id !== email.id) throw new StopError('not_from_guest');
+			// Only the mail the run was about: new mail from the guest, or a teammate's ask about it.
+			const asked = action.trigger_kind === 'ask';
+			if ((action.trigger_kind !== 'mail' && !asked) || action.trigger_email_id !== email.id) throw new StopError('not_from_guest');
+			if (asked && !action.asked_by_name) throw new StopError('not_from_guest');
+			// Vouching covers unverified mail only once a person has OK'd the change itself.
+			const security = (email as typeof email & { security_json?: string | null }).security_json ?? null;
+			if (asked && !action.decided_by_principal_id && !senderVerified(security, email.from_addr)) {
+				throw new StopError('booking_not_verified');
+			}
 			const agent = await getAgent(db, action.agent_principal_id);
 			if (!agent) throw new StopError('agent_gone');
 			try {
@@ -354,7 +365,8 @@ async function carryOut(db: D1Database, action: ClaimedAction, now: Date, deps: 
 						agentName: action.agent_name,
 						op,
 						start: payload.start,
-						reason: payload.reason
+						reason: payload.reason,
+						askedBy: asked ? action.asked_by_name : null
 					},
 					now
 				);

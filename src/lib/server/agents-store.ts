@@ -71,6 +71,14 @@ const MAX_PAYLOAD_BYTES = 64 * 1024;
 /** Statuses that count toward a daily limit: the action was allowed to run. */
 const COUNTED_STATUSES = `('auto_approved', 'approved', 'executed')`;
 const MAX_REASON_LENGTH = 2000;
+/**
+ * What asking an agent directly approves: moving or canceling the booking on
+ * the thread, and replying on it (only to people already there). Sending new
+ * mail, memory, timers and the rest still wait, so text in the mail can't turn
+ * your ask into something you didn't ask for.
+ */
+const ASK_APPROVES = new Set<string>(['calendar', 'send_reply']);
+
 const STATUS_FOR_OUTCOME: Record<PolicyDecision['outcome'], ActionStatus> = {
 	execute: 'auto_approved',
 	queue: 'queued',
@@ -310,6 +318,12 @@ export type ProposeInput = {
 	mailboxUserId?: string;
 	/** A person must OK this one, whatever the agent's settings allow. */
 	mustApprove?: boolean;
+	/**
+	 * The person who asked for this directly. A booking change or a reply on the
+	 * thread that would wait for their OK is approved by them now: asking was the
+	 * OK. Anything else the agent proposes along the way still waits.
+	 */
+	askedBy?: string;
 };
 
 export type ProposeResult = { actionId: string; decision: PolicyDecision };
@@ -428,7 +442,47 @@ export async function proposeAction(db: D1Database, input: ProposeInput, now = n
 				.bind(agent.id, input.runId ?? null, input.runId ?? null)
 		);
 	}
+	let approvedByAsking =
+		!!input.askedBy &&
+		!input.mustApprove &&
+		decision.outcome === 'queue' &&
+		decision.reason === 'needs_approval' &&
+		ASK_APPROVES.has(capability);
+	if (approvedByAsking) {
+		// The asker must be someone who could press Approve on it themselves.
+		const asker = await db
+			.prepare(
+				`SELECT p.id, p.workspace_id, p.user_id, u.is_admin
+				 FROM principals p JOIN users u ON u.id = p.user_id
+				 WHERE p.id = ? AND p.kind = 'human' AND p.workspace_id = ?`
+			)
+			.bind(input.askedBy, agent.workspaceId)
+			.first<HumanPrincipal>();
+		approvedByAsking =
+			!!asker &&
+			(await assertCanApprove(db, asker, {
+				owner_principal_id: agent.ownerPrincipalId,
+				mailbox_user_id: input.mailboxUserId ?? null,
+				authorized_json: authorized
+			}).then(
+				() => true,
+				() => false
+			));
+	}
+	if (approvedByAsking) {
+		statements.push(
+			db
+				.prepare(
+					`UPDATE agent_actions SET status = 'approved', decided_by_principal_id = ?, decided_at = ?
+					 WHERE id = ? AND status = 'queued'`
+				)
+				.bind(input.askedBy, now.toISOString(), actionId)
+		);
+	}
 	await db.batch(statements);
+	if (approvedByAsking && decision.outcome === 'queue') {
+		decision = { outcome: 'execute', reason: 'auto', addresses: decision.addresses };
+	}
 
 	if (limit !== undefined) {
 		const row = await db
@@ -457,7 +511,11 @@ type ActionRow = {
  * the agent's owner or an admin, who could also send from the address the
  * action would go out from. Declining only stops it, so anyone may.
  */
-async function assertCanApprove(db: D1Database, human: HumanPrincipal, action: ActionRow): Promise<void> {
+async function assertCanApprove(
+	db: D1Database,
+	human: HumanPrincipal,
+	action: Pick<ActionRow, 'owner_principal_id' | 'mailbox_user_id' | 'authorized_json'>
+): Promise<void> {
 	if (!canManage({ ownerPrincipalId: action.owner_principal_id }, human)) throw new NotAllowedError();
 	// Only the mailbox owner sees a run's proposal, so only they can approve it.
 	if (action.mailbox_user_id && action.mailbox_user_id !== human.user_id) throw new NotAllowedError();

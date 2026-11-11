@@ -62,7 +62,7 @@ export default {
 		return svelteApp.fetch(request, env, ctx);
 	},
 
-	async email(message: CloudflareInboundMessage, env: Env) {
+	async email(message: CloudflareInboundMessage, env: Env, ctx: ExecutionContext) {
 		if (env.EMAIL_PROVIDER?.trim().toLowerCase() !== 'cloudflare') {
 			message.setReject('Cloudflare email provider is not enabled');
 			return;
@@ -83,6 +83,10 @@ export default {
 		};
 
 		await handleCloudflareInbound(message, inboundEnv);
+		// New mail may have woken an agent: start it now rather than on the next minute's cron.
+		if (env.DEMO_MODE !== 'true') {
+			ctx.waitUntil(runAgents(env).catch((error) => console.error('Failed to run agents', error)));
+		}
 	},
 
 	async scheduled(_event: unknown, env: Env, ctx: ExecutionContext) {

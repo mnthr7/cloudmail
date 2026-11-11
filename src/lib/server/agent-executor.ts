@@ -1,4 +1,5 @@
 import type { D1Database } from '@cloudflare/workers-types';
+import { parseSecurity } from '#lib/security/phishing.ts';
 import { looksLikeAutoReply } from '#lib/agents/auto-reply.ts';
 import { LABEL_COLORS } from '#lib/organizing/labels.ts';
 import { threadReceivedAtAddresses } from '#lib/reply-from.ts';
@@ -344,13 +345,12 @@ async function carryOut(db: D1Database, action: ClaimedAction, now: Date, deps: 
 			if (email.direction !== 'inbound') throw new StopError('not_from_guest');
 			// Only the mail the run was about: new mail from the guest, or a teammate's ask about it.
 			const asked = action.trigger_kind === 'ask';
-			// New mail: only that mail. An ask: a guest's message on the thread you asked about.
-			const sameMail = action.trigger_email_id === email.id;
-			const sameThread = (email.thread_id ?? email.id) === action.thread_id;
-			if (asked ? !sameThread : action.trigger_kind !== 'mail' || !sameMail) throw new StopError('not_from_guest');
+			// Only the message the run was about: the new mail, or the guest's message you asked about.
+			if ((action.trigger_kind !== 'mail' && !asked) || action.trigger_email_id !== email.id) throw new StopError('not_from_guest');
 			if (asked && !action.asked_by_name) throw new StopError('not_from_guest');
 			// Vouching covers unverified mail only once a person has OK'd the change itself.
 			const security = (email as typeof email & { security_json?: string | null }).security_json ?? null;
+			if (asked && parseSecurity(security)?.verdict != null) throw new StopError('booking_not_verified');
 			if (asked && !action.decided_by_principal_id && !senderVerified(security, email.from_addr)) {
 				throw new StopError('booking_not_verified');
 			}

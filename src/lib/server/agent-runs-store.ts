@@ -214,6 +214,26 @@ export async function enqueueAskRun(
 	if (!opened) throw new AskError('email');
 
 	let email: { id: string } = opened;
+	if (request !== null) {
+		// The ask is about the guest's newest message as it stands now, the one on your
+		// screen: a reply that arrives later doesn't inherit your OK. If you opened your
+		// own message, that's the newest one someone outside sent.
+		const ours = [...(await liveWorkspaceAddresses(db, human.workspace_id)).keys()].map((address) => address.toLowerCase());
+		const guest = await db
+			.prepare(
+				`SELECT id FROM emails
+				 WHERE user_id = ? AND COALESCE(thread_id, id) = ? AND direction = 'inbound' AND deleted_at IS NULL
+				   AND lower(from_addr) NOT IN (SELECT value FROM json_each(?))
+				 ORDER BY datetime(created_at) DESC LIMIT 1`
+			)
+			.bind(input.byUserId, opened.thread_id, JSON.stringify(ours))
+			.first<{ id: string }>();
+		const openedIsGuest = await db
+			.prepare(`SELECT 1 AS ok FROM emails WHERE id = ? AND direction = 'inbound' AND lower(from_addr) NOT IN (SELECT value FROM json_each(?))`)
+			.bind(opened.id, JSON.stringify(ours))
+			.first<{ ok: number }>();
+		if (!openedIsGuest && guest) email = guest;
+	}
 	if (request === null) {
 		if (agent.version.definition.capabilities.draft_reply?.level === 'off') throw new AskError('drafting');
 		const inbound = await db

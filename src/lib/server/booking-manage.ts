@@ -401,6 +401,47 @@ export type GuestBooking = {
 };
 
 /** At most `perDay` open times a day, spread from morning to evening. */
+/**
+ * Whether a booking can move to exactly this time, for an agent about to propose
+ * it: the list it's shown is a sample, so a time a guest asks for may be open
+ * without being listed. When it isn't, the nearest open times, closest first.
+ */
+export async function checkMoveTime(
+	db: D1Database,
+	userId: string,
+	bookingId: string,
+	start: unknown,
+	now = new Date()
+): Promise<{ open: true } | { open: false; nearest: Array<{ start: string; label: string }> }> {
+	const row = await db
+		.prepare(
+			`SELECT b.*, p.slug, p.max_per_day, p.timezone AS page_timezone
+			 FROM bookings b JOIN booking_pages p ON p.id = b.page_id
+			 WHERE b.id = ? AND b.user_id = ? AND b.status = 'confirmed'`
+		)
+		.bind(bookingId, userId)
+		.first<BookingRow>();
+	const at = typeof start === 'string' ? Date.parse(start) : NaN;
+	if (!row || !Number.isFinite(at)) return { open: false, nearest: [] };
+	const day = 86_400_000;
+	const open = await openFor(db, row, { from: Math.max(now.getTime(), at - 3 * day), to: at + 3 * day }, now);
+	if (open.some((slot) => slot.start === at)) return { open: true };
+	const label = new Intl.DateTimeFormat('en-US', {
+		timeZone: row.page_timezone,
+		weekday: 'short',
+		month: 'short',
+		day: 'numeric',
+		hour: 'numeric',
+		minute: '2-digit',
+		timeZoneName: 'short'
+	});
+	const nearest = [...open]
+		.sort((a, b) => Math.abs(a.start - at) - Math.abs(b.start - at))
+		.slice(0, 4)
+		.map((slot) => ({ start: new Date(slot.start).toISOString(), label: label.format(new Date(slot.start)) }));
+	return { open: false, nearest };
+}
+
 function spread(slots: Slot[], perDay: number): Slot[] {
 	const byDay = new Map<string, Slot[]>();
 	for (const slot of slots) byDay.set(slot.date, [...(byDay.get(slot.date) ?? []), slot]);

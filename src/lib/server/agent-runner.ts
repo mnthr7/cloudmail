@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { parseSecurity } from '#lib/security/phishing.ts';
 import type { D1Database } from '@cloudflare/workers-types';
 import type { PolicyDecision } from '#lib/agents/policy.ts';
 import { supportsServerFallback } from '#lib/agents/models.ts';
@@ -34,7 +35,7 @@ import { saveSuggestions } from './reply-suggestions-store.ts';
 import { executeAction, type ExecuteResult } from './agent-executor.ts';
 import { isThreadTakenOver } from './thread-activity-store.ts';
 import { listMemory } from './agent-memory-store.ts';
-import { bookingsForGuest, senderVerified } from './booking-manage.ts';
+import { bookingsForGuest, checkMoveTime, senderVerified } from './booking-manage.ts';
 import type { EmailProvider } from './email-provider.ts';
 
 /**
@@ -167,6 +168,8 @@ async function runOne(
 		return skip('budget_reached');
 	}
 
+	// An ask someone made on the thread itself (not one read from a teammate's email).
+	const directAsk = run.trigger_kind === 'ask' && run.trigger_ref === run.id && !!run.request && !!run.requested_by_principal_id;
 	let trigger: RunTrigger = { kind: 'mail' };
 	if (run.trigger_kind === 'ask') {
 		const asker = run.requested_by_principal_id
@@ -199,15 +202,10 @@ async function runOne(
 	if (messages.length === 0) return skip('email_gone');
 
 	const founderAddresses = [...(await liveWorkspaceAddresses(db, agent.workspaceId)).keys()];
-	// Only a guest's mail can be about their booking: new mail that woke the agent, or,
-	// when you ask, the newest message someone outside sent on the thread.
+	// Only a guest's mail can be about their booking: the message the run is about (the
+	// new mail, or the guest's message you asked about, fixed when you asked).
 	const ours = new Set(founderAddresses.map((address) => address.toLowerCase()));
-	const guestMail =
-		trigger.kind === 'ask'
-			? ([...messages].reverse().find((message) => message.direction === 'inbound' && !ours.has(message.from_addr.toLowerCase())) ?? null)
-			: email.direction === 'inbound'
-				? email
-				: null;
+	const guestMail = email.direction === 'inbound' && !ours.has(email.from_addr.toLowerCase()) ? email : null;
 	const bookingMail = runsBookings && !!guestMail;
 	const tools = toolsFor(definition, trigger.kind, { bookings: bookingMail });
 	if (tools.length === 0) return skip('no_tools');
@@ -222,7 +220,8 @@ async function runOne(
 	// An agent running a booking page sees the sender's bookings: on new mail only once
 	// their domain proved the mail is theirs; when a teammate asks, they vouch for it.
 	const security = (guestMail as (typeof guestMail & { security_json?: string | null }) | null)?.security_json ?? null;
-	const vouched = trigger.kind === 'ask';
+	// You vouch by asking, but not for mail CloudMail flagged as phishing or suspicious.
+	const vouched = trigger.kind === 'ask' && parseSecurity(security)?.verdict == null;
 	const booking =
 		bookingMail && guestMail
 			? {
@@ -264,6 +263,8 @@ async function runOne(
 	let summary = '';
 	let outcome = 'turn_limit';
 	let proposals = 0;
+	/** What this ask has already approved: one booking change and one reply. */
+	const askApproved = new Set<string>();
 	let suggested = false;
 
 	for (let turn = 0; turn < MAX_TURNS; turn++) {
@@ -404,6 +405,22 @@ async function runOne(
 				});
 				continue;
 			}
+			// The open times listed are a sample: check the exact time asked for before proposing it.
+			if (call.name === 'reschedule_booking') {
+				const payload = proposal.payload as { bookingId?: string; start?: unknown };
+				const check = await checkMoveTime(db, run.mailbox_user_id, payload.bookingId ?? '', payload.start, now());
+				if (!check.open) {
+					results.push({
+						type: 'tool_result',
+						tool_use_id: call.id,
+						is_error: true,
+						content: check.nearest.length
+							? `That time isn't open. The nearest open times are:\n${check.nearest.map((slot) => `${slot.start} = ${slot.label}`).join('\n')}`
+							: "That time isn't open, and nothing is open near it."
+					});
+					continue;
+				}
+			}
 			// A booking change you asked for on mail whose sender couldn't be checked: you
 			// vouched by asking, so you see that and OK it yourself.
 			const unverifiedChange =
@@ -425,11 +442,16 @@ async function runOne(
 					threadParticipants: participants,
 					runId: run.id,
 					mailboxUserId: run.mailbox_user_id,
-					mustApprove: unverifiedChange
+					mustApprove: unverifiedChange,
+					// Asked for in so many words, on the Ask form or in a note: that's the OK, for one
+					// booking change and one reply per ask.
+					askedBy:
+						directAsk && !askApproved.has(proposal.capability) ? (run.requested_by_principal_id ?? undefined) : undefined
 				},
 				now()
 			);
 			proposals++;
+			if (directAsk && result.decision.outcome === 'execute') askApproved.add(proposal.capability);
 			const executed =
 				result.decision.outcome === 'execute' ? await executeAction(db, result.actionId, now(), { provider }) : undefined;
 			results.push({ type: 'tool_result', tool_use_id: call.id, content: describe(result.decision, executed) });

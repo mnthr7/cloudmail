@@ -481,7 +481,9 @@ export function toolsFor(
 	const logTask = definition.kind === 'generalist' ? [LOG_TASK_TOOL] : [];
 	// New mail is all outsider content: nothing in it should become something the agent remembers.
 	const runnable = RUNNABLE_CAPABILITIES.filter(on).filter((capability) => kind !== 'mail' || capability !== 'propose_memory');
-	return [...runnable.map((capability) => TOOL_SPECS[capability]), ...suggest, ...logTask];
+	// Asked by a teammate on a booking page's mail: the booking tools too.
+	const calendar = kind === 'ask' && calendarOn && options.bookings ? CALENDAR_TOOLS : [];
+	return [...runnable.map((capability) => TOOL_SPECS[capability]), ...calendar, ...suggest, ...logTask];
 }
 
 export type SuggestionInput = {

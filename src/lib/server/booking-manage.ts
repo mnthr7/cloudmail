@@ -451,9 +451,11 @@ export async function bookingsForGuest(
 	userId: string,
 	email: { from_addr: string; security_json: string | null },
 	sendFrom: string[],
-	now = new Date()
+	now = new Date(),
+	/** A teammate asked about this mail, so they vouch it's from the guest. */
+	vouched = false
 ): Promise<GuestBooking[]> {
-	if (!senderVerified(email.security_json, email.from_addr)) return [];
+	if (!vouched && !senderVerified(email.security_json, email.from_addr)) return [];
 	const out: GuestBooking[] = [];
 	for (const row of await guestRows(db, userId, email.from_addr, sendFrom, now)) {
 		if (!(await bookedEvent(db, row))) continue;
@@ -503,15 +505,17 @@ export async function agentBookingChange(
 		op: 'reschedule' | 'cancel';
 		start?: unknown;
 		reason?: unknown;
+		/** Who asked the agent to do this, when a teammate did; they vouch for the mail. */
+		askedBy?: string | null;
 	},
 	now = new Date()
 ): Promise<{ start: string; end: string } | null> {
-	if (!senderVerified(input.email.security_json, input.email.from_addr)) throw new BookingError('not_verified');
+	if (!input.askedBy && !senderVerified(input.email.security_json, input.email.from_addr)) throw new BookingError('not_verified');
 	const row = (await guestRows(db, input.userId, input.email.from_addr, input.sendFrom, now)).find((item) => item.id === input.bookingId);
 	if (!row) throw new BookingError('missing');
 	const event = await bookedEvent(db, row);
 	if (!event) throw new BookingError('changed');
-	const via = `${input.agentName}, from their email`;
+	const via = input.askedBy ? `${input.agentName}, asked by ${input.askedBy}` : `${input.agentName}, from their email`;
 	if (input.op === 'cancel') {
 		await cancelCore(db, provider, row, event, input.reason, now, via);
 		return null;

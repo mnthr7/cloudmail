@@ -7,7 +7,8 @@ import path from 'node:path';
 import { avaDefinition } from '../src/lib/agents/ava';
 import { createAgent, decideAction, setAgentStatus } from '../src/lib/server/agents-store';
 import { executeAction } from '../src/lib/server/agent-executor';
-import { enqueueMailRuns } from '../src/lib/server/agent-runs-store';
+import { enqueueAskRun, enqueueMailRuns } from '../src/lib/server/agent-runs-store';
+import { cloudflareAuthResults, fromDomainVerified, parseAuthResults } from '../src/lib/security/phishing';
 import { runDueAgents, type MessagesClient } from '../src/lib/server/agent-runner';
 import { toolsFor } from '../src/lib/server/agent-brain';
 import { DEFAULT_HOURS } from '../src/lib/calendar/availability';
@@ -384,5 +385,63 @@ describe('the security review fixes', () => {
 		expect(await bookingsForGuest(db, 'u1', verified('pat@customer.test'), ['demo@acme.com'], NOW)).toHaveLength(1);
 		expect(await bookingsForGuest(db, 'u1', verified('pat+x@customer.test'), ['demo@acme.com'], NOW)).toHaveLength(0);
 		expect(await bookingsForGuest(db, 'u1', verified('pat@customer.test'), ['other@acme.com'], NOW)).toHaveLength(0);
+	});
+});
+
+describe("Cloudflare's own sender check", () => {
+	const cloudflare =
+		'ARC-Authentication-Results: i=1; mx.cloudflare.net;\r\n\tdkim=pass header.d=gmail.com header.s=20230601 header.b=abc;\r\n\tdmarc=pass header.from=gmail.com policy.dmarc=none;\r\n\tspf=pass (mx.cloudflare.net: domain of pat@gmail.com designates 209.85.0.1 as permitted sender) smtp.mailfrom=pat@gmail.com\r\n';
+	const body = 'Subject: Re: Invitation\r\nFrom: Pat <pat@gmail.com>\r\n\r\nCan we do Thursday?\r\n';
+
+	test('a Gmail reply through Email Routing is verified from the ARC result Cloudflare added on top', () => {
+		const results = cloudflareAuthResults(new TextEncoder().encode(`Received: by mx.cloudflare.net\r\n${cloudflare}${body}`));
+		const auth = parseAuthResults(results ? [results] : []);
+		expect(auth).toEqual({ spf: 'pass', dkim: 'pass', dmarc: 'pass', dmarcFrom: ['gmail.com'] });
+		expect(fromDomainVerified(auth, 'pat@gmail.com')).toBe(true);
+	});
+
+	test("a sender's own fake headers, below Cloudflare's, count for nothing", () => {
+		const forged =
+			'ARC-Authentication-Results: i=1; mx.cloudflare.net; dmarc=pass header.from=acme.com\r\nAuthentication-Results: mx.cloudflare.net; dmarc=pass header.from=acme.com\r\n';
+		const failing = cloudflare.replace('dmarc=pass header.from=gmail.com', 'dmarc=fail header.from=acme.com');
+		const results = cloudflareAuthResults(`${failing}${forged}${body}`);
+		expect(parseAuthResults(results ? [results] : []).dmarc).toBe('fail');
+	});
+
+	test('no ARC set from Cloudflare on top, or one at the hop limit: nothing is trusted', () => {
+		expect(cloudflareAuthResults(body)).toBeNull();
+		expect(cloudflareAuthResults(`ARC-Authentication-Results: i=1; mx.google.com; dmarc=pass header.from=gmail.com\r\n${body}`)).toBeNull();
+		expect(cloudflareAuthResults(cloudflare.replace('i=1', 'i=50') + body)).toBeNull();
+		// A header in the body isn't a header.
+		expect(cloudflareAuthResults(`Subject: hi\r\n\r\n${cloudflare}`)).toBeNull();
+	});
+});
+
+describe('you ask Ava about a booking reply', () => {
+	test('she can move it even when the mail itself is unverified: you vouch for it, and your note says so', async () => {
+		const { sqlite, db, provider, sent, ava, bookingId } = await setup();
+		const email = inbound(sqlite, { from: 'pat@customer.test', body: 'Can we do Thursday at noon instead?', security: UNSIGNED });
+		await enqueueAskRun(db, { agentId: ava.id, byUserId: 'u1', emailId: email, request: 'Move this to what they asked for and confirm.' }, NOW);
+		const { client, requests } = fakeClient([
+			{ content: [toolUse('reschedule_booking', { booking_id: bookingId, start: '2026-11-12T18:00:00.000Z', reason: 'Sada asked.' })] },
+			{ content: [text('Moved.')] }
+		]);
+		await runDueAgents(db, { workspaces: ['default'], clientFor: async () => client, provider }, { now: () => NOW });
+		expect(JSON.stringify(requests[0].messages)).toContain(`<booking id=\\"${bookingId}\\"`);
+		expect(requests[0].tools?.map((tool) => ('name' in tool ? tool.name : ''))).toContain('reschedule_booking');
+		expect(await approveCalendar(sqlite, db, provider)).toBe(1);
+		expect((await range(db))[0].startLocal).toBe('2026-11-12T12:00');
+		expect(sent.find((mail) => mail.subject.startsWith('Rescheduled'))?.text).toContain('Done by Ava, asked by Sada.');
+	});
+
+	test('an ask on mail you sent (not from a guest) gets no booking tools', async () => {
+		const { sqlite, db, provider, ava } = await setup();
+		const email = inbound(sqlite, { from: 'pat@customer.test', body: 'x' });
+		sqlite.run(`UPDATE emails SET direction = 'outbound', from_addr = 'demo@acme.com' WHERE id = ?`, [email]);
+		await enqueueAskRun(db, { agentId: ava.id, byUserId: 'u1', emailId: email, request: 'Cancel it.' }, NOW);
+		const { client, requests } = fakeClient([{ content: [text('Nothing to do.')] }]);
+		await runDueAgents(db, { workspaces: ['default'], clientFor: async () => client, provider }, { now: () => NOW });
+		expect(JSON.stringify(requests[0].messages)).not.toContain('<booking id');
+		expect(requests[0].tools?.map((tool) => ('name' in tool ? tool.name : ''))).not.toContain('cancel_booking');
 	});
 });

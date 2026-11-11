@@ -10,6 +10,7 @@ import { cleanDisplayName, collectInboundRecipients, parseEmailAddress } from '.
 import { emailExistsByProviderId, insertEmail } from './mail-store';
 import { organizeInbound, readInboundHeader } from './organize-inbound';
 import { normalizeMessageId } from './send-mail';
+import { cloudflareAuthResults } from '#lib/security/phishing.ts';
 
 export type CloudflareInboundMessage = {
 	readonly from: string;
@@ -120,7 +121,9 @@ export async function handleCloudflareInbound(
 				listUnsubscribe,
 				precedence: readInboundHeader(message.headers, 'precedence'),
 				autoSubmitted: readInboundHeader(message.headers, 'auto-submitted'),
-				authenticationResults: readInboundHeader(message.headers, 'authentication-results'),
+				// Cloudflare's own results, from the ARC set it added. An Authentication-Results
+				// header here could only have come from the sender, so it isn't read.
+				authenticationResults: cloudflareAuthResults(raw),
 				receivedSpf: readInboundHeader(message.headers, 'received-spf'),
 				hasAttachment: attachments.length > 0
 			},

@@ -71,6 +71,14 @@ const MAX_PAYLOAD_BYTES = 64 * 1024;
 /** Statuses that count toward a daily limit: the action was allowed to run. */
 const COUNTED_STATUSES = `('auto_approved', 'approved', 'executed')`;
 const MAX_REASON_LENGTH = 2000;
+/**
+ * What asking an agent directly approves: moving or canceling the booking on
+ * the thread, and replying on it (only to people already there). Sending new
+ * mail, memory, timers and the rest still wait, so text in the mail can't turn
+ * your ask into something you didn't ask for.
+ */
+const ASK_APPROVES = new Set<string>(['calendar', 'send_reply']);
+
 const STATUS_FOR_OUTCOME: Record<PolicyDecision['outcome'], ActionStatus> = {
 	execute: 'auto_approved',
 	queue: 'queued',
@@ -311,8 +319,9 @@ export type ProposeInput = {
 	/** A person must OK this one, whatever the agent's settings allow. */
 	mustApprove?: boolean;
 	/**
-	 * The person who asked for this directly. What would wait for their OK is
-	 * approved by them now: asking was the OK. Memory still waits for a yes.
+	 * The person who asked for this directly. A booking change or a reply on the
+	 * thread that would wait for their OK is approved by them now: asking was the
+	 * OK. Anything else the agent proposes along the way still waits.
 	 */
 	askedBy?: string;
 };
@@ -438,7 +447,7 @@ export async function proposeAction(db: D1Database, input: ProposeInput, now = n
 		!input.mustApprove &&
 		decision.outcome === 'queue' &&
 		decision.reason === 'needs_approval' &&
-		capability !== 'propose_memory';
+		ASK_APPROVES.has(capability);
 	if (approvedByAsking) {
 		statements.push(
 			db

@@ -570,4 +570,25 @@ describe('times and your own asks', () => {
 		});
 		expect(sent.find((mail) => mail.subject.startsWith('Rescheduled'))?.text).toContain('asked by Sada');
 	});
+
+	test('an ask approves the booking change and the reply, nothing else she tacks on', async () => {
+		const { sqlite, db, provider, ava, bookingId } = await setup();
+		const email = inbound(sqlite, { from: 'pat@customer.test', body: 'Can we go earlier on Friday?' });
+		await enqueueAskRun(db, { agentId: ava.id, byUserId: 'u1', emailId: email, request: 'Move it to Friday 9:30' }, NOW);
+		const { client } = fakeClient([
+			{
+				content: [
+					toolUse('reschedule_booking', { booking_id: bookingId, start: '2026-11-13T15:30:00.000Z', reason: 'Asked.' }),
+					toolUse('organize', { action: 'archive', reason: 'Tidy up.' })
+				]
+			},
+			{ content: [text('Done.')] }
+		]);
+		await runDueAgents(db, { workspaces: ['default'], clientFor: async () => client, provider }, { now: () => NOW });
+		const rows = sqlite.query(`SELECT capability, status FROM agent_actions ORDER BY capability`).all();
+		expect(rows).toEqual([
+			{ capability: 'calendar', status: 'executed' },
+			{ capability: 'organize', status: 'queued' }
+		]);
+	});
 });

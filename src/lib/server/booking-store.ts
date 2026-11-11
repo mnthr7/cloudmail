@@ -939,8 +939,12 @@ export async function bookSlot(
 		await limits();
 		throw new BookingError('taken');
 	}
-	// The invites this booking sends count against the page's day. (The hold above already checked there's room.)
-	await claimSends(db, page.id, bookingId, 'booked', recipients, now);
+	// The invites this booking sends count against the page's day. The hold checked there was room,
+	// but two bookings at once can both pass that check: the claim is the one that counts.
+	if (!(await claimSends(db, page.id, bookingId, 'booked', recipients, now))) {
+		await db.prepare(`DELETE FROM bookings WHERE id = ? AND event_id IS NULL`).bind(bookingId).run();
+		throw new BookingError('slow_down');
+	}
 
 	try {
 		const owner = await db.prepare(`SELECT * FROM users WHERE id = ?`).bind(page.userId).first<User>();

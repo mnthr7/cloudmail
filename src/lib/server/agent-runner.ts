@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { parseSecurity } from '#lib/security/phishing.ts';
 import type { D1Database } from '@cloudflare/workers-types';
 import type { PolicyDecision } from '#lib/agents/policy.ts';
 import { supportsServerFallback } from '#lib/agents/models.ts';
@@ -199,15 +200,10 @@ async function runOne(
 	if (messages.length === 0) return skip('email_gone');
 
 	const founderAddresses = [...(await liveWorkspaceAddresses(db, agent.workspaceId)).keys()];
-	// Only a guest's mail can be about their booking: new mail that woke the agent, or,
-	// when you ask, the newest message someone outside sent on the thread.
+	// Only a guest's mail can be about their booking: the message the run is about (the
+	// new mail, or the guest's message you asked about, fixed when you asked).
 	const ours = new Set(founderAddresses.map((address) => address.toLowerCase()));
-	const guestMail =
-		trigger.kind === 'ask'
-			? ([...messages].reverse().find((message) => message.direction === 'inbound' && !ours.has(message.from_addr.toLowerCase())) ?? null)
-			: email.direction === 'inbound'
-				? email
-				: null;
+	const guestMail = email.direction === 'inbound' && !ours.has(email.from_addr.toLowerCase()) ? email : null;
 	const bookingMail = runsBookings && !!guestMail;
 	const tools = toolsFor(definition, trigger.kind, { bookings: bookingMail });
 	if (tools.length === 0) return skip('no_tools');
@@ -222,7 +218,8 @@ async function runOne(
 	// An agent running a booking page sees the sender's bookings: on new mail only once
 	// their domain proved the mail is theirs; when a teammate asks, they vouch for it.
 	const security = (guestMail as (typeof guestMail & { security_json?: string | null }) | null)?.security_json ?? null;
-	const vouched = trigger.kind === 'ask';
+	// You vouch by asking, but not for mail CloudMail flagged as phishing or suspicious.
+	const vouched = trigger.kind === 'ask' && parseSecurity(security)?.verdict == null;
 	const booking =
 		bookingMail && guestMail
 			? {

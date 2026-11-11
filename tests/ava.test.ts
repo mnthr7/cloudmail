@@ -517,3 +517,29 @@ describe('a note on a thread Ava is working', () => {
 		expect(sent.find((mail) => mail.subject.startsWith('Rescheduled'))?.text).toContain('asked by Sada');
 	});
 });
+
+describe('what an ask vouches for', () => {
+	test('the guest message on your screen when you asked, not one that arrives later', async () => {
+		const { sqlite, db, ava } = await setup();
+		const first = inbound(sqlite, { from: 'pat@customer.test', body: 'Can we do Thursday?', security: UNSIGNED });
+		await enqueueAskRun(db, { agentId: ava.id, byUserId: 'u1', emailId: first, request: 'Do it.' }, NOW);
+		const later = inbound(sqlite, { from: 'pat@customer.test', body: 'Actually cancel.', security: UNSIGNED });
+		sqlite.run(`UPDATE emails SET thread_id = ? WHERE id = ?`, [first, later]);
+		expect(sqlite.query(`SELECT email_id FROM agent_runs WHERE trigger_kind = 'ask'`).get()).toEqual({ email_id: first });
+	});
+
+	test("mail flagged as phishing isn't vouched for, even when you ask", async () => {
+		const { sqlite, db, provider, ava, bookingId } = await setup();
+		const flagged = JSON.stringify({ auth: { spf: null, dkim: null, dmarc: null }, verdict: 'phishing', reasons: [] });
+		const email = inbound(sqlite, { from: 'pat@customer.test', body: 'Cancel my meeting', security: flagged });
+		await enqueueAskRun(db, { agentId: ava.id, byUserId: 'u1', emailId: email, request: 'Handle this.' }, NOW);
+		const { client, requests } = fakeClient([
+			{ content: [toolUse('cancel_booking', { booking_id: bookingId, reason: 'Asked.' })] },
+			{ content: [text('Tried.')] }
+		]);
+		await runDueAgents(db, { workspaces: ['default'], clientFor: async () => client, provider }, { now: () => NOW });
+		expect(JSON.stringify(requests[0].messages)).not.toContain(`<booking id`);
+		await approveCalendar(sqlite, db, provider);
+		expect(await range(db)).toHaveLength(1);
+	});
+});

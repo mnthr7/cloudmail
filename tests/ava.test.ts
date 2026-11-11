@@ -5,7 +5,7 @@ import type { D1Database } from '@cloudflare/workers-types';
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { avaDefinition } from '../src/lib/agents/ava';
-import { createAgent, decideAction, setAgentStatus } from '../src/lib/server/agents-store';
+import { createAgent, decideAction, setAgentStatus, updateAgentDefinition } from '../src/lib/server/agents-store';
 import { executeAction } from '../src/lib/server/agent-executor';
 import { enqueueAskRun, enqueueMailRuns } from '../src/lib/server/agent-runs-store';
 import { cloudflareAuthResults, fromDomainVerified, parseAuthResults } from '../src/lib/security/phishing';
@@ -432,6 +432,29 @@ describe('you ask Ava about a booking reply', () => {
 		expect(await approveCalendar(sqlite, db, provider)).toBe(1);
 		expect((await range(db))[0].startLocal).toBe('2026-11-12T12:00');
 		expect(sent.find((mail) => mail.subject.startsWith('Rescheduled'))?.text).toContain('Done by Ava, asked by Sada.');
+	});
+
+	test("even with the calendar on its own, an asked change to unverified mail waits for your OK and says why", async () => {
+		const { sqlite, db, provider, ava, bookingId } = await setup();
+		const definition = avaDefinition('demo@acme.com', 'Acme');
+		definition.capabilities.calendar = { level: 'auto', dailyLimit: 20 };
+		await updateAgentDefinition(db, { agentId: ava.id, byUserId: 'u1', definition }, NOW);
+		const email = inbound(sqlite, { from: 'pat@customer.test', body: 'Please cancel.', security: UNSIGNED });
+		await enqueueAskRun(db, { agentId: ava.id, byUserId: 'u1', emailId: email, request: 'Handle this.' }, NOW);
+		const { client } = fakeClient([
+			{ content: [toolUse('cancel_booking', { booking_id: bookingId, reason: 'They asked to cancel.' })] },
+			{ content: [text('Queued.')] }
+		]);
+		await runDueAgents(db, { workspaces: ['default'], clientFor: async () => client, provider }, { now: () => NOW });
+		const action = sqlite.query(`SELECT id, status, reason FROM agent_actions WHERE capability = 'calendar'`).get() as { id: string; status: string; reason: string };
+		expect(action.status).toBe('queued');
+		expect(action.reason).toStartWith('Sender not verified');
+		expect(await range(db)).toHaveLength(1);
+		// Marked approved without a person deciding: the executor still refuses.
+		sqlite.run(`UPDATE agent_actions SET status = 'auto_approved' WHERE id = ?`, [action.id]);
+		await executeAction(db, action.id, NOW, { provider });
+		expect(await range(db)).toHaveLength(1);
+		expect(sqlite.query(`SELECT exec_error FROM agent_actions WHERE id = ?`).get(action.id)).toEqual({ exec_error: 'booking_not_verified' });
 	});
 
 	test('an ask on mail you sent (not from a guest) gets no booking tools', async () => {

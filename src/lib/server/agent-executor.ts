@@ -22,7 +22,7 @@ import { resolveFromAddress } from './outbox.ts';
 import { queueOutbound } from './queue-outbound.ts';
 import { buildReferences } from './threads.ts';
 import { addThreadNote, isThreadTakenOver } from './thread-activity-store.ts';
-import { agentBookingChange } from './booking-manage.ts';
+import { agentBookingChange, senderVerified } from './booking-manage.ts';
 import { BookingError } from './booking-store.ts';
 import type { EmailProvider } from './email-provider.ts';
 
@@ -346,6 +346,11 @@ async function carryOut(db: D1Database, action: ClaimedAction, now: Date, deps: 
 			const asked = action.trigger_kind === 'ask';
 			if ((action.trigger_kind !== 'mail' && !asked) || action.trigger_email_id !== email.id) throw new StopError('not_from_guest');
 			if (asked && !action.asked_by_name) throw new StopError('not_from_guest');
+			// Vouching covers unverified mail only once a person has OK'd the change itself.
+			const security = (email as typeof email & { security_json?: string | null }).security_json ?? null;
+			if (asked && !action.decided_by_principal_id && !senderVerified(security, email.from_addr)) {
+				throw new StopError('booking_not_verified');
+			}
 			const agent = await getAgent(db, action.agent_principal_id);
 			if (!agent) throw new StopError('agent_gone');
 			try {

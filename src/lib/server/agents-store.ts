@@ -308,6 +308,8 @@ export type ProposeInput = {
 	runId?: string;
 	/** Whose mailbox the thread is in. Only they see the proposal's content and can approve it. */
 	mailboxUserId?: string;
+	/** A person must OK this one, whatever the agent's settings allow. */
+	mustApprove?: boolean;
 };
 
 export type ProposeResult = { actionId: string; decision: PolicyDecision };
@@ -354,6 +356,10 @@ export async function proposeAction(db: D1Database, input: ProposeInput, now = n
 		humanApprovals: usage?.approvals ?? 0,
 		threadTakenOver: input.threadTakenOver
 	});
+
+	if (input.mustApprove && decision.outcome === 'execute') {
+		decision = { outcome: 'queue', reason: 'needs_approval', addresses: decision.addresses };
+	}
 
 	// The count above is only a fast path. Concurrent proposals could all read
 	// the same count, so the insert re-counts and turns itself into a refusal if

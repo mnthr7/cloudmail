@@ -396,6 +396,9 @@ async function runOne(
 				});
 				continue;
 			}
+			// A booking change you asked for on mail whose sender couldn't be checked: you
+			// vouched by asking, so you see that and OK it yourself.
+			const unverifiedChange = proposal.capability === 'calendar' && trigger.kind === 'ask' && !senderVerified(security, email.from_addr);
 			const result = await proposeAction(
 				db,
 				{
@@ -407,10 +410,13 @@ async function runOne(
 					},
 					threadId,
 					payload: proposal.payload,
-					reason: proposal.reason,
+					reason: unverifiedChange
+						? `Sender not verified: this email's domain didn't confirm it's from ${email.from_addr}. ${proposal.reason ?? ''}`.trim()
+						: proposal.reason,
 					threadParticipants: participants,
 					runId: run.id,
-					mailboxUserId: run.mailbox_user_id
+					mailboxUserId: run.mailbox_user_id,
+					mustApprove: unverifiedChange
 				},
 				now()
 			);

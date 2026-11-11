@@ -343,6 +343,12 @@ export const CLOUDFLARE_AUTHSERV_ID = 'mx.cloudflare.net';
  * there, so the first ARC-Authentication-Results from the top is the one Cloudflare
  * just added, and anything a sender wrote sits below it. Only that header counts,
  * and only when it names Cloudflare: a sender can't put a header above it.
+ *
+ * Checking the ARC-Seal signature wouldn't add to this: a sender could copy a
+ * genuine Cloudflare-sealed set from mail they once received, and only being on
+ * top tells a fresh set from a copied one. What this relies on is Cloudflare
+ * adding its set to every message it routes; booking changes still wait for a
+ * person's OK by default.
  */
 export function cloudflareAuthResults(raw: ArrayBuffer | Uint8Array | string): string | null {
 	const text =

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import Icon from '#lib/components/Icon.svelte';
+	import Section from '#lib/components/Section.svelte';
 	import AddressField from '#lib/components/AddressField.svelte';
 	import RichTextEditor from '#lib/components/RichTextEditor.svelte';
 	import {
@@ -18,7 +19,52 @@
 	import type { PageData } from './$types';
 	import { invalidateAll } from '$app/navigation';
 	import { page } from '$app/state';
-	import { untrack } from 'svelte';
+	import { onMount, untrack } from 'svelte';
+
+	/** The page's sections, grouped, for the jump list. */
+	const SETTINGS_GROUPS = [
+		{
+			label: 'Look and feel',
+			items: [
+				{ id: 'theme', title: 'Theme' },
+				{ id: 'appearance', title: 'Appearance' },
+				{ id: 'reading-pane', title: 'Reading pane' }
+			]
+		},
+		{
+			label: 'Addresses',
+			items: [
+				{ id: 'addresses', title: 'Your addresses' },
+				{ id: 'domains', title: 'Connected domains' }
+			]
+		},
+		{
+			label: 'Sorting and safety',
+			items: [
+				{ id: 'filters', title: 'Filters' },
+				{ id: 'blocked', title: 'Blocked senders' },
+				{ id: 'phishing', title: 'Phishing protection' },
+				{ id: 'image-senders', title: 'Trusted image senders' }
+			]
+		}
+	];
+
+	/** The section at the top of the screen, highlighted in the jump list. */
+	let currentSection = $state('theme');
+	onMount(() => {
+		const sections = SETTINGS_GROUPS.flatMap((group) => group.items)
+			.map((item) => document.getElementById(item.id))
+			.filter((element): element is HTMLElement => !!element);
+		const observer = new IntersectionObserver(
+			(entries) => {
+				const visible = entries.filter((entry) => entry.isIntersecting).sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+				if (visible[0]) currentSection = visible[0].target.id;
+			},
+			{ rootMargin: '0px 0px -70% 0px' }
+		);
+		for (const section of sections) observer.observe(section);
+		return () => observer.disconnect();
+	});
 	import { CATEGORIES, type MailCategory } from '#lib/organizing/categories.ts';
 	import { currentSkin, saveSkin, SKIN_OPTIONS, type MailSkin } from '#lib/skin.ts';
 
@@ -754,8 +800,18 @@
 <div class="settings-page">
 	<h1>Settings</h1>
 
-	<section class="surface-lg card" id="theme">
-		<h2><Icon name="palette-line" size={18} /> Theme</h2>
+	<div class="settings-layout">
+	<nav class="settings-nav" aria-label="Settings sections">
+		{#each SETTINGS_GROUPS as group (group.label)}
+			<p class="nav-group">{group.label}</p>
+			{#each group.items.filter((item) => item.id !== 'appearance' || skin === 'classic') as item (item.id)}
+				<a href="#{item.id}" class:current={currentSection === item.id}>{item.title}</a>
+			{/each}
+		{/each}
+	</nav>
+	<div class="settings-sections">
+
+	<Section id="theme" title="Theme" icon="palette-line" remember="settings">
 		<p class="card-hint">
 			Pick how CloudMail looks. Saved to your account, so it follows you to every device.
 		</p>
@@ -789,11 +845,10 @@
 			{/each}
 		</div>
 		{#if skinError}<p class="card-hint skin-error">{skinError}</p>{/if}
-	</section>
+	</Section>
 
 	{#if skin === 'classic'}
-		<section class="surface-lg card">
-		<h2><Icon name="contrast-2-line" size={18} /> Appearance</h2>
+		<Section id="appearance" title="Appearance" icon="contrast-2-line" remember="settings">
 			<p class="card-hint">Choose how Mail looks. System follows your device setting.</p>
 
 		<div class="theme-options" role="radiogroup" aria-label="Theme">
@@ -821,11 +876,10 @@
 					</button>
 				{/each}
 			</div>
-		</section>
+		</Section>
 	{/if}
 
-	<section class="surface-lg card">
-		<h2><Icon name="layout-right-2-line" size={18} /> Reading pane</h2>
+	<Section id="reading-pane" title="Reading pane" icon="layout-right-2-line" remember="settings">
 		<p class="card-hint">
 			Choose how the inbox and a conversation share the window. On phones the list stays full
 			width and a message opens as its own screen.
@@ -861,10 +915,9 @@
 				</button>
 			{/each}
 		</div>
-	</section>
+	</Section>
 
-	<section class="surface-lg card">
-		<h2><Icon name="at-line" size={18} /> Your addresses</h2>
+	<Section id="addresses" title="Your addresses" icon="at-line" remember="settings">
 		<p class="card-hint">
 			Mail sent to any of these lands in your inbox. The default is what new messages are sent
 			from. Each address can keep its own signature.
@@ -987,10 +1040,9 @@
 		{/if}
 
 		{#if error}<p class="error">{error}</p>{/if}
-	</section>
+	</Section>
 
-	<section class="surface-lg card">
-		<h2><Icon name="global-line" size={18} /> Connected domains</h2>
+	<Section id="domains" title="Connected domains" icon="global-line" remember="settings">
 		<ul class="domain-list">
 			{#each data.domains as domain (domain.id)}
 				<li class="domain-row">
@@ -1003,10 +1055,9 @@
 				</li>
 			{/each}
 		</ul>
-	</section>
+	</Section>
 
-	<section class="surface-lg card" id="filters">
-		<h2><Icon name="filter-3-line" size={18} /> Filters</h2>
+	<Section id="filters" title="Filters" icon="filter-3-line" remember="settings">
 		<p class="card-hint">
 			Enabled filters run on new mail. Applying one to mail already filed waits until you confirm.
 			Running that again sends another forward copy.
@@ -1179,10 +1230,9 @@
 				{/each}
 			</ul>
 		{/if}
-	</section>
+	</Section>
 
-	<section class="surface-lg card" id="blocked">
-		<h2><Icon name="forbid-line" size={18} /> Blocked senders</h2>
+	<Section id="blocked" title="Blocked senders" icon="forbid-line" remember="settings">
 		<p class="card-hint">New mail from these addresses goes to Spam. Unblock removes that address.</p>
 
 		{#if blockedError}<p class="error" role="alert">{blockedError}</p>{/if}
@@ -1206,10 +1256,9 @@
 				{/each}
 			</ul>
 		{/if}
-	</section>
+	</Section>
 
-	<section class="surface-lg card" id="phishing">
-		<h2><Icon name="spam-2-line" size={18} /> Phishing protection</h2>
+	<Section id="phishing" title="Phishing protection" icon="spam-2-line" remember="settings">
 		<p class="card-hint">
 			New mail is checked when it arrives: whether the sender's domain vouches for it, lookalike
 			domains, names that pretend to be a brand or someone on your team, and first-time senders
@@ -1227,10 +1276,9 @@
 		</label>
 		<p class="card-hint">Only the strongest warnings move. "Be careful" mail stays in the inbox, flagged.</p>
 		{#if phishingError}<p class="error" role="alert">{phishingError}</p>{/if}
-	</section>
+	</Section>
 
-	<section class="surface-lg card" id="image-senders">
-		<h2><Icon name="image-line" size={18} /> Trusted image senders</h2>
+	<Section id="image-senders" title="Trusted image senders" icon="image-line" remember="settings">
 		<p class="card-hint">Remote images load from these addresses. Remove takes that address off the list.</p>
 
 		{#if imageSenderError}<p class="error" role="alert">{imageSenderError}</p>{/if}
@@ -1254,12 +1302,91 @@
 				{/each}
 			</ul>
 		{/if}
-	</section>
+	</Section>
+	</div>
+	</div>
 </div>
 
 <style>
 	.settings-page {
+		max-width: 64rem;
+	}
+
+	.settings-layout {
+		display: grid;
+		gap: 1.5rem;
+	}
+
+	.settings-sections {
+		min-width: 0;
 		max-width: 48rem;
+	}
+
+	.settings-sections > :global(.fold:first-child) {
+		margin-top: 0;
+	}
+
+	.settings-nav {
+		display: flex;
+		gap: 0.375rem;
+		overflow-x: auto;
+		padding-bottom: 0.25rem;
+		scrollbar-width: none;
+	}
+
+	.settings-nav a {
+		flex: none;
+		padding: 0.375rem 0.75rem;
+		border-radius: 999px;
+		font-size: 0.8125rem;
+		color: var(--color-text-secondary);
+		text-decoration: none;
+		box-shadow: inset 0 0 0 1px var(--color-line);
+	}
+
+	.settings-nav a:hover,
+	.settings-nav a.current {
+		color: var(--color-text);
+		background: var(--color-surface-muted);
+	}
+
+	.nav-group {
+		display: none;
+	}
+
+	@media (min-width: 1024px) {
+		.settings-layout {
+			grid-template-columns: 11rem minmax(0, 1fr);
+			align-items: start;
+		}
+
+		.settings-nav {
+			position: sticky;
+			top: 1rem;
+			flex-direction: column;
+			gap: 0.125rem;
+			overflow: visible;
+		}
+
+		.settings-nav a {
+			padding: 0.375rem 0.625rem;
+			border-radius: 0.5rem;
+			box-shadow: none;
+		}
+
+		.nav-group {
+			display: block;
+			margin: 0.875rem 0 0.25rem 0.625rem;
+			font-size: 0.6875rem;
+			font-weight: 600;
+			letter-spacing: 0.04em;
+			text-transform: uppercase;
+			color: var(--color-text-secondary);
+		}
+
+		.nav-group:first-child {
+			margin-top: 0;
+		}
 	}
 
 	.settings-page h1 {
@@ -1274,14 +1401,6 @@
 		padding: 2rem;
 	}
 
-	.card h2 {
-		display: flex;
-		align-items: center;
-		gap: 0.625rem;
-		font-size: 1rem;
-		font-weight: 500;
-		color: var(--color-text);
-	}
 
 	.card-hint {
 		margin-top: 0.5rem;

@@ -1,3 +1,4 @@
+import { inviteProvider } from '#lib/server/calendar-http.ts';
 import { json, type RequestHandler } from '@sveltejs/kit';
 import { caller, failure, readBody } from '#lib/server/agents-http.ts';
 import { decideAction } from '#lib/server/agents-store.ts';
@@ -25,7 +26,7 @@ export const POST: RequestHandler = async ({ params, request, locals, platform }
 			decision,
 			note
 		});
-		const execution = status === 'approved' ? await executeAction(who.db, params.id ?? '') : null;
+		const execution = status === 'approved' ? await executeAction(who.db, params.id ?? '', new Date(), { provider: inviteProvider(platform) }) : null;
 		return json({ status: execution?.status === 'executed' ? 'executed' : status, execution });
 	} catch (error) {
 		return failure(error);

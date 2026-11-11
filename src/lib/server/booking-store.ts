@@ -53,6 +53,7 @@ export class BookingError extends Error {
 			| 'cancelled'
 			| 'past'
 			| 'changed'
+			| 'not_verified'
 	) {
 		super(code);
 		this.name = 'BookingError';
@@ -962,6 +963,11 @@ export async function bookSlot(
 		await limits();
 		throw new BookingError('taken');
 	}
+	// Remembered so mail sent later (by an agent, from the cron) links back to this site.
+	// First one wins (the owner's hire sets it too), and never a preview or workers.dev address.
+	if (options.origin && !/\.workers\.dev$/i.test(new URL(options.origin).hostname)) {
+		await db.prepare(`UPDATE booking_pages SET site_origin = ? WHERE id = ? AND site_origin IS NULL`).bind(options.origin, page.id).run();
+	}
 	// The invites this booking sends count against the page's day. The hold checked there was room,
 	// but two bookings at once can both pass that check: the claim is the one that counts.
 	if (!(await claimSends(db, page.id, bookingId, 'booked', recipients, now))) {
@@ -1034,6 +1040,8 @@ export type OwnerNotice = {
 	end: number;
 	previous?: { start: number; end: number };
 	reason?: string | null;
+	/** Who carried it out for the guest, when it wasn't the guest's own link ("Ava, from their email"). */
+	via?: string | null;
 };
 
 /** Tells you about a booking, a move or a cancellation, from and to your own address; replying writes to the guest. */
@@ -1056,6 +1064,7 @@ export async function notifyOwner(
 	const lines = [
 		head,
 		...(booking.previous ? [`It was ${formatWhen(booking.previous.start, booking.previous.end, page.timezone)}.`] : []),
+		...(booking.via ? [`Done by ${booking.via}.`] : []),
 		'',
 		what === 'cancelled'
 			? "It's off your calendar, and everyone invited was told."

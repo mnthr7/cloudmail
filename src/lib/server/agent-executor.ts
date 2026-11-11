@@ -22,6 +22,9 @@ import { resolveFromAddress } from './outbox.ts';
 import { queueOutbound } from './queue-outbound.ts';
 import { buildReferences } from './threads.ts';
 import { addThreadNote, isThreadTakenOver } from './thread-activity-store.ts';
+import { agentBookingChange } from './booking-manage.ts';
+import { BookingError } from './booking-store.ts';
+import type { EmailProvider } from './email-provider.ts';
 
 /**
  * Carries out agent actions that the policy engine or a human allowed
@@ -64,6 +67,8 @@ type ClaimedAction = {
 	agent_status: string;
 	/** What woke the agent up: 'ask' means the owner asked for this. */
 	trigger_kind: string | null;
+	/** The mail that started the run. */
+	trigger_email_id: string | null;
 };
 
 class StopError extends Error {
@@ -81,7 +86,15 @@ export function disclosureFooter(agentName: string, founderName: string): string
 	return `—\n${agentName} is an AI assistant working with ${founderName}.`;
 }
 
-export async function executeAction(db: D1Database, actionId: string, now = new Date()): Promise<ExecuteResult> {
+/** What carrying out some actions needs from outside: the mail provider, for calendar updates. */
+export type ExecuteDeps = { provider?: EmailProvider | null };
+
+export async function executeAction(
+	db: D1Database,
+	actionId: string,
+	now = new Date(),
+	deps: ExecuteDeps = {}
+): Promise<ExecuteResult> {
 	const at = now.toISOString();
 	const claim = await db
 		.prepare(
@@ -97,7 +110,7 @@ export async function executeAction(db: D1Database, actionId: string, now = new 
 		.prepare(
 			`SELECT x.id, x.workspace_id, x.agent_principal_id, x.status, x.capability, x.thread_id, x.payload_json,
 			        x.authorized_json, x.mailbox_user_id, x.decided_by_principal_id,
-			        p.display_name AS agent_name, a.status AS agent_status, r.trigger_kind
+			        p.display_name AS agent_name, a.status AS agent_status, r.trigger_kind, r.email_id AS trigger_email_id
 			 FROM agent_actions x
 			 JOIN principals p ON p.id = x.agent_principal_id
 			 JOIN agents a ON a.principal_id = x.agent_principal_id
@@ -109,7 +122,7 @@ export async function executeAction(db: D1Database, actionId: string, now = new 
 	if (!action) return { status: 'skipped' };
 
 	try {
-		const ref = await carryOut(db, action, now);
+		const ref = await carryOut(db, action, now, deps);
 		await db
 			.prepare(
 				`UPDATE agent_actions SET status = 'executed', executed_at = ?, result_ref = ?, exec_claimed_at = NULL
@@ -155,7 +168,7 @@ function guardMessage(agent: string, code: string): string {
 	}
 }
 
-async function carryOut(db: D1Database, action: ClaimedAction, now: Date): Promise<string | null> {
+async function carryOut(db: D1Database, action: ClaimedAction, now: Date, deps: ExecuteDeps): Promise<string | null> {
 	// Pausing takes effect for actions in flight (A10). recheckPolicy repeats this with the full definition.
 	if (action.agent_status === 'paused') throw new StopError('agent_paused');
 	if (!action.mailbox_user_id || !action.thread_id) throw new StopError('no_thread');
@@ -317,6 +330,41 @@ async function carryOut(db: D1Database, action: ClaimedAction, now: Date): Promi
 			}
 		}
 
+		case 'calendar': {
+			// Moving or canceling the sender's own booking, for the mail that asked. Everything is
+			// checked again in agentBookingChange: the mail is verified, the booking is the
+			// sender's, on a page this agent sends from, and the host hasn't changed it.
+			const op = payload.op === 'cancel' ? 'cancel' : payload.op === 'reschedule' ? 'reschedule' : null;
+			const bookingId = typeof payload.bookingId === 'string' ? payload.bookingId : '';
+			if (!op || !bookingId) throw new StopError('empty');
+			if (email.direction !== 'inbound') throw new StopError('not_from_guest');
+			// Only the mail that woke the agent, from new mail (not an ask), can change a booking.
+			if (action.trigger_kind !== 'mail' || action.trigger_email_id !== email.id) throw new StopError('not_from_guest');
+			const agent = await getAgent(db, action.agent_principal_id);
+			if (!agent) throw new StopError('agent_gone');
+			try {
+				await agentBookingChange(
+					db,
+					deps.provider ?? null,
+					{
+						userId: user.id,
+						bookingId,
+						email: { from_addr: email.from_addr, security_json: (email as typeof email & { security_json?: string | null }).security_json ?? null },
+						sendFrom: agent.version.definition.scope.sendAs,
+						agentName: action.agent_name,
+						op,
+						start: payload.start,
+						reason: payload.reason
+					},
+					now
+				);
+			} catch (error) {
+				if (error instanceof BookingError) throw new StopError(`booking_${error.code}`);
+				throw error;
+			}
+			return bookingId;
+		}
+
 		default:
 			throw new StopError('not_supported');
 	}
@@ -440,7 +488,7 @@ export function sendsMail(capability: string): boolean {
  * Picks up allowed actions that never finished: the request carrying one out
  * was cut off. Runs from the cron. Only recent ones, so nothing happens late.
  */
-export async function executePending(db: D1Database, now = new Date(), limit = 10): Promise<number> {
+export async function executePending(db: D1Database, now = new Date(), limit = 10, deps: ExecuteDeps = {}): Promise<number> {
 	const since = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
 	const { results } = await db
 		.prepare(
@@ -454,7 +502,7 @@ export async function executePending(db: D1Database, now = new Date(), limit = 1
 		.all<{ id: string }>();
 	let done = 0;
 	for (const row of results) {
-		if ((await executeAction(db, row.id, now)).status === 'executed') done++;
+		if ((await executeAction(db, row.id, now, deps)).status === 'executed') done++;
 	}
 	return done;
 }

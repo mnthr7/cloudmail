@@ -20,6 +20,7 @@
 	import type { AgentStatus } from '#lib/agents/policy.ts';
 	import { estimateRunMicros, formatMicros, MODEL_NOTES, TYPICAL_RUN } from '#lib/agents/models.ts';
 	import { SAM_NAME, specialistJob } from '#lib/agents/sam.ts';
+	import { AVA_NAME } from '#lib/agents/ava.ts';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
@@ -238,6 +239,46 @@
 			window.location.reload();
 		} catch {
 			samError = 'Network error';
+		} finally {
+			busy = null;
+		}
+	}
+
+	// Ava runs a booking page: one per workspace in this release, like Sam.
+	const hasAva = $derived(
+		data.agents.some((agent) => (agent.definition.capabilities.calendar?.level ?? 'off') !== 'off')
+	);
+	let avaAddress = $state('');
+	// svelte-ignore state_referenced_locally
+	let avaPage = $state(data.bookingPages[0]?.id ?? '');
+	let avaError = $state('');
+
+	async function hireAva(event: SubmitEvent) {
+		event.preventDefault();
+		avaError = '';
+		const address = avaAddress || data.sendAs.find((item) => item.startsWith('demo@')) || '';
+		if (!address) {
+			avaError = 'Pick the address Ava should use.';
+			return;
+		}
+		busy = 'ava';
+		try {
+			const res = await fetch('/api/agents/ava', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ address, pageId: avaPage || data.bookingPages[0]?.id || '' })
+			});
+			if (!res.ok) {
+				const body = await res.json().catch(() => null);
+				avaError =
+					body?.error === 'send_as' || body?.error === 'watch' || body?.error === 'from'
+						? 'You can only give Ava an address you can send from yourself.'
+						: 'Could not hire Ava.';
+				return;
+			}
+			window.location.reload();
+		} catch {
+			avaError = 'Network error';
 		} finally {
 			busy = null;
 		}
@@ -873,6 +914,47 @@
 				{/if}
 			</form>
 		{/if}
+		{#if !hasAva && !data.demo}
+			<form class="sam-card" onsubmit={hireAva}>
+				<p class="item-title"><Icon name="calendar-check-line" size={16} /> Hire {AVA_NAME}, your scheduling assistant</p>
+				<p class="item-sub">
+					{AVA_NAME} runs your booking page. Invites come from her address, so when guests reply ("can we do
+					Thursday?", "I need to cancel") she lines up the move or cancellation and the reply, and everyone gets
+					the calendar update once you say OK. Once you trust her, let her do them on her own. Anything else
+					becomes a note for you.
+				</p>
+				{#if data.sendAs.length === 0 || data.bookingPages.length === 0}
+					<p class="item-sub">
+						First {data.sendAs.length === 0 ? 'add an address for her, like demo@yourdomain, under Settings → Your addresses' : 'make a booking page under Calendar → Booking page'}.
+					</p>
+				{:else}
+					<div class="ava-fields">
+						<label class="field">
+							<span>Her address. Guests' replies come here.</span>
+							<select bind:value={avaAddress}>
+								<option value="">Choose…</option>
+								{#each data.sendAs as address (address)}
+									<option value={address}>{address}</option>
+								{/each}
+							</select>
+						</label>
+						<label class="field">
+							<span>The booking page she runs</span>
+							<select bind:value={avaPage}>
+								{#each data.bookingPages as page (page.id)}
+									<option value={page.id}>{page.title} (/book/{page.slug})</option>
+								{/each}
+							</select>
+						</label>
+					</div>
+					<p class="item-sub">No demo@ address yet? Add one under Settings → Your addresses, then come back. She starts in shadow mode, so you can watch what she'd do first.</p>
+					{#if avaError}<p class="error" role="alert">{avaError}</p>{/if}
+					<div class="item-actions">
+						<button type="submit" class="btn-primary text-xs" disabled={busy === 'ava'}>Hire {AVA_NAME}</button>
+					</div>
+				{/if}
+			</form>
+		{/if}
 		{#if data.agents.length === 0}
 			<p class="card-hint">No agents yet. Hire one to give it a job.</p>
 		{:else}
@@ -1022,6 +1104,12 @@
 		padding: 0.875rem 1rem;
 		border-radius: 0.75rem;
 		box-shadow: inset 0 0 0 1px var(--color-line);
+	}
+
+	.ava-fields {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.75rem;
 	}
 
 	.sam-card .item-title {

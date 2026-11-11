@@ -15,6 +15,12 @@ export type AuthSummary = {
 	spf: AuthResult | null;
 	dkim: AuthResult | null;
 	dmarc: AuthResult | null;
+	/**
+	 * The From domain each DMARC result was about (header.from), lowercased.
+	 * An empty string for a DMARC result that didn't say. A pass only vouches
+	 * for these domains.
+	 */
+	dmarcFrom?: string[];
 };
 
 export type PhishingReasonCode =
@@ -60,6 +66,7 @@ function asResult(value: string): AuthResult | null {
  */
 export function parseAuthResults(authResults: string[], receivedSpf: string[] = []): AuthSummary {
 	const found: Record<'spf' | 'dkim' | 'dmarc', AuthResult[]> = { spf: [], dkim: [], dmarc: [] };
+	const dmarcFrom = new Set<string>();
 	for (const header of authResults) {
 		// Each method's result and its properties sit between semicolons.
 		for (const clause of header.split(';')) {
@@ -69,6 +76,9 @@ export function parseAuthResults(authResults: string[], receivedSpf: string[] = 
 			const result = asResult(match[2]);
 			if (!result) continue;
 			found[method].push(result);
+			if (method === 'dmarc') {
+				dmarcFrom.add(clause.match(/\bheader\.from\s*=\s*"?([a-z0-9.-]+)/i)?.[1].toLowerCase().replace(/\.$/, '') ?? '');
+			}
 		}
 	}
 	for (const header of receivedSpf) {
@@ -82,7 +92,7 @@ export function parseAuthResults(authResults: string[], receivedSpf: string[] = 
 		}
 		return 'pass';
 	};
-	return { spf: worst(found.spf), dkim: worst(found.dkim), dmarc: worst(found.dmarc) };
+	return { spf: worst(found.spf), dkim: worst(found.dkim), dmarc: worst(found.dmarc), dmarcFrom: [...dmarcFrom] };
 }
 
 /**
@@ -93,8 +103,13 @@ export function parseAuthResults(authResults: string[], receivedSpf: string[] = 
  * can't outvote the receiving server's real result. A DKIM pass alone proves
  * only that someone signed, possibly with their own domain.
  */
-export function fromDomainVerified(auth: AuthSummary | null | undefined): boolean {
-	return auth?.dmarc === 'pass';
+export function fromDomainVerified(auth: AuthSummary | null | undefined, fromAddress: string): boolean {
+	if (auth?.dmarc !== 'pass') return false;
+	// The pass has to be about this sender's domain. CloudMail may store the envelope sender,
+	// and DMARC vouches for the header From: if they differ, the pass says nothing about this address.
+	const domain = fromAddress.trim().toLowerCase().split('@').pop()?.replace(/\.$/, '') ?? '';
+	const about = auth.dmarcFrom ?? [];
+	return !!domain && about.length > 0 && about.every((item) => item === domain);
 }
 
 /** Brands phishers imitate most. Short names only match exactly, to avoid false alarms. */

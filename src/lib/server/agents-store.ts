@@ -408,16 +408,18 @@ export async function proposeAction(db: D1Database, input: ProposeInput, now = n
 			)
 	];
 	if (decision.outcome === 'shadow') {
-		// Shadow mode ends on its own after enough proposals (A8).
+		// Shadow mode ends on its own after enough proposals (A8), but only proposals a person
+		// asked for count: mail from outside can't wake an agent up enough times to switch itself on.
 		statements.push(
 			db
 				.prepare(
 					`UPDATE agents
 					 SET status = CASE WHEN shadow_remaining <= 1 THEN 'active' ELSE status END,
 					     shadow_remaining = MAX(shadow_remaining - 1, 0)
-					 WHERE principal_id = ? AND status = 'shadow'`
+					 WHERE principal_id = ? AND status = 'shadow'
+					   AND (? IS NULL OR NOT EXISTS (SELECT 1 FROM agent_runs r WHERE r.id = ? AND r.trigger_kind = 'mail'))`
 				)
-				.bind(agent.id)
+				.bind(agent.id, input.runId ?? null, input.runId ?? null)
 		);
 	}
 	await db.batch(statements);

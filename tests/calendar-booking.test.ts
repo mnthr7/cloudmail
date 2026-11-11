@@ -750,6 +750,28 @@ describe('booking v2', () => {
 		});
 	});
 
+	test('two bookings at once: the one that loses the email budget gives its time back', async () => {
+		const { db, sqlite } = await setup({ maxPerDay: 20 });
+		const { provider, sent } = fakeProvider();
+		const page = sqlite.query(`SELECT id FROM booking_pages WHERE slug = 'demo'`).get() as { id: string };
+		// Another booking claimed the last of the budget between this one's hold and its claim.
+		const realBatch = db.prepare.bind(db);
+		let raced = false;
+		(db as unknown as { prepare: typeof db.prepare }).prepare = (sql: string) => {
+			if (!raced && sql.startsWith('INSERT INTO booking_sends')) {
+				raced = true;
+				sqlite.run(`INSERT INTO booking_sends (id, page_id, kind, recipients, created_at) VALUES ('race', ?, 'booked', 40, ?)`, [
+					page.id,
+					NOW.toISOString()
+				]);
+			}
+			return realBatch(sql);
+		};
+		await expect(bookSlot(db, provider, 'demo', { ...base, guests: [] }, opts)).rejects.toMatchObject({ code: 'slow_down' });
+		expect((sqlite.query(`SELECT COUNT(*) AS n FROM bookings`).get() as { n: number }).n).toBe(0);
+		expect(sent).toEqual([]);
+	});
+
 	test('no changes once it has started; bad links find nothing; a turned-off page still lets guests manage', async () => {
 		const { db, page } = await setup();
 		const { provider, sent } = fakeProvider();

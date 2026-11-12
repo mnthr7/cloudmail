@@ -241,6 +241,14 @@ describe('looking up the guest’s company', () => {
 		expect(site.status).toBe('site');
 	});
 
+	test('thousands of short closed elements are read in one pass', async () => {
+		const many = `<html><head><title>T</title></head><body>${'<nav></nav>'.repeat(5000)}<p>Real text</p></body></html>`;
+		const started = performance.now();
+		const site = await lookUpCompany(GUEST, siteFetcher({ 'https://customer-co.com/': html(many) }));
+		expect(performance.now() - started).toBeLessThan(200);
+		expect(site.status === 'site' && site.text).toBe('Real text');
+	});
+
 	test('says why when it can’t: down, not a web page, an error', async () => {
 		expect(await lookUpCompany(GUEST, siteFetcher({}))).toMatchObject({ status: 'unreachable', reason: 'it could not be reached' });
 		const json = () => new Response('{}', { headers: { 'content-type': 'application/json' } });

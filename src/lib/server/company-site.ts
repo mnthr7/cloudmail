@@ -105,11 +105,18 @@ function dropElements(html: string, names: string[]): string {
 	const lower = html.toLowerCase();
 	let out = '';
 	let at = 0;
+	// Where each name next opens. Searched again only once we've moved past it, and never
+	// again once it's not found, so each name is scanned across the page once in all.
+	const ahead = new Map<string, number>(names.map((name) => [name, lower.indexOf(`<${name}`)]));
 	while (at < html.length) {
 		let next = -1;
 		let name = '';
 		for (const candidate of names) {
-			const index = lower.indexOf(`<${candidate}`, at);
+			let index = ahead.get(candidate)!;
+			if (index !== -1 && index < at) {
+				index = lower.indexOf(`<${candidate}`, at);
+				ahead.set(candidate, index);
+			}
 			if (index !== -1 && (next === -1 || index < next)) {
 				next = index;
 				name = candidate;

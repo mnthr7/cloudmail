@@ -3,6 +3,7 @@ import { runDueAgents, type MessagesClient } from './agent-runner';
 import { loadProviderKey, markProviderKeyRejected, workspacesWithWorkingKey } from './ai-provider-store';
 import { clientFor } from './ai-providers';
 import type { EmailProvider } from './email-provider';
+import { draftDueFollowUps } from './follow-up';
 import { sendDueBriefs } from './prep-brief';
 import { importMasterKey } from './secret-box';
 
@@ -43,20 +44,17 @@ export async function runAgentsNow(env: AgentEnv, provider: EmailProvider | null
 }
 
 /**
- * Sends the prep briefs that are due (demo spec, R11). Without a working key
- * a brief still goes out, with everything but the suggested focus.
+ * Sends the prep briefs that are due (demo spec, R11), then drafts the
+ * follow-ups that are (R12). Without a working key a brief still goes out,
+ * with everything but the suggested focus; a follow-up needs the key.
  */
 export async function sendBriefsNow(env: AgentEnv, provider: EmailProvider, fetcher: typeof fetch = fetch): Promise<number> {
 	const masterKey = env.AI_KEY_ENCRYPTION_KEY ? await importMasterKey(env.AI_KEY_ENCRYPTION_KEY) : null;
 	const working = masterKey ? new Set(await workspacesWithWorkingKey(env.DB, 'anthropic')) : new Set<string>();
 	const open = masterKey ? keyedClients(env, masterKey) : null;
-	return sendDueBriefs(
-		env.DB,
-		{
-			provider,
-			fetcher: (url, init) => fetcher(url, init),
-			clientFor: async (workspaceId) => (open && working.has(workspaceId) ? open(workspaceId) : null)
-		},
-		new Date()
-	);
+	const clientFor = async (workspaceId: string) => (open && working.has(workspaceId) ? open(workspaceId) : null);
+	const sent = await sendDueBriefs(env.DB, { provider, fetcher: (url, init) => fetcher(url, init), clientFor }, new Date());
+	// After the meeting: follow-ups from your notes in reply to the brief (R12), for your OK.
+	await draftDueFollowUps(env.DB, { clientFor }, new Date());
+	return sent;
 }

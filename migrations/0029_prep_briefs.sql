@@ -16,9 +16,11 @@ CREATE TABLE IF NOT EXISTS booking_briefs (
 	workspace_id TEXT REFERENCES workspaces(id) ON DELETE CASCADE,
 	-- The agent that wrote it, whose monthly budget its model call counts against.
 	agent_principal_id TEXT REFERENCES agents(principal_id) ON DELETE SET NULL,
-	-- sending -> sent | failed. A failed send is tried again, three times in all.
+	-- sending -> sent | failed. A failed send is tried again, three times in all,
+	-- and so is one cut off mid-send (still sending ten minutes after its claim).
 	status TEXT NOT NULL DEFAULT 'sending' CHECK (status IN ('sending', 'sent', 'failed')),
 	attempts INTEGER NOT NULL DEFAULT 1,
+	claimed_at TEXT NOT NULL,
 	-- What the company lookup found: site | personal (a free mail domain) | unreachable.
 	company TEXT,
 	-- How the suggested focus went: written | no_key | budget | failed.

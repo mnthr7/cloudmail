@@ -30,7 +30,8 @@ const FREE_MAIL = new Set([
 const RESERVED_TLDS = new Set(['localhost', 'local', 'internal', 'invalid', 'example', 'test', 'onion', 'lan', 'home', 'corp', 'intranet', 'arpa']);
 
 const TIMEOUT_MS = 5000;
-const MAX_BYTES = 512 * 1024;
+/** Most of a home page read. The title, description and opening text are near the top. */
+const MAX_BYTES = 64 * 1024;
 const MAX_REDIRECTS = 3;
 const MAX_TEXT = 2000;
 
@@ -55,14 +56,76 @@ export function isFreeMail(domain: string): boolean {
 	return FREE_MAIL.has(host) || /^(yahoo|hotmail|outlook|live)\.[a-z.]+$/.test(host);
 }
 
-function attribute(html: string, pattern: RegExp): string {
-	const match = html.match(pattern);
-	return match ? stripHtml(match[1]).replace(/\s+/g, ' ').trim().slice(0, 300) : '';
+/*
+ * The page is someone else's, so it's read without regular expressions that
+ * can backtrack across it: every step below is a forward scan with indexOf,
+ * or a regex on one short tag at a time.
+ */
+
+function clean(text: string, max: number): string {
+	return stripHtml(text).replace(/\s+/g, ' ').trim().slice(0, max);
 }
 
-function meta(html: string, name: string): string {
-	const tag = html.match(new RegExp(`<meta\\b[^>]*(?:name|property)\\s*=\\s*["']${name}["'][^>]*>`, 'i'))?.[0] ?? '';
-	return attribute(tag, /content\s*=\s*["']([^"']*)["']/i);
+/** The text between the first <tag ...> and its </tag>, or ''. `lower` is `html` lowercased. */
+function inner(html: string, lower: string, tag: string): string {
+	const open = lower.indexOf(`<${tag}`);
+	if (open === -1) return '';
+	const start = lower.indexOf('>', open);
+	const close = start === -1 ? -1 : lower.indexOf(`</${tag}`, start);
+	return close === -1 ? '' : html.slice(start + 1, close);
+}
+
+/** Every complete tag that starts with `<tag`, each at most 1000 characters. */
+function tags(html: string, lower: string, tag: string): string[] {
+	const out: string[] = [];
+	let from = 0;
+	while (out.length < 100) {
+		const open = lower.indexOf(`<${tag}`, from);
+		if (open === -1) break;
+		const close = lower.indexOf('>', open);
+		if (close === -1) break;
+		if (close - open < 1000) out.push(html.slice(open, close + 1));
+		from = close + 1;
+	}
+	return out;
+}
+
+function meta(html: string, lower: string, name: string): string {
+	for (const tag of tags(html, lower, 'meta')) {
+		const key = tag.match(/\b(?:name|property)\s*=\s*["']([^"']{1,100})["']/i)?.[1];
+		if (key?.toLowerCase() !== name) continue;
+		const content = tag.match(/\bcontent\s*=\s*["']([^"']{0,900})["']/i)?.[1];
+		if (content) return clean(content, 300);
+	}
+	return '';
+}
+
+/** The page with these elements and everything inside them taken out. Unclosed ones run to the end. */
+function dropElements(html: string, names: string[]): string {
+	const lower = html.toLowerCase();
+	let out = '';
+	let at = 0;
+	while (at < html.length) {
+		let next = -1;
+		let name = '';
+		for (const candidate of names) {
+			const index = lower.indexOf(`<${candidate}`, at);
+			if (index !== -1 && (next === -1 || index < next)) {
+				next = index;
+				name = candidate;
+			}
+		}
+		if (next === -1) {
+			out += html.slice(at);
+			break;
+		}
+		out += html.slice(at, next) + ' ';
+		const close = lower.indexOf(`</${name}`, next);
+		if (close === -1) break;
+		const end = lower.indexOf('>', close);
+		at = end === -1 ? html.length : end + 1;
+	}
+	return out;
 }
 
 async function readCapped(response: Response): Promise<string> {
@@ -143,10 +206,12 @@ export async function lookUpCompany(guestEmail: string, fetcher: Fetcher): Promi
 		return { status: 'unreachable', domain, reason: 'its home page isn’t a web page' };
 	}
 	const html = await readCapped(found.response);
-	const title = attribute(html, /<title[^>]*>([\s\S]*?)<\/title>/i) || meta(html, 'og:site_name');
-	const description = meta(html, 'description') || meta(html, 'og:description');
-	const body = html.match(/<body[^>]*>([\s\S]*)/i)?.[1] ?? html;
-	const text = stripHtml(body.replace(/<(nav|footer|header|noscript|svg|template)[\s\S]*?<\/\1>/gi, ' '))
+	const lower = html.toLowerCase();
+	const title = clean(inner(html, lower, 'title'), 300) || meta(html, lower, 'og:site_name');
+	const description = meta(html, lower, 'description') || meta(html, lower, 'og:description');
+	const bodyAt = lower.indexOf('<body');
+	const body = bodyAt === -1 ? html : html.slice(bodyAt);
+	const text = stripHtml(dropElements(body, ['script', 'style', 'nav', 'footer', 'header', 'noscript', 'svg', 'template']))
 		.replace(/[ \t]+/g, ' ')
 		.replace(/\n\s*\n+/g, '\n')
 		.trim()

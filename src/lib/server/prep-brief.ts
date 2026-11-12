@@ -101,45 +101,83 @@ type ThreadMail = {
 
 export type Focus = { status: 'written'; text: string } | { status: 'no_key' | 'budget' | 'failed'; text?: undefined };
 
-/** Sends the briefs that are due. Returns how many went out. */
+/** Candidates read per query, and at most per tick, so one account's many meetings can't hide another's. */
+const PAGE_SIZE = 100;
+const MAX_SCANNED = 2000;
+/** A claim still sending after this was cut off mid-send, and is tried again. */
+const STALE_CLAIM_MS = 10 * 60_000;
+
+/**
+ * Sends the briefs that are due. Returns how many went out. Walks every
+ * upcoming meeting in pages rather than looking at the first few only, and
+ * sends at most one brief per account per tick, so a busy account (or one
+ * whose meetings have no briefing agent) can't hold up everyone else's.
+ */
 export async function sendDueBriefs(db: D1Database, deps: BriefDeps, now = new Date(), limit = BRIEFS_PER_TICK): Promise<number> {
 	const at = now.getTime();
-	const { results } = await db
-		.prepare(
-			`SELECT b.id, b.user_id, b.guest_name, b.guest_email, b.guest_phone, b.guest_timezone, b.note, b.answers_json,
-			        b.extra_guests_json, b.start_at, b.end_at, b.created_at,
-			        p.title AS page_title, p.timezone AS page_timezone, p.brief_minute, p.send_from, p.site_origin,
-			        p.location_kind, p.location_label, p.location AS page_location, e.location AS event_location,
-			        f.id AS brief_id
-			 FROM bookings b
-			 JOIN booking_pages p ON p.id = b.page_id
-			 JOIN calendar_events e ON e.id = b.event_id
-			 LEFT JOIN booking_briefs f ON f.booking_id = b.id AND f.for_start = b.start_at
-			 WHERE b.status = 'confirmed' AND p.brief_minute >= 0 AND p.send_from IS NOT NULL
-			   AND b.start_at > ? AND b.start_at <= ?
-			   AND (f.id IS NULL OR (f.status = 'failed' AND f.attempts < ?))
-			 ORDER BY b.start_at
-			 LIMIT 50`
-		)
-		.bind(now.toISOString(), new Date(at + 25 * HOUR).toISOString(), MAX_ATTEMPTS)
-		.all<Candidate>();
-
+	const staleBefore = new Date(at - STALE_CLAIM_MS).toISOString();
+	const agents = new Map<string, Promise<AgentRecord | null>>();
+	const served = new Set<string>();
 	let sent = 0;
-	for (const row of results) {
-		if (sent >= limit) break;
-		const due = briefDueAt(Date.parse(row.start_at), Date.parse(row.created_at), row.page_timezone, row.brief_minute);
-		if (due === null || at < due) continue;
-		const agent = await briefingAgent(db, row.user_id, row.send_from);
-		if (!agent) continue;
-		const briefId = await claim(db, row, agent, now);
-		if (!briefId) continue;
-		try {
-			if (await sendBrief(db, deps, row, agent, briefId, now)) sent++;
-		} catch (error) {
-			const message = (error instanceof Error ? error.message : 'error').slice(0, 300);
-			console.error('Prep brief failed', row.id, message);
-			await db.prepare(`UPDATE booking_briefs SET status = 'failed', error = ? WHERE id = ?`).bind(message, briefId).run();
+	let scanned = 0;
+	let after = { start: '', id: '' };
+
+	while (sent < limit && scanned < MAX_SCANNED) {
+		const { results } = await db
+			.prepare(
+				`SELECT b.id, b.user_id, b.guest_name, b.guest_email, b.guest_phone, b.guest_timezone, b.note, b.answers_json,
+				        b.extra_guests_json, b.start_at, b.end_at, b.created_at,
+				        p.title AS page_title, p.timezone AS page_timezone, p.brief_minute, p.send_from, p.site_origin,
+				        p.location_kind, p.location_label, p.location AS page_location, e.location AS event_location,
+				        f.id AS brief_id
+				 FROM bookings b
+				 JOIN booking_pages p ON p.id = b.page_id
+				 JOIN calendar_events e ON e.id = b.event_id
+				 LEFT JOIN booking_briefs f ON f.booking_id = b.id AND f.for_start = b.start_at
+				 WHERE b.status = 'confirmed' AND p.brief_minute >= 0 AND p.send_from IS NOT NULL
+				   AND b.start_at > ? AND b.start_at <= ?
+				   AND (b.start_at > ? OR (b.start_at = ? AND b.id > ?))
+				   AND (f.id IS NULL OR (f.attempts < ? AND (f.status = 'failed' OR (f.status = 'sending' AND f.claimed_at < ?))))
+				 ORDER BY b.start_at, b.id
+				 LIMIT ?`
+			)
+			.bind(
+				now.toISOString(),
+				new Date(at + 25 * HOUR).toISOString(),
+				after.start,
+				after.start,
+				after.id,
+				MAX_ATTEMPTS,
+				staleBefore,
+				PAGE_SIZE
+			)
+			.all<Candidate>();
+		if (results.length === 0) break;
+		scanned += results.length;
+		const last = results[results.length - 1];
+		after = { start: last.start_at, id: last.id };
+
+		for (const row of results) {
+			if (sent >= limit) break;
+			if (served.has(row.user_id)) continue;
+			const due = briefDueAt(Date.parse(row.start_at), Date.parse(row.created_at), row.page_timezone, row.brief_minute);
+			if (due === null || at < due) continue;
+			const key = `${row.user_id} ${row.send_from.toLowerCase()}`;
+			if (!agents.has(key)) agents.set(key, briefingAgent(db, row.user_id, row.send_from));
+			const agent = await agents.get(key)!;
+			if (!agent) continue;
+			const briefId = await claim(db, row, agent, now, staleBefore);
+			if (!briefId) continue;
+			served.add(row.user_id);
+			try {
+				if (await sendBrief(db, deps, row, agent, briefId, now)) sent++;
+			} catch (error) {
+				const message = (error instanceof Error ? error.message : 'error').slice(0, 300);
+				console.error('Prep brief failed', row.id, message);
+				await db.prepare(`UPDATE booking_briefs SET status = 'failed', error = ? WHERE id = ?`).bind(message, briefId).run();
+			}
 		}
+		if (results.length < PAGE_SIZE) break;
 	}
 	return sent;
 }
@@ -171,24 +209,25 @@ async function briefingAgent(db: D1Database, userId: string, sendFrom: string): 
 }
 
 /** Takes the brief for this booking and start time, so no other tick sends it. Null when another has it. */
-async function claim(db: D1Database, row: Candidate, agent: AgentRecord, now: Date): Promise<string | null> {
+async function claim(db: D1Database, row: Candidate, agent: AgentRecord, now: Date, staleBefore: string): Promise<string | null> {
 	if (row.brief_id) {
+		// Again after a failure, or after a send that was cut off and never finished.
 		const retry = await db
 			.prepare(
-				`UPDATE booking_briefs SET status = 'sending', attempts = attempts + 1, error = NULL
-				 WHERE id = ? AND status = 'failed' AND attempts < ?`
+				`UPDATE booking_briefs SET status = 'sending', attempts = attempts + 1, error = NULL, claimed_at = ?
+				 WHERE id = ? AND attempts < ? AND (status = 'failed' OR (status = 'sending' AND claimed_at < ?))`
 			)
-			.bind(row.brief_id, MAX_ATTEMPTS)
+			.bind(now.toISOString(), row.brief_id, MAX_ATTEMPTS, staleBefore)
 			.run();
 		return retry.meta.changes ? row.brief_id : null;
 	}
 	const id = crypto.randomUUID();
 	const insert = await db
 		.prepare(
-			`INSERT OR IGNORE INTO booking_briefs (id, booking_id, for_start, workspace_id, agent_principal_id, status, created_at)
-			 VALUES (?, ?, ?, ?, ?, 'sending', ?)`
+			`INSERT OR IGNORE INTO booking_briefs (id, booking_id, for_start, workspace_id, agent_principal_id, status, claimed_at, created_at)
+			 VALUES (?, ?, ?, ?, ?, 'sending', ?, ?)`
 		)
-		.bind(id, row.id, row.start_at, agent.workspaceId, agent.id, now.toISOString())
+		.bind(id, row.id, row.start_at, agent.workspaceId, agent.id, now.toISOString(), now.toISOString())
 		.run();
 	return insert.meta.changes ? id : null;
 }

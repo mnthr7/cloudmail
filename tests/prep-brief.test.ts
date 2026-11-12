@@ -233,6 +233,14 @@ describe('looking up the guest’s company', () => {
 		}
 	});
 
+	test('a hostile page can’t make reading it slow', async () => {
+		const nasty = `<html><head><title>T</title>${'<meta name="x" content="'.repeat(4000)}${'<nav'.repeat(8000)}${'<title'.repeat(8000)}</head><body>${'<footer>'.repeat(8000)}</body></html>`;
+		const started = performance.now();
+		const site = await lookUpCompany(GUEST, siteFetcher({ 'https://customer-co.com/': html(nasty) }));
+		expect(performance.now() - started).toBeLessThan(500);
+		expect(site.status).toBe('site');
+	});
+
 	test('says why when it can’t: down, not a web page, an error', async () => {
 		expect(await lookUpCompany(GUEST, siteFetcher({}))).toMatchObject({ status: 'unreachable', reason: 'it could not be reached' });
 		const json = () => new Response('{}', { headers: { 'content-type': 'application/json' } });
@@ -311,8 +319,8 @@ describe('Ava’s prep brief', () => {
 		await updateAgentDefinition(w.db, { agentId: w.ava.id, byUserId: 'u1', definition }, NOW);
 		const { client, requests } = focusModel();
 		w.sqlite.run(
-			`INSERT INTO booking_briefs (id, booking_id, for_start, agent_principal_id, status, cost_micros, created_at) VALUES ('old', ?, 'x', ?, 'sent', 50000, ?)`,
-			[w.bookingId, w.ava.id, DUE.toISOString()]
+			`INSERT INTO booking_briefs (id, booking_id, for_start, agent_principal_id, status, cost_micros, claimed_at, created_at) VALUES ('old', ?, 'x', ?, 'sent', 50000, ?, ?)`,
+			[w.bookingId, w.ava.id, DUE.toISOString(), DUE.toISOString()]
 		);
 		await sendDueBriefs(w.db, { provider: w.provider, fetcher: siteFetcher({}), clientFor: async () => client }, DUE);
 		expect(requests.length).toBe(0);
@@ -367,6 +375,39 @@ describe('Ava’s prep brief', () => {
 		const retry = { provider: again.provider, fetcher: siteFetcher({}), clientFor: async () => null };
 		expect(await sendDueBriefs(again.db, retry, DUE)).toBe(0);
 		expect(await sendDueBriefs(again.db, retry, new Date(DUE.getTime() + 60_000))).toBe(1);
+	});
+
+	test('a send cut off mid-way is tried again after ten minutes', async () => {
+		const w = await world();
+		const deps = { provider: w.provider, fetcher: siteFetcher({}), clientFor: async () => null };
+		w.sqlite.run(
+			`INSERT INTO booking_briefs (id, booking_id, for_start, status, claimed_at, created_at) VALUES ('stuck', ?, ?, 'sending', ?, ?)`,
+			[w.bookingId, MEETING, DUE.toISOString(), DUE.toISOString()]
+		);
+		expect(await sendDueBriefs(w.db, deps, new Date(DUE.getTime() + 5 * 60_000))).toBe(0);
+		expect(await sendDueBriefs(w.db, deps, new Date(DUE.getTime() + 11 * 60_000))).toBe(1);
+		expect(w.sqlite.query(`SELECT status, attempts FROM booking_briefs`).get()).toEqual({ status: 'sent', attempts: 2 });
+	});
+
+	test('one account’s many meetings can’t hold up another account’s brief', async () => {
+		const w = await world();
+		// Another account with 300 meetings that start earlier but have no briefing agent.
+		w.sqlite.run(`INSERT INTO users (id, email, name, password_hash, is_admin) VALUES ('u2', 'u2@login.test', 'Busy', 'x', 0)`);
+		w.sqlite.run(`INSERT INTO domains (id, name) VALUES ('d2', 'busy.com')`);
+		w.sqlite.run(`INSERT INTO addresses (id, user_id, domain_id, address, is_default) VALUES ('b1', 'u2', 'd2', 'hi@busy.com', 1)`);
+		await ensureCalendars(w.db, 'u2', { name: 'Busy', timezone: CHICAGO });
+		await createBookingPage(w.db, 'u2', ['hi@busy.com'], { slug: 'busy', title: 'Busy', durations: [30], timezone: CHICAGO, hours: DEFAULT_HOURS, minNoticeMinutes: 0, sendFrom: 'hi@busy.com', maxPerDay: 50 }, NOW);
+		const page = (w.sqlite.query(`SELECT id FROM booking_pages WHERE slug = 'busy'`).get() as { id: string }).id;
+		const event = (w.sqlite.query(`SELECT event_id FROM bookings WHERE id = ?`).get(w.bookingId) as { event_id: string }).event_id;
+		for (let index = 0; index < 300; index++) {
+			w.sqlite.run(
+				`INSERT INTO bookings (id, page_id, user_id, event_id, guest_name, guest_email, start_at, end_at, created_at) VALUES (?, ?, 'u2', ?, 'G', 'g@x.com', ?, ?, ?)`,
+				[`busy${index}`, page, event, '2026-11-12T14:00:00.000Z', '2026-11-12T14:30:00.000Z', NOW.toISOString()]
+			);
+		}
+		const deps = { provider: w.provider, fetcher: siteFetcher({}), clientFor: async () => null };
+		expect(await sendDueBriefs(w.db, deps, DUE)).toBe(1);
+		expect(briefs(w.sent)[0].subject).toContain('Pat Lee');
 	});
 
 	test('doesn’t wake an agent when it lands: it’s a notice, not work', async () => {

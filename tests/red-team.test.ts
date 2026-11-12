@@ -632,6 +632,15 @@ describe('the playbook leak check', () => {
 		expect(quotesInstructions(`> ${line.replace(/'/g, '’')}`, [job])).toBe(true);
 	});
 
+	test('word boundaries don’t matter: invisible separators, glued words, extra spaces', () => {
+		const line = job.split('\n').find((item) => item.includes('cancel'))!;
+		expect(quotesInstructions(line.replace(/ /g, '​'), [job])).toBe(true);
+		expect(quotesInstructions(line.replace(/ /g, '⁠'), [job])).toBe(true);
+		expect(quotesInstructions(line.replace(/ /g, ''), [job])).toBe(true);
+		expect(quotesInstructions(line.split('').join(' '), [job])).toBe(true);
+		expect(quotesInstructions(line.replace(/e/g, 'é'), [job])).toBe(true);
+	});
+
 	test('the system prompt is covered too', () => {
 		const sentence = systemPrompt().split('\n').find((item) => item.length > 120)!;
 		expect(quotesInstructions(sentence, [systemPrompt()])).toBe(true);

@@ -12,10 +12,22 @@
 /** Words in a row, copied from the instructions, that count as quoting them. */
 export const RUN_WORDS = 10;
 
+/** Cyrillic and Greek letters that look like Latin ones, so swapping a few doesn't hide a quote. */
+const LOOK_ALIKES: Record<string, string> = {
+	а: 'a', в: 'b', е: 'e', ё: 'e', к: 'k', м: 'm', н: 'h', о: 'o', р: 'p', с: 'c', т: 't', у: 'y', х: 'x',
+	і: 'i', ї: 'i', ј: 'j', ѕ: 's', ԁ: 'd', ԛ: 'q', ԝ: 'w', ɡ: 'g',
+	α: 'a', β: 'b', ε: 'e', η: 'n', ι: 'i', κ: 'k', ν: 'v', ο: 'o', ρ: 'p', τ: 't', υ: 'u', χ: 'x'
+};
+
 function words(text: string): string[] {
 	return text
 		.normalize('NFKC')
+		// Invisible format characters (zero-width spaces and joiners, soft hyphens, bidi marks) and
+		// combining marks would otherwise split or change words without changing what a reader sees.
+		.normalize('NFKD')
+		.replace(/[\p{Cf}\p{Mn}­]/gu, '')
 		.toLowerCase()
+		.replace(/[^\x00-\x7f]/g, (char) => LOOK_ALIKES[char] ?? char)
 		.replace(/[‘’]/g, "'")
 		.split(/[^\p{L}\p{N}']+/u)
 		.map((word) => word.replace(/^'+|'+$/g, ''))

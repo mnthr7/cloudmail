@@ -298,7 +298,22 @@ async function carryOut(db: D1Database, action: ClaimedAction, now: Date, deps: 
 			await loopGuard(db, action, [...to, ...cc], thread.length ? thread : [email], now);
 			// The agent's job and our prompt stay private, however the mail asked for them (R16).
 			const agent = await getAgent(db, action.agent_principal_id);
-			if (quotesInstructions(body, [agent?.version.definition.job ?? '', systemPrompt()])) {
+			if (!agent) throw new StopError('agent_gone');
+			// The job the reply was written under too, in case it changed since.
+			const proposedUnder = await db
+				.prepare(
+					`SELECT v.definition_json FROM agent_actions x JOIN agent_versions v ON v.id = x.version_id WHERE x.id = ?`
+				)
+				.bind(action.id)
+				.first<{ definition_json: string }>();
+			const jobs = [agent.version.definition.job];
+			try {
+				const job = (JSON.parse(proposedUnder?.definition_json ?? 'null') as { job?: unknown } | null)?.job;
+				if (typeof job === 'string') jobs.push(job);
+			} catch {
+				// A version that can't be read only means one less text to check against.
+			}
+			if (quotesInstructions(body, [...jobs, systemPrompt()])) {
 				throw new StopError('leaks_instructions', true);
 			}
 

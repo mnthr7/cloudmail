@@ -187,9 +187,9 @@ The founder can **take over** a thread. Ava then stops acting on it until the fo
 
 **R16. Instructions vs. data (safety)**
 Only the playbook, autonomy settings, and internal notes from human principals count as instructions to Ava. Email bodies, intake answers, attachments, and fetched web pages are passed to the model as clearly marked untrusted data. Ava's tools are limited to the actions in R9, and the server checks every action against autonomy settings no matter what the model asks for.
-- [ ] A red-team test set of at least 25 injection emails ("ignore previous instructions", fake founder approvals, requests to email a third party, requests to reveal the playbook) causes zero unauthorized actions
-- [ ] Ava can't email anyone except the booking's invitee(s) and the founder
-- [ ] Ava never puts the playbook's text in an outgoing email
+- [x] A red-team test set of at least 25 injection emails ("ignore previous instructions", fake founder approvals, requests to email a third party, requests to reveal the playbook) causes zero unauthorized actions
+- [x] Ava can't email anyone except the booking's invitee(s) and the founder
+- [x] Ava never puts the playbook's text in an outgoing email (`tests/red-team.test.ts`; the server refuses a send that quotes 10+ words of her job or the system prompt in a row)
 
 ### P1: fast follows
 

@@ -10,7 +10,7 @@ import { getEmailProvider } from './lib/server/context';
 import type { EmailProvider } from './lib/server/email-provider';
 import { expireActions } from './lib/server/agents-store';
 import { executePending } from './lib/server/agent-executor';
-import { runAgentsNow } from './lib/server/run-agents';
+import { runAgentsNow, sendBriefsNow } from './lib/server/run-agents';
 import { importMasterKey } from './lib/server/secret-box';
 import { deliverDue } from './lib/server/outbox-schedule';
 import { syncDueOutsideCalendars } from './lib/server/outside-calendars';
@@ -94,6 +94,8 @@ export default {
 			deliverDue(env.DB, getEmailProvider({ env }), new Date(), 20)
 				// Booking reminders go out from the host's own address, after scheduled mail.
 				.then(() => (env.DEMO_MODE === 'true' ? 0 : sendDueReminders(env.DB, getEmailProvider({ env }), new Date())))
+				// Prep briefs to the host on the meeting day, written by the agent running the page.
+				.then(() => (env.DEMO_MODE === 'true' ? 0 : sendBriefsNow(env, getEmailProvider({ env }))))
 				.then(
 					() => undefined,
 					(error) => console.error('Failed to deliver scheduled mail', error)

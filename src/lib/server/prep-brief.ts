@@ -29,6 +29,13 @@ import { sendOutboundEmail } from './send-mail.ts';
  * reads, never an action. The brief only ever goes to the host.
  */
 
+/** A reference nobody could guess: "brief-" and 24 random letters and digits. */
+export function briefToken(): string {
+	const alphabet = 'abcdefghijkmnpqrstuvwxyz23456789';
+	const bytes = crypto.getRandomValues(new Uint8Array(24));
+	return `brief-${[...bytes].map((byte) => alphabet[byte % alphabet.length]).join('')}`;
+}
+
 /** Briefs per cron tick. Each may fetch a page and call the model. */
 export const BRIEFS_PER_TICK = 3;
 /** Tries at sending one brief, in all. */
@@ -87,7 +94,7 @@ type Candidate = {
 	brief_id: string | null;
 };
 
-type ThreadMail = {
+export type ThreadMail = {
 	id: string;
 	direction: 'inbound' | 'outbound';
 	from_addr: string;
@@ -187,7 +194,7 @@ export async function sendDueBriefs(db: D1Database, deps: BriefDeps, now = new D
  * workspace that sends from the page's address with the calendar on, the
  * same one that answers the page's mail. None means no brief.
  */
-async function briefingAgent(db: D1Database, userId: string, sendFrom: string): Promise<AgentRecord | null> {
+export async function briefingAgent(db: D1Database, userId: string, sendFrom: string): Promise<AgentRecord | null> {
 	const { results } = await db
 		.prepare(
 			`SELECT p.id FROM principals p JOIN agents a ON a.principal_id = p.id
@@ -242,11 +249,11 @@ function parseList<T>(text: string): T[] {
 }
 
 /** Untrusted text inside the model's data blocks: no bracket can open or close a tag. */
-function data(text: string): string {
+export function data(text: string): string {
 	return text.replace(/[<＜﹤〈⟨《❮⧼]/g, '‹');
 }
 
-function bodyOf(mail: ThreadMail): string {
+export function bodyOf(mail: ThreadMail): string {
 	const text = mail.body_text?.trim() || (mail.body_html ? stripHtml(mail.body_html) : '');
 	return text.replace(/\n{3,}/g, '\n\n').trim();
 }
@@ -260,7 +267,7 @@ function quote(text: string, max = MAX_QUOTE): string {
 }
 
 /** Mail between the guest and the page's address, oldest first. */
-async function threadWith(db: D1Database, userId: string, guest: string, pageAddress: string): Promise<ThreadMail[]> {
+export async function threadWith(db: D1Database, userId: string, guest: string, pageAddress: string): Promise<ThreadMail[]> {
 	const { results } = await db
 		.prepare(
 			`SELECT id, direction, from_addr, from_name, subject, body_text, body_html, created_at, security_json
@@ -373,6 +380,9 @@ async function sendBrief(
 ): Promise<boolean> {
 	const owner = await db.prepare(`SELECT * FROM users WHERE id = ?`).bind(row.user_id).first<User>();
 	if (!owner) throw new Error('owner_gone');
+	// The reference your reply with notes is matched by (R12). Kept across retries.
+	await db.prepare(`UPDATE booking_briefs SET token = coalesce(token, ?) WHERE id = ?`).bind(briefToken(), briefId).run();
+	const token = ((await db.prepare(`SELECT token FROM booking_briefs WHERE id = ?`).bind(briefId).first<{ token: string }>())?.token ?? '');
 	const guest = row.guest_email.toLowerCase();
 	const pageAddress = row.send_from.toLowerCase();
 	const answers = parseList<Answer>(row.answers_json).filter((answer) => answer?.label && answer?.value);
@@ -437,19 +447,24 @@ async function sendBrief(
 		`SUGGESTED FOCUS (${agent.displayName}’s suggestion)`,
 		focus.status === 'written' ? focus.text : `${agent.displayName} couldn’t write one: ${FOCUS_MISSING[focus.status]}.`,
 		'',
-		disclosureFooter(agent.displayName, host)
+		'AFTER THE CALL',
+		`Reply to this email with your notes, in any form. ${agent.displayName} will draft a follow-up to ${row.guest_name} from them for you to approve. With no notes by two hours after the meeting, ${agent.displayName} drafts a general one.`,
+		'',
+		disclosureFooter(agent.displayName, host),
+		`Ref: ${token}`
 	];
 
 	const from = await resolveFromAddress(db, owner, null, pageAddress);
 	const to = await resolveFromAddress(db, owner);
 	await sendOutboundEmail(deps.provider, {
+		// Your notes in reply come back to you, not to the agent's address, where they'd read as new mail.
 		from,
 		senderName: agent.displayName,
 		to: to.address,
 		subject: `Prep: ${row.page_title} with ${row.guest_name}, ${formatWhen(start, end, row.page_timezone)}`.slice(0, 200),
 		text: lines.join('\n'),
 		// News for the host, not work: it doesn't wake an agent when it lands.
-		headers: { [APP_NOTICE_HEADER]: 'brief' }
+		headers: { [APP_NOTICE_HEADER]: 'brief', 'Reply-To': to.address }
 	});
 	await db
 		.prepare(`UPDATE booking_briefs SET status = 'sent', sent_at = ?, company = ?, focus = ? WHERE id = ?`)

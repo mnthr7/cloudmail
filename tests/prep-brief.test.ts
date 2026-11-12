@@ -421,6 +421,8 @@ describe('Ava’s prep brief', () => {
 	test('doesn’t wake an agent when it lands: it’s a notice, not work', async () => {
 		const w = await world();
 		await sendDueBriefs(w.db, { provider: w.provider, fetcher: siteFetcher({}), clientFor: async () => null }, DUE);
-		expect(briefs(w.sent)[0].headers).toEqual({ 'X-CloudMail-Notice': 'brief' });
+		// And your reply with notes comes back to you, not to Ava's address.
+		expect(briefs(w.sent)[0].headers).toEqual({ 'X-CloudMail-Notice': 'brief', 'Reply-To': 'sada@acme.com' });
+		expect(briefs(w.sent)[0].text).toMatch(/\nRef: brief-[a-z0-9]{24}$/);
 	});
 });

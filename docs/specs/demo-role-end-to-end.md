@@ -170,8 +170,8 @@ At a time the founder sets (default: 7:00 local on the meeting day, or 60 minute
 
 **R12. Follow-up from call notes**
 After the meeting ends, the founder can reply to the brief with rough notes, in any format. Ava drafts a follow-up on the prospect's thread from those notes and the playbook, and queues it for approval. If there are no notes 2 hours after the meeting ends, Ava drafts a generic follow-up and queues it.
-- [ ] Replying to the brief is the only input the founder needs; no form
-- [ ] The draft never includes anything that wasn't in the notes, the thread, or the playbook
+- [x] Replying to the brief is the only input the founder needs; no form (`src/lib/server/follow-up.ts`)
+- [x] The draft never includes anything that wasn't in the notes, the thread, or the playbook (the model is told so, and any link, address, amount, percentage or long number not found in them is flagged on the queued draft; a person approves every follow-up)
 
 **R13. No-shows**
 10 minutes after the scheduled end, the queue asks the founder: "Did <name> show?" with **Yes** and **No-show** buttons. Choosing No-show queues a "sorry we missed you" email with 3 new slots.

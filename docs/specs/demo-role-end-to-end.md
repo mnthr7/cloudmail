@@ -175,7 +175,7 @@ After the meeting ends, the founder can reply to the brief with rough notes, in 
 
 **R13. No-shows**
 10 minutes after the scheduled end, the queue asks the founder: "Did <name> show?" with **Yes** and **No-show** buttons. Choosing No-show queues a "sorry we missed you" email with 3 new slots.
-- [ ] If the founder doesn't answer within 24 hours, Ava assumes the meeting happened and does nothing
+- [x] If the founder doesn't answer within 24 hours, Ava assumes the meeting happened and does nothing (`src/lib/server/no-show.ts`)
 
 **R14. Thread timeline and attribution**
 Every message and action on a thread shows who did it: *"Confirmed by Ava · 2:14pm"*, *"Drafted by Ava · approved by Sada · 3:02pm"*, *"Rescheduled by Ava at prospect's request"*.

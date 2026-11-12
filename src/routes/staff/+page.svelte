@@ -397,6 +397,34 @@
 		}
 	}
 
+	function meetingTime(start: string, end: string, zone: string): string {
+		const day = new Intl.DateTimeFormat(undefined, { timeZone: zone, weekday: 'short', month: 'short', day: 'numeric' }).format(new Date(start));
+		const time = (iso: string, withZone: boolean) =>
+			new Intl.DateTimeFormat(undefined, { timeZone: zone, hour: 'numeric', minute: '2-digit', ...(withZone ? { timeZoneName: 'short' as const } : {}) }).format(new Date(iso));
+		return `${day}, ${time(start, false)}–${time(end, true)}`;
+	}
+
+	async function answer(id: string, value: 'showed' | 'no_show') {
+		listError = '';
+		busy = id;
+		try {
+			const res = await fetch(`/api/agents/checks/${id}`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ answer: value })
+			});
+			if (!res.ok && res.status !== 409) {
+				listError = 'Could not record your answer.';
+				return;
+			}
+			window.location.reload();
+		} catch {
+			listError = 'Network error';
+		} finally {
+			busy = null;
+		}
+	}
+
 	async function decide(id: string, decision: 'approve' | 'decline') {
 		listError = '';
 		busy = id;
@@ -783,10 +811,32 @@
 		{/if}
 	</Section>
 
-	<Section id="queue" title="Needs your OK" icon="checkbox-circle-line" count={data.queue.length} remember="staff">
-		{#if data.queue.length === 0}
+	<Section id="queue" title="Needs your OK" icon="checkbox-circle-line" count={data.queue.length + data.checks.length} remember="staff">
+		{#if data.checks.length}
+			<ul class="list">
+				{#each data.checks as check (check.id)}
+					<li class="item">
+						<div class="item-head">
+							<p class="item-title">{check.agentName} asks: did {check.guestName} show?</p>
+							<span class="chip">Until {when(check.expiresAt)}</span>
+						</div>
+						<p class="item-sub">{check.pageTitle} · {meetingTime(check.start, check.end, check.timezone)} · {check.guestEmail}</p>
+						<p class="item-sub">A no-show gets a short “sorry we missed you” with new times, for your OK. No answer by then means they came.</p>
+						<div class="item-actions">
+							<button type="button" class="btn-ghost text-xs" disabled={busy === check.id} onclick={() => answer(check.id, 'no_show')}>
+								No-show
+							</button>
+							<button type="button" class="btn-primary text-xs" disabled={busy === check.id} onclick={() => answer(check.id, 'showed')}>
+								Yes, they came
+							</button>
+						</div>
+					</li>
+				{/each}
+			</ul>
+		{/if}
+		{#if data.queue.length === 0 && data.checks.length === 0}
 			<p class="card-hint">Nothing waiting. Proposals that need your OK show up here.</p>
-		{:else}
+		{:else if data.queue.length}
 			<ul class="list">
 				{#each data.queue as action (action.id)}
 					<li class="item">

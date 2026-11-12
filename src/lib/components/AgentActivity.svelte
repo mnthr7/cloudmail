@@ -149,6 +149,8 @@
 	const current = $derived(override ?? activity);
 	const items = $derived(current?.items ?? []);
 	const takenOver = $derived(current?.takenOver ?? false);
+	const handedOffBy = $derived(current?.handedOffBy ?? null);
+	const reminders = $derived(current?.reminders ?? false);
 	// Newest few unless opened: notes and alerts matter most, so they're always shown.
 	const VISIBLE = 4;
 	const shown = $derived(expanded ? items : items.slice(-VISIBLE));
@@ -166,6 +168,29 @@
 		error = '';
 		try {
 			const res = await fetch(`/api/mail/${emailId}/take-over`, { method: takenOver ? 'DELETE' : 'POST' });
+			const body = await res.json().catch(() => null);
+			if (!res.ok || !body?.activity) {
+				error = 'Could not change that. Try again.';
+				return;
+			}
+			override = body.activity;
+		} catch {
+			error = 'Network error';
+		} finally {
+			busy = false;
+		}
+	}
+
+	async function toggleReminders() {
+		if (!emailId || busy) return;
+		busy = true;
+		error = '';
+		try {
+			const res = await fetch(`/api/mail/${emailId}/take-over`, {
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ reminders: !reminders })
+			});
 			const body = await res.json().catch(() => null);
 			if (!res.ok || !body?.activity) {
 				error = 'Could not change that. Try again.';
@@ -215,7 +240,7 @@
 			<Icon name="robot-2-line" size={16} />
 			<span class="title">Agents</span>
 			{#if takenOver}
-				<span class="pill">You've taken over</span>
+				<span class="pill">{handedOffBy ? `${handedOffBy} handed it to you` : "You've taken over"}</span>
 			{/if}
 			{#if emailId && (hasAgents || takenOver)}
 				<button type="button" class="btn-ghost take-over" disabled={busy} onclick={toggleTakeOver}>
@@ -224,7 +249,14 @@
 			{/if}
 		</header>
 		{#if takenOver}
-			<p class="hint">Agents won't act on this thread on their own. You can still ask one for help.</p>
+			<p class="hint">
+				Agents won't act on this thread on their own, and no booking reminders go to this person. You can still ask
+				an agent for help.
+			</p>
+			<label class="hint reminders">
+				<input type="checkbox" checked={reminders} disabled={busy} onchange={toggleReminders} />
+				Still send them booking reminders
+			</label>
 		{/if}
 		{#if error}
 			<p class="error" role="alert">{error}</p>
@@ -269,7 +301,7 @@
 						<div class="body">
 							<p class="line">
 								<strong>{item.agentName ?? (item.byHuman ? 'You' : 'Agent')}</strong>
-								<span>{item.kind === 'alert' ? 'stopped itself' : item.byHuman ? 'wrote a note' : 'left a note'}</span>
+								<span>{item.kind === 'alert' ? 'needs you' : item.byHuman ? 'wrote a note' : 'left a note'}</span>
 							</p>
 							<p class="note-text">{item.body}</p>
 						</div>
@@ -279,7 +311,12 @@
 					<li class="item">
 						<Icon name="user-shared-line" size={15} />
 						<div class="body">
-							<p class="line"><strong>{item.by ?? 'You'}</strong> <span>took this thread over</span></p>
+							{#if item.handedOff}
+								<p class="line"><strong>{item.by}</strong> <span>handed this thread to you</span></p>
+								{#if item.reason}<p class="reason">{item.reason}</p>{/if}
+							{:else}
+								<p class="line"><strong>{item.by ?? 'You'}</strong> <span>took this thread over</span></p>
+							{/if}
 						</div>
 						<time datetime={item.at}>{when(item.at)}</time>
 					</li>
@@ -376,6 +413,12 @@
 		font-size: 0.75rem;
 		background: var(--color-surface-muted);
 		color: var(--color-text-secondary);
+	}
+
+	.reminders {
+		display: flex;
+		align-items: center;
+		gap: 0.375rem;
 	}
 
 	.take-over {

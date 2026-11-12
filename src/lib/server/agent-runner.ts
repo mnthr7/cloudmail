@@ -266,6 +266,7 @@ async function runOne(
 	/** What this ask has already approved: one booking change and one reply. */
 	const askApproved = new Set<string>();
 	let suggested = false;
+	let handedOff = false;
 
 	for (let turn = 0; turn < MAX_TURNS; turn++) {
 		// Checked before every call, not only at the start, so one run can't run far past the cap.
@@ -388,6 +389,11 @@ async function runOne(
 				});
 				continue;
 			}
+			// Once it handed the thread to the founder, it's theirs: nothing else from this run.
+			if (handedOff) {
+				results.push({ type: 'tool_result', tool_use_id: call.id, is_error: true, content: 'You handed this thread to the founder. Stop here.' });
+				continue;
+			}
 			// Only the tools offered this run count, whatever the model calls.
 			const offered = tools.some((tool) => tool.name === call.name);
 			const proposal = offered && toProposal(call.name, call.input, {
@@ -404,6 +410,21 @@ async function runOne(
 					content: 'That call was incomplete or used a tool you do not have.'
 				});
 				continue;
+			}
+			// Handing over writes to the sender of the mail and copies the founder, from the agent's
+			// own address. The model picks none of that.
+			if (proposal.capability === 'hand_off') {
+				const sender = ours.has(email.from_addr.toLowerCase()) ? null : email.from_addr.toLowerCase();
+				const founder = await db
+					.prepare(`SELECT address FROM addresses WHERE user_id = ? ORDER BY is_default DESC, address LIMIT 1`)
+					.bind(run.mailbox_user_id)
+					.first<{ address: string }>();
+				const from = definition.scope.sendAs[0];
+				proposal.payload = { ...proposal.payload, emailId: email.id };
+				if (sender && from && founder) {
+					proposal.fromAddress = from;
+					proposal.recipients = [sender, founder.address.toLowerCase()];
+				}
 			}
 			// The open times listed are a sample: check the exact time asked for before proposing it.
 			if (call.name === 'reschedule_booking') {
@@ -452,6 +473,7 @@ async function runOne(
 			);
 			proposals++;
 			if (directAsk && result.decision.outcome === 'execute') askApproved.add(proposal.capability);
+			if (proposal.capability === 'hand_off' && result.decision.outcome !== 'reject') handedOff = true;
 			const executed =
 				result.decision.outcome === 'execute' ? await executeAction(db, result.actionId, now(), { provider }) : undefined;
 			results.push({ type: 'tool_result', tool_use_id: call.id, content: describe(result.decision, executed) });

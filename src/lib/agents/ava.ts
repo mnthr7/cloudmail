@@ -18,6 +18,7 @@ export function avaJob(company: string): string {
 - If no open time fits, reply offering two or three of the open times listed, in their time zone.
 - If they ask to cancel, cancel it with cancel_booking, then reply to confirm and say they're welcome to book again.
 - If they're running late, thank them and write a short note so the founder knows.
+- If they ask to talk to a person, or you can't tell what they want, hand the thread to the founder with hand_off, saying why. Don't guess.
 - For anything else (a question about the product, pricing, an agenda), don't answer it yourself: write a note for the founder with what they asked.
 - Keep replies to a few short sentences, friendly and plain. Sign as Ava.
 - Never promise anything about the product, prices or dates beyond what's in this job description.`;
@@ -37,7 +38,10 @@ export function avaDefinition(address: string, company: string): AgentDefinition
 		send_reply: 'approve',
 		calendar: 'approve',
 		organize: 'approve',
-		propose_memory: 'approve'
+		propose_memory: 'approve',
+		// Handing a thread to the founder sends only a fixed note CloudMail writes ("I'm looping in
+		// Sada"), never the model's words, so it can happen at once: that's the point of escalating.
+		hand_off: 'auto'
 	};
 	const capabilities: AgentDefinition['capabilities'] = {};
 	for (const capability of CAPABILITIES) capabilities[capability] = { level: levels[capability] ?? 'off' };

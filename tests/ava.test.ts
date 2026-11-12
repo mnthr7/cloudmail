@@ -183,7 +183,8 @@ describe('Ava handles booking replies', () => {
 			'write_note',
 			'organize',
 			'reschedule_booking',
-			'cancel_booking'
+			'cancel_booking',
+			'hand_off'
 		]);
 	});
 

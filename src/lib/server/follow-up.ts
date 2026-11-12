@@ -174,6 +174,35 @@ export async function hostNotes(db: D1Database, row: Pick<Candidate, 'token' | '
 
 type Outcome = { drafted: boolean; state: string; ref: string | null };
 
+export type GuestAnchor = { id: string; thread_id: string | null; subject: string };
+
+/**
+ * The guest's threads with the page's address, and the one to reply on: the
+ * newest mail they provably sent. Anyone can put the guest's address on an
+ * email, so only mail their domain signed can pick the thread.
+ */
+export async function guestThreads(
+	db: D1Database,
+	userId: string,
+	guest: string,
+	pageAddress: string
+): Promise<{ anchor: GuestAnchor | null; threads: string[] }> {
+	const { results } = await db
+		.prepare(
+			`SELECT id, thread_id, subject, from_addr, security_json FROM emails
+			 WHERE user_id = ? AND direction = 'inbound' AND deleted_at IS NULL AND lower(from_addr) = ?
+			   AND instr(lower(to_addr || ',' || coalesce(cc_addr, '')), ?) > 0
+			 ORDER BY created_at DESC LIMIT 50`
+		)
+		.bind(userId, guest.toLowerCase(), pageAddress.toLowerCase())
+		.all<GuestAnchor & { from_addr: string; security_json: string | null }>();
+	const signed = results.find((mail) => senderVerified(mail.security_json, mail.from_addr));
+	return {
+		anchor: signed ? { id: signed.id, thread_id: signed.thread_id, subject: signed.subject } : null,
+		threads: [...new Set(results.map((mail) => mail.thread_id ?? mail.id))]
+	};
+}
+
 async function draftOne(
 	db: D1Database,
 	deps: FollowUpDeps,
@@ -184,23 +213,12 @@ async function draftOne(
 ): Promise<Outcome> {
 	const guest = row.guest_email.toLowerCase();
 	const pageAddress = row.send_from.toLowerCase();
-	// Everything the guest sent the page's address, newest first. Anyone can put the guest's
-	// address on an email, so only mail their domain signed picks the thread to reply on.
-	const { results: fromGuest } = await db
-		.prepare(
-			`SELECT id, thread_id, subject, from_addr, security_json FROM emails
-			 WHERE user_id = ? AND direction = 'inbound' AND deleted_at IS NULL AND lower(from_addr) = ?
-			   AND instr(lower(to_addr || ',' || coalesce(cc_addr, '')), ?) > 0
-			 ORDER BY created_at DESC LIMIT 50`
-		)
-		.bind(row.user_id, guest, pageAddress)
-		.all<{ id: string; thread_id: string | null; subject: string; from_addr: string; security_json: string | null }>();
-	const anchor = fromGuest.find((mail) => senderVerified(mail.security_json, mail.from_addr)) ?? null;
+	const { anchor, threads } = await guestThreads(db, row.user_id, guest, pageAddress);
 	const threadId = anchor ? (anchor.thread_id ?? anchor.id) : null;
 	// You took a thread with them over: only your own notes still get a draft (that's you asking).
 	// Every thread counts, so a new one started in their name can't get around it.
 	if (!notes) {
-		for (const thread of new Set(fromGuest.map((mail) => mail.thread_id ?? mail.id))) {
+		for (const thread of threads) {
 			if (await isThreadTakenOver(db, row.user_id, thread)) return { drafted: false, state: 'skipped_taken_over', ref: null };
 		}
 	}

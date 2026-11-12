@@ -4,6 +4,7 @@ import { loadProviderKey, markProviderKeyRejected, workspacesWithWorkingKey } fr
 import { clientFor } from './ai-providers';
 import type { EmailProvider } from './email-provider';
 import { draftDueFollowUps } from './follow-up';
+import { askDueChecks } from './no-show';
 import { sendDueBriefs } from './prep-brief';
 import { importMasterKey } from './secret-box';
 
@@ -54,6 +55,9 @@ export async function sendBriefsNow(env: AgentEnv, provider: EmailProvider, fetc
 	const open = masterKey ? keyedClients(env, masterKey) : null;
 	const clientFor = async (workspaceId: string) => (open && working.has(workspaceId) ? open(workspaceId) : null);
 	const sent = await sendDueBriefs(env.DB, { provider, fetcher: (url, init) => fetcher(url, init), clientFor }, new Date());
+	// Ten minutes after a meeting: "Did they show?" in Needs your OK (R13). Answered first, so a
+	// no-show you marked stops the general follow-up below.
+	await askDueChecks(env.DB, new Date());
 	// After the meeting: follow-ups from your notes in reply to the brief (R12), for your OK.
 	await draftDueFollowUps(env.DB, { clientFor }, new Date());
 	return sent;

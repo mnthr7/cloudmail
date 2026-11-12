@@ -5,6 +5,7 @@ import { DEMO_MODE, DEMO_USER } from './demo';
 import { ActionStateError, AgentNotFoundError, NotAllowedError } from './agents-store';
 import { AskError } from './agent-runs-store.ts';
 import { MemoryError } from './agent-memory-store.ts';
+import { CheckError } from './no-show.ts';
 
 /** Shared plumbing for /api/agents routes: who is asking, the body, and error responses. */
 
@@ -40,6 +41,10 @@ export function failure(error: unknown): Response {
 	if (error instanceof AskError) return json({ error: error.code }, { status: 400 });
 	if (error instanceof MemoryError) {
 		return json({ error: error.code }, { status: error.code === 'missing' ? 404 : 400 });
+	}
+	if (error instanceof CheckError) {
+		const status = error.code === 'missing' ? 404 : error.code === 'answer' ? 400 : 409;
+		return json({ error: error.code }, { status });
 	}
 	if (error instanceof AgentNotFoundError) return json({ error: 'Not found' }, { status: 404 });
 	if (error instanceof NotAllowedError) return json({ error: 'Not allowed' }, { status: 403 });

@@ -23,11 +23,14 @@ import { suggestionStats, type SuggestionStats } from '#lib/server/reply-suggest
 import { memoryByAgent, type MemoryFact } from '#lib/server/agent-memory-store.ts';
 import { SPECIALIST_AFTER } from '#lib/agents/sam.ts';
 import { listBookingPages } from '#lib/server/booking-store.ts';
+import { listOpenChecks, type OpenCheck } from '#lib/server/no-show.ts';
 
 export const load: PageServerLoad = async ({ locals, platform }) => {
 	const empty: {
 		agents: AgentSummary[];
 		queue: QueuedAction[];
+		/** "Did they show?" questions about your meetings (R13). */
+		checks: OpenCheck[];
 		shadow: ShadowAction[];
 		runs: RunSummary[];
 		spend: Record<string, number>;
@@ -57,6 +60,7 @@ export const load: PageServerLoad = async ({ locals, platform }) => {
 		suggestions: [],
 		agents: [],
 		queue: [],
+		checks: [],
 		shadow: [],
 		runs: [],
 		spend: {},
@@ -72,9 +76,10 @@ export const load: PageServerLoad = async ({ locals, platform }) => {
 	const db = platform?.env.DB;
 	if (!db || !locals.user) return empty;
 
-	const [agents, queue, shadow, runs, spend, sendAs, providers] = await Promise.all([
+	const [agents, queue, checks, shadow, runs, spend, sendAs, providers] = await Promise.all([
 		listAgents(db, locals.user.id),
 		listQueuedActions(db, locals.user.id),
+		listOpenChecks(db, locals.user.id).catch(() => []),
 		listShadowActions(db, locals.user.id),
 		listRecentRuns(db, locals.user.id, 100),
 		spendByAgent(db, locals.user.id),
@@ -102,6 +107,7 @@ export const load: PageServerLoad = async ({ locals, platform }) => {
 	return {
 		agents,
 		queue,
+		checks,
 		shadow,
 		runs,
 		spend,

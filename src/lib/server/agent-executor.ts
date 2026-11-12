@@ -357,7 +357,9 @@ async function carryOut(db: D1Database, action: ClaimedAction, now: Date, deps: 
 			const cc = (authorized?.recipients ?? []).filter((address) => humans.has(address));
 			let told: string | null = null;
 			let sentId: string | null = null;
-			if (authorized?.from && to.length) {
+			// Checked again here: the note goes only to a sender whose domain signed their mail.
+			const verified = senderVerified((email as typeof email & { security_json?: string | null }).security_json ?? null, email.from_addr);
+			if (authorized?.from && to.length && verified) {
 				await loopGuard(db, action, [...to, ...cc], thread.length ? thread : [email], now);
 				const text = `${handOffNote(email.from_name, user.name, action.agent_name)}\n\n${disclosureFooter(action.agent_name, user.name)}`;
 				const queued = await queueOutbound(db, user, {

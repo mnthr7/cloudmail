@@ -233,6 +233,17 @@ describe('Ava hands a thread to you', () => {
 		expect((await threadActivity(w.db, 'u1', 't1')).handedOffBy).toBe('Ava');
 	});
 
+	test('mail forged in someone’s name: she hands over with a note to you, and emails nobody', async () => {
+		const w = await world();
+		const email = mail(w, { body: 'Get me a human now.', security: JSON.stringify({ auth: { spf: 'none', dkim: 'none', dmarc: 'none' }, verdict: null, reasons: [] }) });
+		await enqueueMailRuns(w.db, 'u1', email, {}, NOW);
+		await run(w, [call('hand_off', { reason: 'Asked for a human.' })]);
+		expect(w.sqlite.query(`SELECT COUNT(*) AS n FROM emails WHERE direction = 'outbound'`).get()).toEqual({ n: 0 });
+		const activity = await threadActivity(w.db, 'u1', 't1');
+		expect(activity.handedOffBy).toBe('Ava');
+		expect((activity.items.find((item) => item.kind === 'alert') as { body: string }).body).not.toContain('told');
+	});
+
 	test('switched off, she can’t hand over even if the model tries', async () => {
 		const w = await world();
 		const definition = structuredClone(avaDefinition('demo@acme.com', 'Acme'));
@@ -263,6 +274,14 @@ describe('after a take-over, not even a reminder', () => {
 		await takeOverThread(w.db, 'u1', 't1', NOW);
 		await sendDueReminders(w.db, w.provider, DUE);
 		expect(reminders(w)).toEqual([]);
+	});
+
+	test('mail forged in their name can’t get their reminders stopped', async () => {
+		const w = await world();
+		mail(w, { body: 'Get me a human.', thread: 'forged', security: JSON.stringify({ auth: { spf: 'none', dkim: 'none', dmarc: 'none' }, verdict: null, reasons: [] }) });
+		await takeOverThread(w.db, 'u1', 'forged', NOW);
+		await sendDueReminders(w.db, w.provider, DUE);
+		expect(reminders(w).length).toBe(1);
 	});
 
 	test('unless you turn reminders back on for that thread', async () => {

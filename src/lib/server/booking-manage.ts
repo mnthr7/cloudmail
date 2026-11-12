@@ -616,16 +616,18 @@ export async function sendDueReminders(db: D1Database, provider: EmailProvider, 
 		if (start - Date.parse(row.created_at) < row.reminder_minutes * 60_000) continue;
 		// You took a thread with this guest over (or an agent handed it to you): nothing automatic
 		// goes to them, not even a reminder, unless you turned reminders back on for it (R15).
-		const held = await db
+		// Only mail the guest provably sent ties a thread to them: mail forged in their name can't
+		// get a thread taken over and their reminders stopped.
+		const { results: held } = await db
 			.prepare(
-				`SELECT 1 AS yes FROM thread_takeovers t
+				`SELECT e.from_addr, e.security_json FROM thread_takeovers t
 				 JOIN emails e ON e.user_id = t.mailbox_user_id AND coalesce(e.thread_id, e.id) = t.thread_id
 				 WHERE t.mailbox_user_id = ? AND t.reminders = 0 AND e.direction = 'inbound' AND lower(e.from_addr) = ?
-				 LIMIT 1`
+				 LIMIT 50`
 			)
 			.bind(row.user_id, row.guest_email.toLowerCase())
-			.first<{ yes: number }>();
-		if (held) continue;
+			.all<{ from_addr: string; security_json: string | null }>();
+		if (held.some((mail) => senderVerified(mail.security_json, mail.from_addr))) continue;
 		try {
 			const owner = await ownerOf(db, row);
 			const from = await resolveFromAddress(db, owner, null, row.send_from);

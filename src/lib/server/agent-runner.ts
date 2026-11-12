@@ -414,7 +414,11 @@ async function runOne(
 			// Handing over writes to the sender of the mail and copies the founder, from the agent's
 			// own address. The model picks none of that.
 			if (proposal.capability === 'hand_off') {
-				const sender = ours.has(email.from_addr.toLowerCase()) ? null : email.from_addr.toLowerCase();
+				// Only someone whose domain proved the mail is theirs is told. Anyone can put another
+				// person's address on an email; they don't get mail from us because of it.
+				const emailSecurity = (email as typeof email & { security_json?: string | null }).security_json ?? null;
+				const sender =
+					ours.has(email.from_addr.toLowerCase()) || !senderVerified(emailSecurity, email.from_addr) ? null : email.from_addr.toLowerCase();
 				const founder = await db
 					.prepare(`SELECT address FROM addresses WHERE user_id = ? ORDER BY is_default DESC, address LIMIT 1`)
 					.bind(run.mailbox_user_id)

@@ -85,6 +85,8 @@ export type BookingPage = {
 	questions: Question[];
 	allowGuests: boolean;
 	reminderMinutes: number;
+	/** When the host's prep brief goes out on the meeting day, in minutes after midnight in the page's zone. -1: none. */
+	briefMinute: number;
 };
 
 export const LOCATION_KINDS = ['none', 'video', 'phone_guest', 'phone_host', 'in_person', 'custom'] as const;
@@ -92,6 +94,8 @@ export type LocationKind = (typeof LOCATION_KINDS)[number];
 export type AskPhone = 'off' | 'optional' | 'required';
 export type Question = { id: string; label: string; long: boolean; required: boolean };
 export const REMINDER_CHOICES = [0, 60, 120, 1440, 2880] as const;
+/** Off, or 6, 7, 8 or 9 in the morning. */
+export const BRIEF_CHOICES = [-1, 360, 420, 480, 540] as const;
 
 type PageRow = {
 	id: string;
@@ -116,6 +120,7 @@ type PageRow = {
 	questions_json?: string | null;
 	allow_guests?: number | null;
 	reminder_minutes?: number | null;
+	brief_minute?: number | null;
 };
 
 function toPage(row: PageRow): BookingPage {
@@ -156,7 +161,8 @@ function toPage(row: PageRow): BookingPage {
 		askPhone: row.ask_phone === 'optional' || row.ask_phone === 'required' ? row.ask_phone : 'off',
 		questions: parseQuestions(row.questions_json),
 		allowGuests: row.allow_guests === 1,
-		reminderMinutes: row.reminder_minutes ?? 1440
+		reminderMinutes: row.reminder_minutes ?? 1440,
+		briefMinute: row.brief_minute ?? 420
 	};
 }
 
@@ -275,6 +281,8 @@ async function readPage(
 
 	const reminderMinutes = input.reminderMinutes === undefined ? (current?.reminderMinutes ?? 1440) : Number(input.reminderMinutes);
 	if (!(REMINDER_CHOICES as readonly number[]).includes(reminderMinutes)) throw new BookingError('numbers');
+	const briefMinute = input.briefMinute === undefined ? (current?.briefMinute ?? 420) : Number(input.briefMinute);
+	if (!(BRIEF_CHOICES as readonly number[]).includes(briefMinute)) throw new BookingError('numbers');
 
 	let durations = current?.durations ?? [30];
 	if (input.durations !== undefined) {
@@ -338,7 +346,8 @@ async function readPage(
 		askPhone,
 		questions,
 		allowGuests: input.allowGuests === undefined ? (current?.allowGuests ?? false) : input.allowGuests === true,
-		reminderMinutes
+		reminderMinutes,
+		briefMinute
 	};
 }
 
@@ -349,7 +358,8 @@ function v2Values(page: Omit<BookingPage, 'id'>): unknown[] {
 		JSON.stringify(page.questions),
 		page.allowGuests ? 1 : 0,
 		page.reminderMinutes,
-		page.locationText
+		page.locationText,
+		page.briefMinute
 	];
 }
 
@@ -388,8 +398,8 @@ export async function createBookingPage(
 			.prepare(
 				`INSERT INTO booking_pages (id, user_id, slug, title, description, durations_json, timezone, hours_json, buffer_minutes,
 				   min_notice_minutes, horizon_days, max_per_day, calendar_id, send_from, location, enabled, created_at, updated_at,
-				   location_kind, ask_phone, questions_json, allow_guests, reminder_minutes, location_label)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+				   location_kind, ask_phone, questions_json, allow_guests, reminder_minutes, location_label, brief_minute)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 			)
 			.bind(
 				id,
@@ -436,7 +446,8 @@ export async function updateBookingPage(
 				`UPDATE booking_pages SET slug = ?, title = ?, description = ?, durations_json = ?, timezone = ?, hours_json = ?,
 				   buffer_minutes = ?, min_notice_minutes = ?, horizon_days = ?, max_per_day = ?, calendar_id = ?, send_from = ?,
 				   location = ?, enabled = ?, updated_at = ?,
-				   location_kind = ?, ask_phone = ?, questions_json = ?, allow_guests = ?, reminder_minutes = ?, location_label = ?
+				   location_kind = ?, ask_phone = ?, questions_json = ?, allow_guests = ?, reminder_minutes = ?, location_label = ?,
+				   brief_minute = ?
 				 WHERE id = ? AND user_id = ?`
 			)
 			.bind(

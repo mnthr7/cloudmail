@@ -382,8 +382,12 @@ function monthStart(now: Date): string {
 /** What an agent's runs have cost this calendar month (UTC), in micro-dollars. */
 export async function spentThisMonth(db: D1Database, agentId: string, now = new Date()): Promise<number> {
 	const row = await db
-		.prepare(`SELECT COALESCE(SUM(cost_micros), 0) AS spent FROM agent_runs WHERE agent_principal_id = ? AND created_at >= ?`)
-		.bind(agentId, monthStart(now))
+		// Runs, and the prep briefs the agent wrote (they aren't runs, but their model calls cost the same).
+		.prepare(
+			`SELECT (SELECT COALESCE(SUM(cost_micros), 0) FROM agent_runs WHERE agent_principal_id = ? AND created_at >= ?)
+			      + (SELECT COALESCE(SUM(cost_micros), 0) FROM booking_briefs WHERE agent_principal_id = ? AND created_at >= ?) AS spent`
+		)
+		.bind(agentId, monthStart(now), agentId, monthStart(now))
 		.first<{ spent: number }>();
 	return row?.spent ?? 0;
 }

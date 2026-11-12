@@ -165,8 +165,8 @@ When a prospect replies on a booking thread, Ava sorts the reply into one of: re
 
 **R11. Prep brief**
 At a time the founder sets (default: 7:00 local on the meeting day, or 60 minutes before if the meeting was booked the same day), Ava emails the founder a brief. It includes who is coming, their company (from the email domain and the company's homepage, fetched on the server), their intake answers, the full thread so far, and Ava's suggested focus based on the playbook.
-- [ ] The brief arrives in the founder's personal inbox and links to the Demos thread
-- [ ] If the company site can't be fetched, the brief says so and doesn't make things up
+- [x] The brief arrives in the founder's personal inbox and links to the Demos thread (`src/lib/server/prep-brief.ts`)
+- [x] If the company site can't be fetched, the brief says so and doesn't make things up
 
 **R12. Follow-up from call notes**
 After the meeting ends, the founder can reply to the brief with rough notes, in any format. Ava drafts a follow-up on the prospect's thread from those notes and the playbook, and queues it for approval. If there are no notes 2 hours after the meeting ends, Ava drafts a generic follow-up and queues it.

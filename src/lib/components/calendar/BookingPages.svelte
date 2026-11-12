@@ -27,6 +27,7 @@
 		questions: Array<{ id: string; label: string; long: boolean; required: boolean }>;
 		allowGuests: boolean;
 		reminderMinutes: number;
+		briefMinute: number;
 	};
 
 	const LOCATIONS = [
@@ -58,6 +59,13 @@
 		[1440, '1 day before'],
 		[2880, '2 days before']
 	] as const;
+	const BRIEFS: Array<[number, string]> = [
+		[-1, 'No brief'],
+		[360, '6:00 in the morning'],
+		[420, '7:00 in the morning'],
+		[480, '8:00 in the morning'],
+		[540, '9:00 in the morning']
+	];
 
 	const DAYS = [
 		['MO', 'Mon'],
@@ -107,6 +115,7 @@
 		questions: Array<{ id?: string; label: string; long: boolean; required: boolean }>;
 		allowGuests: boolean;
 		reminderMinutes: number;
+		briefMinute: number;
 	};
 
 	function blank(): Form {
@@ -133,7 +142,8 @@
 			askPhone: 'off',
 			questions: [],
 			allowGuests: true,
-			reminderMinutes: 1440
+			reminderMinutes: 1440,
+			briefMinute: 420
 		};
 	}
 
@@ -164,7 +174,8 @@
 			askPhone: page.askPhone,
 			questions: page.questions.map((question) => ({ ...question })),
 			allowGuests: page.allowGuests,
-			reminderMinutes: page.reminderMinutes
+			reminderMinutes: page.reminderMinutes,
+			briefMinute: page.briefMinute ?? 420
 		};
 	}
 
@@ -249,7 +260,8 @@
 			askPhone: form.locationKind === 'phone_guest' ? 'required' : form.askPhone,
 			questions: form.questions.filter((question) => question.label.trim()),
 			allowGuests: form.allowGuests,
-			reminderMinutes: Number(form.reminderMinutes)
+			reminderMinutes: Number(form.reminderMinutes),
+			briefMinute: Number(form.briefMinute)
 		};
 		try {
 			const res = await fetch(editing === 'new' ? '/api/calendar/booking-pages' : `/api/calendar/booking-pages/${editing}`, {
@@ -497,6 +509,13 @@
 				<select bind:value={form.reminderMinutes}>
 					{#each REMINDERS as option (option[0])}<option value={option[0]}>{option[1]}</option>{/each}
 				</select>
+			</label>
+			<label class="field">
+				<span>Prep brief to you on the meeting day</span>
+				<select bind:value={form.briefMinute}>
+					{#each BRIEFS as option (option[0])}<option value={option[0]}>{option[1]}</option>{/each}
+				</select>
+				<small class="muted">Sent by the agent that answers for this page's address: who's coming, their company, what they said, and what to focus on. A meeting booked later in the day gets its brief an hour before.</small>
 			</label>
 			<label class="check"><input type="checkbox" bind:checked={form.enabled} /> Page is on (people can book)</label>
 			<div class="actions">

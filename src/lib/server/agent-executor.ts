@@ -6,7 +6,8 @@ import { threadReceivedAtAddresses } from '#lib/reply-from.ts';
 import { textToHtml } from '#lib/agents/suggestions.ts';
 import { replyRecipients } from '#lib/writing/recipients.ts';
 import { authorize, type AuthorizedAddresses } from '#lib/agents/policy.ts';
-import { threadParticipants } from './agent-brain.ts';
+import { systemPrompt, threadParticipants } from './agent-brain.ts';
+import { quotesInstructions } from '#lib/agents/leak-guard.ts';
 import { getAgent, liveWorkspaceAddresses, sendableForAuthor } from './agents-store.ts';
 import { getUserById } from './auth.ts';
 import { createLabel, listLabels } from './labels-store.ts';
@@ -168,6 +169,8 @@ function guardMessage(agent: string, code: string): string {
 			return `${agent} stopped: agents already wrote to this person ${MAX_SENDS_PER_RECIPIENT_PER_DAY} times in the last day. Check the thread before anything else goes out.`;
 		case 'loop_thread_runaway':
 			return `${agent} stopped: agents sent ${MAX_AGENT_MESSAGES_WITHOUT_HUMAN} messages on this thread without anyone from your side replying. Take a look before it continues.`;
+		case 'leaks_instructions':
+			return `${agent} stopped: the reply repeated part of its job description, which stays private. Nothing was sent. Check what the sender asked for.`;
 		default:
 			return `${agent} stopped (${code}).`;
 	}
@@ -293,6 +296,11 @@ async function carryOut(db: D1Database, action: ClaimedAction, now: Date, deps: 
 			if (to.length === 0) throw new StopError('not_authorized');
 
 			await loopGuard(db, action, [...to, ...cc], thread.length ? thread : [email], now);
+			// The agent's job and our prompt stay private, however the mail asked for them (R16).
+			const agent = await getAgent(db, action.agent_principal_id);
+			if (quotesInstructions(body, [agent?.version.definition.job ?? '', systemPrompt()])) {
+				throw new StopError('leaks_instructions', true);
+			}
 
 			const text = `${body}\n\n${disclosureFooter(action.agent_name, user.name)}`;
 			const queued = await queueOutbound(db, user, {

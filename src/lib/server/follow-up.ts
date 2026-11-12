@@ -8,6 +8,7 @@ import type { AgentRecord } from './agents-store.ts';
 import { proposeAction } from './agents-store.ts';
 import { spentThisMonth } from './agent-runs-store.ts';
 import { disclosureFooter } from './agent-executor.ts';
+import { senderVerified } from './booking-manage.ts';
 import { formatWhen } from './booking-store.ts';
 import { stripHtml } from './html.ts';
 import { saveDraft } from './mail-store.ts';
@@ -183,19 +184,25 @@ async function draftOne(
 ): Promise<Outcome> {
 	const guest = row.guest_email.toLowerCase();
 	const pageAddress = row.send_from.toLowerCase();
-	const anchor = await db
+	// Everything the guest sent the page's address, newest first. Anyone can put the guest's
+	// address on an email, so only mail their domain signed picks the thread to reply on.
+	const { results: fromGuest } = await db
 		.prepare(
-			`SELECT id, thread_id, subject FROM emails
+			`SELECT id, thread_id, subject, from_addr, security_json FROM emails
 			 WHERE user_id = ? AND direction = 'inbound' AND deleted_at IS NULL AND lower(from_addr) = ?
 			   AND instr(lower(to_addr || ',' || coalesce(cc_addr, '')), ?) > 0
-			 ORDER BY created_at DESC LIMIT 1`
+			 ORDER BY created_at DESC LIMIT 50`
 		)
 		.bind(row.user_id, guest, pageAddress)
-		.first<{ id: string; thread_id: string | null; subject: string }>();
+		.all<{ id: string; thread_id: string | null; subject: string; from_addr: string; security_json: string | null }>();
+	const anchor = fromGuest.find((mail) => senderVerified(mail.security_json, mail.from_addr)) ?? null;
 	const threadId = anchor ? (anchor.thread_id ?? anchor.id) : null;
-	// You took the thread over: only your own notes still get a draft (that's you asking).
-	if (!notes && threadId && (await isThreadTakenOver(db, row.user_id, threadId))) {
-		return { drafted: false, state: 'skipped_taken_over', ref: null };
+	// You took a thread with them over: only your own notes still get a draft (that's you asking).
+	// Every thread counts, so a new one started in their name can't get around it.
+	if (!notes) {
+		for (const thread of new Set(fromGuest.map((mail) => mail.thread_id ?? mail.id))) {
+			if (await isThreadTakenOver(db, row.user_id, thread)) return { drafted: false, state: 'skipped_taken_over', ref: null };
+		}
 	}
 
 	const client = deps.clientFor ? await deps.clientFor(agent.workspaceId) : null;
@@ -205,7 +212,11 @@ async function draftOne(
 		return { drafted: false, state: 'skipped_budget', ref: null };
 	}
 
-	const thread = await threadWith(db, row.user_id, guest, pageAddress);
+	// What the guest provably wrote, and what we sent them. Mail in their name that their domain
+	// didn't sign stays out: the follow-up is built only from the real conversation.
+	const thread = (await threadWith(db, row.user_id, guest, pageAddress)).filter(
+		(mail) => mail.direction === 'outbound' || senderVerified(mail.security_json, mail.from_addr)
+	);
 	const answers = parseAnswers(row.answers_json);
 	const when = formatWhen(Date.parse(row.start_at), Date.parse(row.end_at), row.page_timezone);
 	const body = await writeFollowUp(db, client, agent, row.brief_id, { row, notes, thread, answers, when });

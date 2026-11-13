@@ -77,6 +77,9 @@ export async function checkInbound(
 		firstTimeSender: !seen
 	});
 
+	// Kept so the details panel can say what the receiving server checked.
+	security.authText = headers.authenticationResults?.slice(0, 4096) ?? null;
+
 	await db
 		.prepare(`UPDATE emails SET security_json = ? WHERE id = ? AND user_id = ?`)
 		.bind(JSON.stringify(security), emailId, userId)

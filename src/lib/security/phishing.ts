@@ -45,6 +45,12 @@ export type MessageSecurity = {
 	auth: AuthSummary;
 	verdict: PhishingVerdict | null;
 	reasons: PhishingReason[];
+	/**
+	 * The receiving server's own Authentication-Results text (Cloudflare's or
+	 * Resend's), captured when the mail arrived. The only source the details
+	 * panel treats as checked: stored headers may hold the sender's fakes.
+	 */
+	authText?: string | null;
 };
 
 /** At or above: "Looks like phishing". */
@@ -326,7 +332,9 @@ export function parseSecurity(json: string | null | undefined): MessageSecurity 
 		const reasons = value.reasons
 			.filter((reason) => reason && typeof reason.text === 'string' && typeof reason.code === 'string')
 			.slice(0, 10);
-		return { auth: value.auth ?? { spf: null, dkim: null, dmarc: null }, verdict, reasons };
+		const read: MessageSecurity = { auth: value.auth ?? { spf: null, dkim: null, dmarc: null }, verdict, reasons };
+		if (typeof value.authText === 'string') read.authText = value.authText.slice(0, 4096);
+		return read;
 	} catch {
 		return null;
 	}

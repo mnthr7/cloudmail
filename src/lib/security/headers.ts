@@ -1,5 +1,5 @@
 import { registrableDomain } from './host';
-import { cloudflareAuthResults, type AuthSummary } from './phishing';
+import type { AuthSummary } from './phishing';
 
 /**
  * A message's original headers, kept so the reader can see who really sent it.
@@ -73,7 +73,8 @@ function all(lines: HeaderLine[], name: string): string[] {
 }
 
 function domainOfAddress(value: string | null | undefined): string | null {
-	if (!value) return null;
+	// Header values are the sender's; cap before any regex sees them.
+	if (!value || value.length > 512) return null;
 	const address = value.match(/<([^>]*)>/)?.[1] ?? value;
 	const domain = address.trim().split('@').pop()?.trim().toLowerCase().replace(/[>.\s]+$/, '');
 	return domain && domain.includes('.') && !domain.includes(' ') ? domain : null;
@@ -105,8 +106,10 @@ export type SenderDetails = {
 /** `key=value` properties in Authentication-Results text, per method clause. */
 function clauses(authText: string | null): Array<{ method: string; result: string; props: Record<string, string> }> {
 	if (!authText) return [];
+	authText = authText.slice(0, 4096);
 	const found: Array<{ method: string; result: string; props: Record<string, string> }> = [];
-	for (const clause of authText.split(';')) {
+	for (const raw of authText.split(';')) {
+		const clause = raw.slice(0, 1024);
 		const match = clause.match(/\b(spf|dkim|dmarc)\s*=\s*([a-z]+)/i);
 		if (!match) continue;
 		const props: Record<string, string> = {};
@@ -120,12 +123,13 @@ function clauses(authText: string | null): Array<{ method: string; result: strin
 
 /**
  * The facts a reader needs to judge a sender. `authText` is the receiving
- * server's own Authentication-Results; when absent, the Cloudflare ARC set on
- * top of the headers is used. Headers further down are the sender's word.
+ * server's own Authentication-Results, captured when the mail arrived. Nothing
+ * in the stored header block is ever read as checked: Resend hands over the
+ * sender's headers as-is, so even an ARC set on top could be theirs.
  */
 export function senderDetails(block: string | null | undefined, authText: string | null = null): SenderDetails {
 	const lines = parseHeaderBlock(block);
-	const trusted = clauses(authText ?? (block ? cloudflareAuthResults(block) : null));
+	const trusted = clauses(authText);
 
 	const spfClause = trusted.find((clause) => clause.method === 'spf');
 	const spfDomain = domainOfAddress(spfClause?.props['smtp.mailfrom']) ?? spfClause?.props['smtp.helo'] ?? null;
@@ -145,7 +149,7 @@ export function senderDetails(block: string | null | undefined, authText: string
 		signedBy.push({ domain, checked: clause.result === 'pass' });
 	}
 	for (const signature of all(lines, 'DKIM-Signature')) {
-		const domain = signature.match(/(?:^|;)\s*d\s*=\s*([a-z0-9.-]+)/i)?.[1]?.toLowerCase();
+		const domain = signature.slice(0, 2048).match(/(?:^|;)\s*d\s*=\s*([a-z0-9.-]+)/i)?.[1]?.toLowerCase();
 		if (!domain || seen.has(domain)) continue;
 		seen.add(domain);
 		signedBy.push({ domain, checked: false });
@@ -153,7 +157,7 @@ export function senderDetails(block: string | null | undefined, authText: string
 
 	const received = all(lines, 'Received');
 	const oldest = received.at(-1) ?? null;
-	const origin = oldest?.match(/^from\s+(.+?)\s+(?:by|with|id|for)\b/i)?.[1] ?? null;
+	const origin = oldest?.slice(0, 1024).match(/^from\s+(.+?)\s+(?:by|with|id|for)\b/i)?.[1] ?? null;
 
 	const from = first(lines, 'From');
 	return {

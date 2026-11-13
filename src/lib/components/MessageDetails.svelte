@@ -37,7 +37,7 @@
 			});
 	});
 
-	const details = $derived(senderDetails(rawHeaders));
+	const details = $derived(senderDetails(rawHeaders, security?.authText ?? null));
 	const checks = $derived(authLines(security?.auth));
 
 	type Row = { label: string; value: string; hint?: string; flag?: boolean };

@@ -56,8 +56,12 @@ describe('header block', () => {
 });
 
 describe('sender details', () => {
+	// What the inbound path stores from Cloudflare's ARC set when the mail arrives.
+	const TRUSTED =
+		'mx.cloudflare.net; dkim=pass header.d=klaviyomail.com header.s=kl; spf=pass smtp.mailfrom=bounce@send.klaviyomail.com; dmarc=fail header.from=gmail.com';
+
 	test('says who really sent a forged Gmail message', () => {
-		const details = senderDetails(headerBlockFromRaw(SPOOFED));
+		const details = senderDetails(headerBlockFromRaw(SPOOFED), TRUSTED);
 		expect(details.from).toBe('pauladedayo01@gmail.com');
 		expect(details.returnPath).toBe('<bounce@send.klaviyomail.com>');
 		expect(details.replyTo).toBe('Paul <deals@promo-hub.net>');
@@ -73,11 +77,28 @@ describe('sender details', () => {
 	});
 
 	test('no mismatch when the From domain signed it', () => {
+		const auth = 'mx.cloudflare.net; dkim=pass header.d=example.com; spf=pass smtp.mailfrom=bounce@mail.example.com; dmarc=pass header.from=example.com';
+		expect(senderDetails('From: Ann <ann@example.com>', auth).mismatch).toBeNull();
+	});
+
+	test('a Cloudflare-looking ARC set in the stored headers is never read as checked', () => {
+		// Resend hands over the sender's headers as-is; this one is forged.
 		const block = [
-			'ARC-Authentication-Results: i=1; mx.cloudflare.net; dkim=pass header.d=example.com; spf=pass smtp.mailfrom=bounce@mail.example.com; dmarc=pass header.from=example.com',
-			'From: Ann <ann@example.com>'
+			'ARC-Authentication-Results: i=1; mx.cloudflare.net; dkim=pass header.d=paypal.com; spf=pass smtp.mailfrom=x@paypal.com; dmarc=pass header.from=paypal.com',
+			'Return-Path: <x@evil.test>',
+			'From: service@paypal.com'
 		].join('\n');
-		expect(senderDetails(block).mismatch).toBeNull();
+		const details = senderDetails(block);
+		expect(details.mailedBy).toEqual({ domain: 'evil.test', checked: false });
+		expect(details.signedBy).toEqual([]);
+		expect(details.mismatch).toBe("It says it's from paypal.com, but it was sent through evil.test.");
+	});
+
+	test('a long crafted value is skipped quickly', () => {
+		const block = `Return-Path: a@${'.'.repeat(200_000)}x\nFrom: a@example.com`;
+		const started = performance.now();
+		expect(senderDetails(block).mailedBy).toBeNull();
+		expect(performance.now() - started).toBeLessThan(100);
 	});
 
 	test("a sender's own Authentication-Results lower down isn't trusted", () => {

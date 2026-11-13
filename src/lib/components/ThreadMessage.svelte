@@ -4,6 +4,7 @@
 	import DeliveryStatus from './DeliveryStatus.svelte';
 	import EmailBody from './EmailBody.svelte';
 	import InviteCard from './calendar/InviteCard.svelte';
+	import MessageDetails from './MessageDetails.svelte';
 	import { untrack } from 'svelte';
 	import { showToast } from '#lib/toast.ts';
 	import { formatFullDate, formatRelativeDate } from '#lib/utils/date.ts';
@@ -48,6 +49,14 @@
 	const snippet = $derived(text.body.replace(/\s+/g, ' ').trim().slice(0, 140));
 
 	let quoteOpen = $state(false);
+	/** Sender details and original headers, opened from the warning or the header. */
+	let detailsOpen = $state(false);
+	const detailsFallback = $derived({
+		from: message.from_name ? `${message.from_name} <${message.from_addr}>` : message.from_addr,
+		to: message.to_addr,
+		replyTo: message.reply_to_header,
+		messageId: message.message_id
+	});
 	/** Set when an HTML body rendered to nothing — show the text instead. */
 	let htmlBlank = $state(false);
 	/** Remote image URLs were removed from the copy shown in the frame. */
@@ -165,6 +174,17 @@
 						<li>{reason.text}</li>
 					{/each}
 				</ul>
+				<button
+					type="button"
+					class="details-toggle"
+					aria-expanded={detailsOpen}
+					onclick={() => (detailsOpen = !detailsOpen)}
+				>
+					{detailsOpen ? 'Hide details' : 'Show details and headers'}
+				</button>
+				{#if detailsOpen}
+					<MessageDetails emailId={message.id} {security} fallback={detailsFallback} />
+				{/if}
 			</div>
 		{/if}
 		{#if nameWarning}
@@ -181,6 +201,19 @@
 				<p class="when">{formatFullDate(message.created_at)}</p>
 			</button>
 
+			{#if !outbound && !security?.verdict}
+				<button
+					type="button"
+					class="details-button"
+					aria-expanded={detailsOpen}
+					aria-label={detailsOpen ? 'Hide message details' : 'Show message details and headers'}
+					title="Details and headers"
+					onclick={() => (detailsOpen = !detailsOpen)}
+				>
+					<Icon name={detailsOpen ? 'arrow-up-s-line' : 'arrow-down-s-line'} size={16} />
+				</button>
+			{/if}
+
 			{#if outbound}
 				<DeliveryStatus status={message.status} detail={message.status_detail} />
 			{/if}
@@ -196,6 +229,12 @@
 				</button>
 			{/if}
 		</header>
+
+		{#if detailsOpen && !outbound && !security?.verdict}
+			<div class="details-panel">
+				<MessageDetails emailId={message.id} {security} fallback={detailsFallback} />
+			</div>
+		{/if}
 
 		{#if message.invite}
 			<InviteCard invite={message.invite} />
@@ -309,6 +348,39 @@
 
 	.phishing-banner.severe .phishing-title :global(i) {
 		color: var(--color-danger);
+	}
+
+	.details-toggle {
+		margin-top: 0.375rem;
+		font-weight: 600;
+		color: var(--color-link);
+		text-decoration: underline;
+		text-underline-offset: 2px;
+	}
+
+	.details-button {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		flex-shrink: 0;
+		width: 1.75rem;
+		height: 1.75rem;
+		border-radius: 9999px;
+		color: var(--color-text-secondary);
+	}
+
+	.details-button:hover {
+		color: var(--color-text);
+		background: var(--color-surface-hover);
+	}
+
+	.details-panel {
+		margin: 0.5rem 0 0 3.375rem;
+	}
+
+	.details-panel :global(.details) {
+		border-top: none;
+		padding-top: 0;
 	}
 
 	.phishing-banner ul {

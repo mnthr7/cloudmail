@@ -11,6 +11,7 @@ import { emailExistsByProviderId, insertEmail } from './mail-store';
 import { organizeInbound, readInboundHeader } from './organize-inbound';
 import { normalizeMessageId } from './send-mail';
 import { cloudflareAuthResults } from '#lib/security/phishing.ts';
+import { headerBlockFromRaw } from '#lib/security/headers.ts';
 
 export type CloudflareInboundMessage = {
 	readonly from: string;
@@ -97,7 +98,8 @@ export async function handleCloudflareInbound(
 		domainId: route.domainId,
 		providerId,
 		listUnsubscribe,
-		listUnsubscribePost
+		listUnsubscribePost,
+		rawHeaders: headerBlockFromRaw(raw)
 	});
 
 	const attachments = parsed.attachments ?? [];

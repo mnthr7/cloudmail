@@ -78,6 +78,7 @@ CREATE TABLE emails (
 	is_muted INTEGER NOT NULL DEFAULT 0,
 	list_unsubscribe TEXT,
 	list_unsubscribe_post TEXT,
+	raw_headers TEXT,
 	deleted_at TEXT,
 	created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -856,6 +857,8 @@ describe('inbound paths', () => {
 		expect(row.category).toBe('forums');
 		expect(row.is_starred).toBe(1);
 		expect(sent).toEqual([{ subject: 'Fwd: Hello', text: 'plain body' }]);
+		const kept = sqlite.query(`SELECT raw_headers FROM emails WHERE provider_id = 'prov-1'`).get() as { raw_headers: string };
+		expect(kept.raw_headers).toContain('List-Id: <list.example.com>');
 		const files = sqlite.query(`SELECT COUNT(*) AS n FROM email_attachments`).get() as { n: number };
 		expect(files.n).toBe(1);
 	});
@@ -957,5 +960,10 @@ describe('inbound paths', () => {
 		expect(row.list_unsubscribe).toBe('<https://ex.test/u>');
 		expect(row.list_unsubscribe_post).toBe('List-Unsubscribe=One-Click');
 		expect(row.category).toBe('forums');
+		// The original header block, not the body.
+		const kept = sqlite.query(`SELECT raw_headers FROM emails WHERE from_addr = 'ada@example.com'`).get() as { raw_headers: string };
+		expect(kept.raw_headers).toBe(
+			'From: Ada <ada@example.com>\nTo: me@cloudmail.test\nSubject: Cloudflare hello\nMessage-ID: <cf-msg@example.com>'
+		);
 	});
 });

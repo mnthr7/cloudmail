@@ -1,0 +1,211 @@
+import { registrableDomain } from './host';
+import { cloudflareAuthResults, type AuthSummary } from './phishing';
+
+/**
+ * A message's original headers, kept so the reader can see who really sent it.
+ * Pure: the inbound paths store the header block, and the reader turns it into
+ * plain facts. Anything a sender writes is labelled as their claim; only the
+ * receiving server's own results count as checked.
+ */
+
+/** Enough for any real header block; a sender can't fill the row with junk. */
+export const MAX_HEADER_BYTES = 64 * 1024;
+
+export type HeaderLine = { name: string; value: string };
+
+/** The header block of a raw MIME message: everything before the first blank line. */
+export function headerBlockFromRaw(raw: ArrayBuffer | Uint8Array | string): string | null {
+	const text =
+		typeof raw === 'string'
+			? raw.slice(0, MAX_HEADER_BYTES * 2)
+			: new TextDecoder().decode(
+					(raw instanceof Uint8Array ? raw : new Uint8Array(raw)).subarray(0, MAX_HEADER_BYTES * 2)
+				);
+	const end = text.search(/\r?\n\r?\n/);
+	const block = (end === -1 ? text : text.slice(0, end)).replace(/\r\n/g, '\n');
+	return capHeaders(block);
+}
+
+/** Headers handed over as a record (Resend), written back out as a header block. */
+export function headerBlockFromRecord(record: Record<string, unknown> | null | undefined): string | null {
+	if (!record) return null;
+	const lines: string[] = [];
+	for (const [name, value] of Object.entries(record)) {
+		const values = Array.isArray(value) ? value : [value];
+		for (const item of values) {
+			if (typeof item === 'string' && item.trim()) lines.push(`${name}: ${item}`);
+		}
+	}
+	return capHeaders(lines.join('\n'));
+}
+
+function capHeaders(block: string): string | null {
+	const trimmed = block.trim();
+	if (!trimmed) return null;
+	if (trimmed.length <= MAX_HEADER_BYTES) return trimmed;
+	// Cut at a line so the last header isn't half a value.
+	const cut = trimmed.slice(0, MAX_HEADER_BYTES);
+	return `${cut.slice(0, Math.max(cut.lastIndexOf('\n'), 0))}\n[headers cut short]`;
+}
+
+/** Each header on one line, in the order it arrived (newest hop first). */
+export function parseHeaderBlock(block: string | null | undefined): HeaderLine[] {
+	if (!block) return [];
+	const lines: HeaderLine[] = [];
+	for (const line of block.replace(/\r\n/g, '\n').replace(/\n[ \t]+/g, ' ').split('\n')) {
+		const colon = line.indexOf(':');
+		if (colon <= 0) continue;
+		const name = line.slice(0, colon).trim();
+		if (!/^[\x21-\x39\x3b-\x7e]+$/.test(name)) continue;
+		lines.push({ name, value: line.slice(colon + 1).trim() });
+	}
+	return lines;
+}
+
+function first(lines: HeaderLine[], name: string): string | null {
+	const target = name.toLowerCase();
+	return lines.find((line) => line.name.toLowerCase() === target)?.value || null;
+}
+
+function all(lines: HeaderLine[], name: string): string[] {
+	const target = name.toLowerCase();
+	return lines.filter((line) => line.name.toLowerCase() === target).map((line) => line.value);
+}
+
+function domainOfAddress(value: string | null | undefined): string | null {
+	if (!value) return null;
+	const address = value.match(/<([^>]*)>/)?.[1] ?? value;
+	const domain = address.trim().split('@').pop()?.trim().toLowerCase().replace(/[>.\s]+$/, '');
+	return domain && domain.includes('.') && !domain.includes(' ') ? domain : null;
+}
+
+export type DomainFact = { domain: string; checked: boolean };
+
+export type SenderDetails = {
+	from: string | null;
+	sender: string | null;
+	returnPath: string | null;
+	replyTo: string | null;
+	to: string | null;
+	cc: string | null;
+	date: string | null;
+	messageId: string | null;
+	/** The server that sent it, from SPF. `checked` when the receiving server said so. */
+	mailedBy: DomainFact | null;
+	/** Domains that signed it (DKIM). `checked` when the signature was verified. */
+	signedBy: DomainFact[];
+	/** How many servers handed it on. */
+	hops: number;
+	/** The first server that got it from the sender, from the oldest Received line. */
+	origin: string | null;
+	/** Plain words when the From domain isn't the one that sent or signed it. */
+	mismatch: string | null;
+};
+
+/** `key=value` properties in Authentication-Results text, per method clause. */
+function clauses(authText: string | null): Array<{ method: string; result: string; props: Record<string, string> }> {
+	if (!authText) return [];
+	const found: Array<{ method: string; result: string; props: Record<string, string> }> = [];
+	for (const clause of authText.split(';')) {
+		const match = clause.match(/\b(spf|dkim|dmarc)\s*=\s*([a-z]+)/i);
+		if (!match) continue;
+		const props: Record<string, string> = {};
+		for (const prop of clause.matchAll(/\b([a-z]+\.[a-z-]+)\s*=\s*"?([^\s";]+)/gi)) {
+			props[prop[1].toLowerCase()] = prop[2].toLowerCase();
+		}
+		found.push({ method: match[1].toLowerCase(), result: match[2].toLowerCase(), props });
+	}
+	return found;
+}
+
+/**
+ * The facts a reader needs to judge a sender. `authText` is the receiving
+ * server's own Authentication-Results; when absent, the Cloudflare ARC set on
+ * top of the headers is used. Headers further down are the sender's word.
+ */
+export function senderDetails(block: string | null | undefined, authText: string | null = null): SenderDetails {
+	const lines = parseHeaderBlock(block);
+	const trusted = clauses(authText ?? (block ? cloudflareAuthResults(block) : null));
+
+	const spfClause = trusted.find((clause) => clause.method === 'spf');
+	const spfDomain = domainOfAddress(spfClause?.props['smtp.mailfrom']) ?? spfClause?.props['smtp.helo'] ?? null;
+	const returnPath = first(lines, 'Return-Path');
+	const mailedBy: DomainFact | null = spfDomain
+		? { domain: spfDomain, checked: spfClause?.result === 'pass' }
+		: domainOfAddress(returnPath)
+			? { domain: domainOfAddress(returnPath)!, checked: false }
+			: null;
+
+	const signedBy: DomainFact[] = [];
+	const seen = new Set<string>();
+	for (const clause of trusted) {
+		const domain = clause.method === 'dkim' ? (clause.props['header.d'] ?? domainOfAddress(clause.props['header.i'])) : null;
+		if (!domain || seen.has(domain)) continue;
+		seen.add(domain);
+		signedBy.push({ domain, checked: clause.result === 'pass' });
+	}
+	for (const signature of all(lines, 'DKIM-Signature')) {
+		const domain = signature.match(/(?:^|;)\s*d\s*=\s*([a-z0-9.-]+)/i)?.[1]?.toLowerCase();
+		if (!domain || seen.has(domain)) continue;
+		seen.add(domain);
+		signedBy.push({ domain, checked: false });
+	}
+
+	const received = all(lines, 'Received');
+	const oldest = received.at(-1) ?? null;
+	const origin = oldest?.match(/^from\s+(.+?)\s+(?:by|with|id|for)\b/i)?.[1] ?? null;
+
+	const from = first(lines, 'From');
+	return {
+		from,
+		sender: first(lines, 'Sender'),
+		returnPath,
+		replyTo: first(lines, 'Reply-To'),
+		to: first(lines, 'To'),
+		cc: first(lines, 'Cc'),
+		date: first(lines, 'Date'),
+		messageId: first(lines, 'Message-ID'),
+		mailedBy,
+		signedBy,
+		hops: received.length,
+		origin,
+		mismatch: mismatchNote(domainOfAddress(from), mailedBy, signedBy)
+	};
+}
+
+function mismatchNote(fromDomain: string | null, mailedBy: DomainFact | null, signedBy: DomainFact[]): string | null {
+	if (!fromDomain) return null;
+	const home = registrableDomain(fromDomain);
+	const signedHome = signedBy.filter((fact) => fact.checked).some((fact) => registrableDomain(fact.domain) === home);
+	const sentHome = !!mailedBy?.checked && registrableDomain(mailedBy.domain) === home;
+	if (signedHome || sentHome) return null;
+	const others = [
+		...new Set(
+			[mailedBy, ...signedBy]
+				.filter((fact): fact is DomainFact => !!fact)
+				.map((fact) => registrableDomain(fact.domain))
+				.filter((domain) => domain !== home)
+		)
+	];
+	if (others.length === 0) return `It says it's from ${home}, but nothing in it proves ${home} sent it.`;
+	return `It says it's from ${home}, but it was sent through ${others.join(' and ')}.`;
+}
+
+/** Each check's result in a word, with what it means. */
+export function authLines(auth: AuthSummary | null | undefined): Array<{ method: 'SPF' | 'DKIM' | 'DMARC'; result: string; ok: boolean | null; note: string }> {
+	if (!auth) return [];
+	const about = auth.dmarcFrom?.filter(Boolean).join(', ');
+	const rows: Array<{ method: 'SPF' | 'DKIM' | 'DMARC'; result: string; ok: boolean | null; note: string }> = [];
+	const verdict = (result: string | null) => (result === 'pass' ? true : result === 'fail' || result === 'softfail' || result === 'permerror' ? false : null);
+	if (auth.spf) rows.push({ method: 'SPF', result: auth.spf, ok: verdict(auth.spf), note: 'Was it sent from a server the sending domain allows?' });
+	if (auth.dkim) rows.push({ method: 'DKIM', result: auth.dkim, ok: verdict(auth.dkim), note: 'Is it signed, and unchanged since?' });
+	if (auth.dmarc) {
+		rows.push({
+			method: 'DMARC',
+			result: auth.dmarc,
+			ok: verdict(auth.dmarc),
+			note: about ? `Does ${about} vouch for it?` : 'Does the From domain vouch for it?'
+		});
+	}
+	return rows;
+}

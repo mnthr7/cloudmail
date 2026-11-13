@@ -1,4 +1,3 @@
-import { registrableDomain } from './host';
 import type { AuthSummary } from './phishing';
 
 /**
@@ -39,13 +38,19 @@ export function headerBlockFromRecord(record: Record<string, unknown> | null | u
 	return capHeaders(lines.join('\n'));
 }
 
+const CUT_MARKER = '\n[headers cut short]';
+
+/** Trims, and keeps the block within MAX_HEADER_BYTES of UTF-8, marker included. */
 function capHeaders(block: string): string | null {
 	const trimmed = block.trim();
 	if (!trimmed) return null;
-	if (trimmed.length <= MAX_HEADER_BYTES) return trimmed;
-	// Cut at a line so the last header isn't half a value.
-	const cut = trimmed.slice(0, MAX_HEADER_BYTES);
-	return `${cut.slice(0, Math.max(cut.lastIndexOf('\n'), 0))}\n[headers cut short]`;
+	const bytes = new TextEncoder().encode(trimmed);
+	if (bytes.byteLength <= MAX_HEADER_BYTES) return trimmed;
+	// Decode a byte prefix (a split character becomes U+FFFD), then cut at a line
+	// so the last header isn't half a value.
+	const room = MAX_HEADER_BYTES - new TextEncoder().encode(CUT_MARKER).byteLength;
+	const cut = new TextDecoder().decode(bytes.subarray(0, room));
+	return `${cut.slice(0, Math.max(cut.lastIndexOf('\n'), 0))}${CUT_MARKER}`;
 }
 
 /** Each header on one line, in the order it arrived (newest hop first). */
@@ -140,20 +145,18 @@ export function senderDetails(block: string | null | undefined, authText: string
 			? { domain: domainOfAddress(returnPath)!, checked: false }
 			: null;
 
-	const signedBy: DomainFact[] = [];
-	const seen = new Set<string>();
+	// One entry per domain; any verified signature from it counts, in any order.
+	const signers = new Map<string, boolean>();
 	for (const clause of trusted) {
 		const domain = clause.method === 'dkim' ? (clause.props['header.d'] ?? domainOfAddress(clause.props['header.i'])) : null;
-		if (!domain || seen.has(domain)) continue;
-		seen.add(domain);
-		signedBy.push({ domain, checked: clause.result === 'pass' });
+		if (!domain) continue;
+		signers.set(domain, (signers.get(domain) ?? false) || clause.result === 'pass');
 	}
 	for (const signature of all(lines, 'DKIM-Signature')) {
 		const domain = signature.slice(0, 2048).match(/(?:^|;)\s*d\s*=\s*([a-z0-9.-]+)/i)?.[1]?.toLowerCase();
-		if (!domain || seen.has(domain)) continue;
-		seen.add(domain);
-		signedBy.push({ domain, checked: false });
+		if (domain && !signers.has(domain)) signers.set(domain, false);
 	}
+	const signedBy: DomainFact[] = [...signers].map(([domain, checked]) => ({ domain, checked }));
 
 	const received = all(lines, 'Received');
 	const oldest = received.at(-1) ?? null;
@@ -173,24 +176,40 @@ export function senderDetails(block: string | null | undefined, authText: string
 		signedBy,
 		hops: received.length,
 		origin,
-		mismatch: mismatchNote(domainOfAddress(from), mailedBy, signedBy)
+		mismatch: mismatchNote(domainOfAddress(from), mailedBy, signedBy, trusted)
 	};
 }
 
-function mismatchNote(fromDomain: string | null, mailedBy: DomainFact | null, signedBy: DomainFact[]): string | null {
+/** The same domain, or one is a subdomain of the other. Never two siblings under a shared suffix. */
+function sameFamily(a: string, b: string): boolean {
+	return a === b || a.endsWith(`.${b}`) || b.endsWith(`.${a}`);
+}
+
+function mismatchNote(
+	fromDomain: string | null,
+	mailedBy: DomainFact | null,
+	signedBy: DomainFact[],
+	trusted: ReturnType<typeof clauses>
+): string | null {
 	if (!fromDomain) return null;
-	const home = registrableDomain(fromDomain);
-	const signedHome = signedBy.filter((fact) => fact.checked).some((fact) => registrableDomain(fact.domain) === home);
-	const sentHome = !!mailedBy?.checked && registrableDomain(mailedBy.domain) === home;
-	if (signedHome || sentHome) return null;
-	const others = [
+	const home = fromDomain.replace(/^www\./, '');
+	// The receiving server's DMARC pass already settled alignment, with a real
+	// public-suffix list. Without one, only the domain itself or its own
+	// subdomains count: victim.co.uk and attacker.co.uk are not the same sender.
+	const dmarcPass = trusted.some((clause) => clause.method === 'dmarc' && clause.result === 'pass' && clause.props['header.from'] === home);
+	const signedHome = signedBy.some((fact) => fact.checked && sameFamily(fact.domain, home));
+	const sentHome = !!mailedBy?.checked && sameFamily(mailedBy.domain, home);
+	if (dmarcPass || signedHome || sentHome) return null;
+	const domains = [
 		...new Set(
 			[mailedBy, ...signedBy]
 				.filter((fact): fact is DomainFact => !!fact)
-				.map((fact) => registrableDomain(fact.domain))
-				.filter((domain) => domain !== home)
+				.map((fact) => fact.domain)
+				.filter((domain) => !sameFamily(domain, home))
 		)
 	];
+	// send.klaviyomail.com and klaviyomail.com read as one: name the parent.
+	const others = domains.filter((domain) => !domains.some((other) => other !== domain && domain.endsWith(`.${other}`)));
 	if (others.length === 0) return `It says it's from ${home}, but nothing in it proves ${home} sent it.`;
 	return `It says it's from ${home}, but it was sent through ${others.join(' and ')}.`;
 }

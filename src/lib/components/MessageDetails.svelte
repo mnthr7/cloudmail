@@ -23,6 +23,9 @@
 		const id = emailId;
 		loading = true;
 		failed = false;
+		// Never show one message's headers under another's details.
+		rawHeaders = null;
+		showRaw = false;
 		fetch(`/api/mail/${encodeURIComponent(id)}/headers`)
 			.then(async (res) => {
 				if (!res.ok) throw new Error(String(res.status));

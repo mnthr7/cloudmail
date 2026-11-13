@@ -47,6 +47,18 @@ describe('header block', () => {
 		expect(block.endsWith('[headers cut short]')).toBe(true);
 	});
 
+	test('caps multibyte headers in UTF-8 bytes, marker included', () => {
+		const bytes = (text: string) => new TextEncoder().encode(text).byteLength;
+		const euros = Array.from({ length: 40 }, (_, i) => `X-Note-${i}: ${'€'.repeat(1000)}`);
+		const fromRecord = headerBlockFromRecord(Object.fromEntries(euros.map((line) => line.split(': '))))!;
+		const fromRaw = headerBlockFromRaw(new TextEncoder().encode(`${euros.join('\r\n')}\r\n\r\nbody`))!;
+		for (const block of [fromRecord, fromRaw]) {
+			expect(bytes(block)).toBeLessThanOrEqual(MAX_HEADER_BYTES);
+			expect(block.endsWith('[headers cut short]')).toBe(true);
+			expect(block).not.toContain('\uFFFD');
+		}
+	});
+
 	test('writes a header record back out', () => {
 		expect(headerBlockFromRecord({ From: 'a@b.com', 'Return-Path': '<x@y.com>', Empty: '' })).toBe(
 			'From: a@b.com\nReturn-Path: <x@y.com>'
@@ -79,6 +91,29 @@ describe('sender details', () => {
 	test('no mismatch when the From domain signed it', () => {
 		const auth = 'mx.cloudflare.net; dkim=pass header.d=example.com; spf=pass smtp.mailfrom=bounce@mail.example.com; dmarc=pass header.from=example.com';
 		expect(senderDetails('From: Ann <ann@example.com>', auth).mismatch).toBeNull();
+	});
+
+	test('a passing signature counts even after a failing one from the same domain', () => {
+		const auth = 'mx.cloudflare.net; dkim=fail header.d=example.com; dkim=pass header.d=example.com';
+		const details = senderDetails('From: ann@example.com', auth);
+		expect(details.signedBy).toEqual([{ domain: 'example.com', checked: true }]);
+		expect(details.mismatch).toBeNull();
+	});
+
+	test('siblings under a shared suffix are different senders', () => {
+		const coUk = senderDetails('From: boss@victim.co.uk', 'mx.cloudflare.net; dkim=pass header.d=attacker.co.uk');
+		expect(coUk.mismatch).toBe("It says it's from victim.co.uk, but it was sent through attacker.co.uk.");
+		const pages = senderDetails('From: alice@alice.github.io', 'mx.cloudflare.net; dkim=pass header.d=bob.github.io');
+		expect(pages.mismatch).toBe("It says it's from alice.github.io, but it was sent through bob.github.io.");
+	});
+
+	test("the receiving server's DMARC pass settles alignment for a sibling subdomain", () => {
+		const auth = 'mx.cloudflare.net; dkim=pass header.d=bounce.example.com; dmarc=pass header.from=mail.example.com';
+		expect(senderDetails('From: a@mail.example.com', auth).mismatch).toBeNull();
+		// Without that pass, siblings aren't assumed to be one sender.
+		expect(senderDetails('From: a@mail.example.com', 'mx.cloudflare.net; dkim=pass header.d=bounce.example.com').mismatch).toBe(
+			"It says it's from mail.example.com, but it was sent through bounce.example.com."
+		);
 	});
 
 	test('a Cloudflare-looking ARC set in the stored headers is never read as checked', () => {

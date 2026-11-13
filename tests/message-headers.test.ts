@@ -7,6 +7,7 @@ import {
 	parseHeaderBlock,
 	senderDetails
 } from '../src/lib/security/headers';
+import { authClauses, parseAuthResults } from '../src/lib/security/phishing';
 
 // A Gmail From sent through a marketing platform: Cloudflare's ARC set on top.
 const SPOOFED = [
@@ -165,4 +166,43 @@ test('auth lines explain each check', () => {
 	]);
 	expect(rows[2].note).toBe('Does gmail.com vouch for it?');
 	expect(authLines(null)).toEqual([]);
+});
+
+describe('results the sender tries to write into the receiver\'s report', () => {
+	// Cloudflare echoes the envelope sender in a comment and in smtp.mailfrom.
+	const forged = (mailfrom: string) =>
+		`mx.cloudflare.net; dkim=none; spf=pass (mx.cloudflare.net: domain of ${mailfrom} designates 1.2.3.4 as permitted sender) smtp.mailfrom=${mailfrom}; dmarc=fail header.from=victim.co.uk`;
+
+	test('a quoted local part with ";dmarc=pass" adds no result', () => {
+		const text = forged('"x;dmarc=pass header.from=victim.co.uk"@evil.test');
+		expect(authClauses(text).map((clause) => `${clause.method}=${clause.result}`)).toEqual(['dkim=none', 'spf=pass', 'dmarc=fail']);
+		expect(authClauses(text)[1].props['smtp.mailfrom']).toBe('"x;dmarc=pass header.from=victim.co.uk"@evil.test'.toLowerCase());
+		expect(parseAuthResults([text]).dmarc).toBe('fail');
+		const details = senderDetails('From: boss@victim.co.uk', text);
+		expect(details.mismatch).toBe("It says it's from victim.co.uk, but it was sent through evil.test.");
+	});
+
+	test('a ")" inside a quoted local part does not end the comment early', () => {
+		const text = forged('"a)b; dmarc=pass header.from=victim.co.uk"@evil.test');
+		expect(authClauses(text).filter((clause) => clause.method === 'dmarc').map((clause) => clause.result)).toEqual(['fail']);
+	});
+
+	test('an escaped ")" inside a comment does not end it', () => {
+		const text = 'mx.cloudflare.net; spf=pass (note \\); dmarc=pass header.from=victim.co.uk) smtp.mailfrom=a@evil.test';
+		expect(authClauses(text).map((clause) => clause.method)).toEqual(['spf']);
+	});
+
+	test('a property inside a quoted value is not read as a property', () => {
+		const text = 'mx.cloudflare.net; dkim=pass header.i="x header.d=victim.co.uk"@evil.test header.d=evil.test';
+		expect(authClauses(text)[0].props['header.d']).toBe('evil.test');
+	});
+
+	test('ordinary results still read, versions and quoted values included', () => {
+		const clauses = authClauses('mx.google.com; dkim/1=pass header.d="example.com" (ok); spf=softfail smtp.mailfrom=a@example.com; dmarc=pass (p=none) header.from=example.com');
+		expect(clauses).toEqual([
+			{ method: 'dkim', result: 'pass', props: { 'header.d': 'example.com' } },
+			{ method: 'spf', result: 'softfail', props: { 'smtp.mailfrom': 'a@example.com' } },
+			{ method: 'dmarc', result: 'pass', props: { 'header.from': 'example.com' } }
+		]);
+	});
 });

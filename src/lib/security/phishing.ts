@@ -65,6 +65,98 @@ function asResult(value: string): AuthResult | null {
 	return RESULTS.has(lower) ? lower : null;
 }
 
+export type AuthClause = { method: 'spf' | 'dkim' | 'dmarc'; result: string; props: Record<string, string> };
+
+/**
+ * The results in an Authentication-Results value, read the way RFC 8601 lays
+ * them out. The sender controls some of the text a receiver writes there (the
+ * envelope address appears in comments and in smtp.mailfrom, quoted local
+ * parts and all), so a naive split on ";" lets them add a result of their own:
+ * `"x;dmarc=pass header.from=victim.test"@evil.test`. Here comments are dropped,
+ * ";" splits only outside quotes and comments, a result counts only at the
+ * start of its own clause, and properties are read outside quoted strings.
+ */
+export function authClauses(text: string | null | undefined): AuthClause[] {
+	if (!text) return [];
+	const source = text.slice(0, 8192);
+	const parts: Array<{ text: string; mask: string }> = [];
+	let kept = '';
+	let mask = '';
+	let quoted = false;
+	let depth = 0;
+	for (let i = 0; i < source.length; i += 1) {
+		const char = source[i];
+		if (quoted) {
+			if (char === '\\' && i + 1 < source.length) {
+				if (depth === 0) {
+					kept += char + source[i + 1];
+					mask += 'xx';
+				}
+				i += 1;
+				continue;
+			}
+			if (char === '"') quoted = false;
+			if (depth === 0) {
+				kept += char;
+				mask += char === '"' ? '"' : 'x';
+			}
+			continue;
+		}
+		if (char === '"') {
+			quoted = true;
+			if (depth === 0) {
+				kept += char;
+				mask += char;
+			}
+			continue;
+		}
+		// A quoted-pair inside a comment: "\)" doesn't close it.
+		if (char === '\\' && depth > 0) {
+			i += 1;
+			continue;
+		}
+		if (char === '(') {
+			depth += 1;
+			continue;
+		}
+		if (char === ')') {
+			if (depth > 0) depth -= 1;
+			if (depth === 0) {
+				kept += ' ';
+				mask += ' ';
+			}
+			continue;
+		}
+		if (depth > 0) continue;
+		if (char === ';') {
+			parts.push({ text: kept, mask });
+			kept = '';
+			mask = '';
+			continue;
+		}
+		kept += char;
+		mask += char;
+	}
+	parts.push({ text: kept, mask });
+
+	const found: AuthClause[] = [];
+	for (const part of parts) {
+		const spec = part.mask.match(/^\s*(spf|dkim|dmarc)(?:\/\d+)?\s*=\s*([a-z]+)/i);
+		if (!spec) continue;
+		const props: Record<string, string> = {};
+		// A value is a token, a quoted string, or both run together ("a b"@example.com).
+		for (const prop of part.mask.matchAll(/(?:^|\s)([a-z]+\.[a-z-]+)\s*=\s*((?:"[^"]*"|[^\s"])+)/gi)) {
+			const start = (prop.index ?? 0) + prop[0].length - prop[2].length;
+			const raw = part.text.slice(start, start + prop[2].length);
+			const value = /^"[^"]*"$/.test(prop[2]) ? raw.slice(1, -1) : raw;
+			const key = prop[1].toLowerCase();
+			if (!(key in props)) props[key] = value.toLowerCase();
+		}
+		found.push({ method: spec[1].toLowerCase() as AuthClause['method'], result: spec[2].toLowerCase(), props });
+	}
+	return found;
+}
+
 /**
  * Reads Authentication-Results (RFC 8601) and Received-SPF headers. Several
  * headers, or one with several results, are combined so a failure wins: a
@@ -74,16 +166,13 @@ export function parseAuthResults(authResults: string[], receivedSpf: string[] = 
 	const found: Record<'spf' | 'dkim' | 'dmarc', AuthResult[]> = { spf: [], dkim: [], dmarc: [] };
 	const dmarcFrom = new Set<string>();
 	for (const header of authResults) {
-		// Each method's result and its properties sit between semicolons.
-		for (const clause of header.split(';')) {
-			const match = clause.match(/\b(spf|dkim|dmarc)\s*=\s*([a-z]+)/i);
-			if (!match) continue;
-			const method = match[1].toLowerCase() as 'spf' | 'dkim' | 'dmarc';
-			const result = asResult(match[2]);
+		for (const clause of authClauses(header)) {
+			const result = asResult(clause.result);
 			if (!result) continue;
-			found[method].push(result);
-			if (method === 'dmarc') {
-				dmarcFrom.add(clause.match(/\bheader\.from\s*=\s*"?([a-z0-9.-]+)/i)?.[1].toLowerCase().replace(/\.$/, '') ?? '');
+			found[clause.method].push(result);
+			if (clause.method === 'dmarc') {
+				const from = clause.props['header.from'] ?? '';
+				dmarcFrom.add(/^[a-z0-9.-]+$/.test(from) ? from.replace(/\.$/, '') : '');
 			}
 		}
 	}

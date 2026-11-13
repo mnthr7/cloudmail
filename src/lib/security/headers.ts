@@ -1,4 +1,4 @@
-import type { AuthSummary } from './phishing';
+import { authClauses, type AuthSummary } from './phishing';
 
 /**
  * A message's original headers, kept so the reader can see who really sent it.
@@ -109,21 +109,8 @@ export type SenderDetails = {
 };
 
 /** `key=value` properties in Authentication-Results text, per method clause. */
-function clauses(authText: string | null): Array<{ method: string; result: string; props: Record<string, string> }> {
-	if (!authText) return [];
-	authText = authText.slice(0, 4096);
-	const found: Array<{ method: string; result: string; props: Record<string, string> }> = [];
-	for (const raw of authText.split(';')) {
-		const clause = raw.slice(0, 1024);
-		const match = clause.match(/\b(spf|dkim|dmarc)\s*=\s*([a-z]+)/i);
-		if (!match) continue;
-		const props: Record<string, string> = {};
-		for (const prop of clause.matchAll(/\b([a-z]+\.[a-z-]+)\s*=\s*"?([^\s";]+)/gi)) {
-			props[prop[1].toLowerCase()] = prop[2].toLowerCase();
-		}
-		found.push({ method: match[1].toLowerCase(), result: match[2].toLowerCase(), props });
-	}
-	return found;
+function clauses(authText: string | null) {
+	return authClauses(authText);
 }
 
 /**

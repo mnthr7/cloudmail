@@ -7,7 +7,7 @@ import {
 	parseHeaderBlock,
 	senderDetails
 } from '../src/lib/security/headers';
-import { authClauses, parseAuthResults } from '../src/lib/security/phishing';
+import { authClauses, cutAuthText, parseAuthResults, parseSecurity } from '../src/lib/security/phishing';
 
 // A Gmail From sent through a marketing platform: Cloudflare's ARC set on top.
 const SPOOFED = [
@@ -213,6 +213,22 @@ describe('results the sender tries to write into the receiver\'s report', () => 
 		}
 		// The plain scan still sees the receiver's fail, so it wins over the error.
 		expect(parseAuthResults([openComment]).dmarc).toBe('fail');
+	});
+
+	test('a long report is cut only between clauses', () => {
+		const filler = `mx.cloudflare.net; spf=none smtp.helo=${'a'.repeat(4000)}.test; `;
+		const text = `${filler}dkim=pass header.d=victim.com.attacker.net; dmarc=fail header.from=victim.com`;
+		const at = filler.length + 'dkim=pass header.d=victim.com'.length;
+		const cut = cutAuthText(text, at);
+		expect(cut.endsWith('.test')).toBe(true);
+		expect(authClauses(cut).map((clause) => clause.method)).toEqual(['spf']);
+		expect(senderDetails('From: a@victim.com', cut).signedBy).toEqual([]);
+		// Stored text goes through the same cut when read back.
+		const read = parseSecurity(JSON.stringify({ auth: {}, verdict: null, reasons: [], authText: text.padEnd(5000, ' ') }));
+		const signer = authClauses(read!.authText).find((clause) => clause.method === 'dkim');
+		expect(signer?.props['header.d']).toBe('victim.com.attacker.net');
+		expect(cutAuthText('short; text')).toBe('short; text');
+		expect(cutAuthText('x'.repeat(5000))).toBe('');
 	});
 
 	test('ordinary results still read, versions and quoted values included', () => {

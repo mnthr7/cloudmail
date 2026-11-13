@@ -72,6 +72,21 @@ export type AuthClause = { method: 'spf' | 'dkim' | 'dmarc'; result: string; pro
  * an error, nothing vouched for. Fails closed, so a sender who leaves a quote
  * or comment open can't hide the receiver's real results behind it.
  */
+/** How much of an Authentication-Results value is kept and read. */
+export const MAX_AUTH_TEXT = 4096;
+
+/**
+ * At most `max` characters, cut only at a ";" so the last clause is never a
+ * piece of one: "header.d=victim.com.attacker.net" cut short must not read as
+ * victim.com. A ";" inside quotes leaves a quote open, which authClauses
+ * treats as unreadable, so a bad cut fails closed.
+ */
+export function cutAuthText(text: string, max = MAX_AUTH_TEXT): string {
+	if (text.length <= max) return text;
+	const end = text.lastIndexOf(';', max);
+	return end === -1 ? '' : text.slice(0, end);
+}
+
 function unreadable(): AuthClause[] {
 	return (['spf', 'dkim', 'dmarc'] as const).map((method) => ({ method, result: 'permerror', props: {} }));
 }
@@ -87,7 +102,7 @@ function unreadable(): AuthClause[] {
  */
 export function authClauses(text: string | null | undefined): AuthClause[] {
 	if (!text) return [];
-	const source = text.slice(0, 8192);
+	const source = cutAuthText(text, 2 * MAX_AUTH_TEXT);
 	const parts: Array<{ text: string; mask: string }> = [];
 	let kept = '';
 	let mask = '';
@@ -180,7 +195,7 @@ export function parseAuthResults(authResults: string[], receivedSpf: string[] = 
 	for (const header of authResults) {
 		// Belt and braces: a failure anywhere in the plain text still counts, so
 		// no way of reading the header can turn the receiver's "fail" into a pass.
-		for (const raw of header.slice(0, 8192).split(';')) {
+		for (const raw of cutAuthText(header, 2 * MAX_AUTH_TEXT).split(';')) {
 			const match = raw.match(/\b(spf|dkim|dmarc)\s*=\s*(fail|softfail|permerror)\b/i);
 			if (match) found[match[1].toLowerCase() as 'spf' | 'dkim' | 'dmarc'].push(match[2].toLowerCase() as AuthResult);
 		}
@@ -440,7 +455,7 @@ export function parseSecurity(json: string | null | undefined): MessageSecurity 
 			.filter((reason) => reason && typeof reason.text === 'string' && typeof reason.code === 'string')
 			.slice(0, 10);
 		const read: MessageSecurity = { auth: value.auth ?? { spf: null, dkim: null, dmarc: null }, verdict, reasons };
-		if (typeof value.authText === 'string') read.authText = value.authText.slice(0, 4096);
+		if (typeof value.authText === 'string') read.authText = cutAuthText(value.authText);
 		return read;
 	} catch {
 		return null;

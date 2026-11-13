@@ -108,6 +108,23 @@ describe('sender details', () => {
 		expect(pages.mismatch).toBe("It says it's from alice.github.io, but it was sent through bob.github.io.");
 	});
 
+	test('only the full From domain or its subdomains count without a DMARC pass', () => {
+		// www. is part of the From domain, not stripped: a sibling isn't the sender.
+		const www = senderDetails('From: boss@www.example.com', 'mx.cloudflare.net; dkim=pass header.d=attacker.example.com');
+		expect(www.mismatch).toBe("It says it's from www.example.com, but it was sent through attacker.example.com.");
+		// A parent domain isn't proof either.
+		const parent = senderDetails('From: a@mail.example.com', 'mx.cloudflare.net; dkim=pass header.d=example.com');
+		expect(parent.mismatch).toBe("It says it's from mail.example.com, but it was sent through example.com.");
+		// A subdomain of the From domain is.
+		expect(senderDetails('From: a@example.com', 'mx.cloudflare.net; dkim=pass header.d=mail.example.com').mismatch).toBeNull();
+		// With the receiver's DMARC pass for that exact From domain, the parent is fine.
+		const aligned = 'mx.cloudflare.net; dkim=pass header.d=example.com; dmarc=pass header.from=mail.example.com';
+		expect(senderDetails('From: a@mail.example.com', aligned).mismatch).toBeNull();
+		// A DMARC pass for another domain doesn't count.
+		const other = 'mx.cloudflare.net; dkim=pass header.d=example.com; dmarc=pass header.from=example.com';
+		expect(senderDetails('From: a@mail.example.com', other).mismatch).not.toBeNull();
+	});
+
 	test("the receiving server's DMARC pass settles alignment for a sibling subdomain", () => {
 		const auth = 'mx.cloudflare.net; dkim=pass header.d=bounce.example.com; dmarc=pass header.from=mail.example.com';
 		expect(senderDetails('From: a@mail.example.com', auth).mismatch).toBeNull();

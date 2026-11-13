@@ -167,9 +167,14 @@ export function senderDetails(block: string | null | undefined, authText: string
 	};
 }
 
-/** The same domain, or one is a subdomain of the other. Never two siblings under a shared suffix. */
-function sameFamily(a: string, b: string): boolean {
-	return a === b || a.endsWith(`.${b}`) || b.endsWith(`.${a}`);
+/**
+ * `domain` is the From domain itself or one of its subdomains: whoever runs the
+ * From domain runs those too. Not a parent (example.com for mail.example.com)
+ * and not a sibling (attacker.example.com for www.example.com): without a
+ * public-suffix list there's no telling those apart from co.uk or github.io.
+ */
+function ownedBy(domain: string, home: string): boolean {
+	return domain === home || domain.endsWith(`.${home}`);
 }
 
 function mismatchNote(
@@ -179,20 +184,20 @@ function mismatchNote(
 	trusted: ReturnType<typeof clauses>
 ): string | null {
 	if (!fromDomain) return null;
-	const home = fromDomain.replace(/^www\./, '');
-	// The receiving server's DMARC pass already settled alignment, with a real
-	// public-suffix list. Without one, only the domain itself or its own
-	// subdomains count: victim.co.uk and attacker.co.uk are not the same sender.
+	const home = fromDomain;
+	// The receiving server's DMARC pass for this exact From domain already
+	// settled alignment, with a real public-suffix list. Without one, only the
+	// From domain itself or its own subdomains count.
 	const dmarcPass = trusted.some((clause) => clause.method === 'dmarc' && clause.result === 'pass' && clause.props['header.from'] === home);
-	const signedHome = signedBy.some((fact) => fact.checked && sameFamily(fact.domain, home));
-	const sentHome = !!mailedBy?.checked && sameFamily(mailedBy.domain, home);
+	const signedHome = signedBy.some((fact) => fact.checked && ownedBy(fact.domain, home));
+	const sentHome = !!mailedBy?.checked && ownedBy(mailedBy.domain, home);
 	if (dmarcPass || signedHome || sentHome) return null;
 	const domains = [
 		...new Set(
 			[mailedBy, ...signedBy]
 				.filter((fact): fact is DomainFact => !!fact)
 				.map((fact) => fact.domain)
-				.filter((domain) => !sameFamily(domain, home))
+				.filter((domain) => !ownedBy(domain, home))
 		)
 	];
 	// send.klaviyomail.com and klaviyomail.com read as one: name the parent.

@@ -197,6 +197,24 @@ describe('results the sender tries to write into the receiver\'s report', () => 
 		expect(authClauses(text)[0].props['header.d']).toBe('evil.test');
 	});
 
+	test('a quote or comment left open fails closed instead of hiding the real result', () => {
+		const openQuote = forged('"x@evil.test');
+		const openComment = 'mx.cloudflare.net; spf=pass (unclosed smtp.mailfrom=a@evil.test; dmarc=fail header.from=victim.co.uk';
+		const strayClose = 'mx.cloudflare.net; spf=pass ) dmarc=pass header.from=victim.co.uk; dmarc=fail header.from=victim.co.uk';
+		for (const text of [openQuote, openComment, strayClose]) {
+			expect(authClauses(text).map((clause) => `${clause.method}=${clause.result}`)).toEqual([
+				'spf=permerror',
+				'dkim=permerror',
+				'dmarc=permerror'
+			]);
+			const auth = parseAuthResults([text]);
+			expect(auth.dmarc === 'pass').toBe(false);
+			expect(senderDetails('From: boss@victim.co.uk', text).mismatch).not.toBeNull();
+		}
+		// The plain scan still sees the receiver's fail, so it wins over the error.
+		expect(parseAuthResults([openComment]).dmarc).toBe('fail');
+	});
+
 	test('ordinary results still read, versions and quoted values included', () => {
 		const clauses = authClauses('mx.google.com; dkim/1=pass header.d="example.com" (ok); spf=softfail smtp.mailfrom=a@example.com; dmarc=pass (p=none) header.from=example.com');
 		expect(clauses).toEqual([

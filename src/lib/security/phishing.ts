@@ -68,6 +68,15 @@ function asResult(value: string): AuthResult | null {
 export type AuthClause = { method: 'spf' | 'dkim' | 'dmarc'; result: string; props: Record<string, string> };
 
 /**
+ * What a report that can't be read safely counts as: every check failed with
+ * an error, nothing vouched for. Fails closed, so a sender who leaves a quote
+ * or comment open can't hide the receiver's real results behind it.
+ */
+function unreadable(): AuthClause[] {
+	return (['spf', 'dkim', 'dmarc'] as const).map((method) => ({ method, result: 'permerror', props: {} }));
+}
+
+/**
  * The results in an Authentication-Results value, read the way RFC 8601 lays
  * them out. The sender controls some of the text a receiver writes there (the
  * envelope address appears in comments and in smtp.mailfrom, quoted local
@@ -120,7 +129,8 @@ export function authClauses(text: string | null | undefined): AuthClause[] {
 			continue;
 		}
 		if (char === ')') {
-			if (depth > 0) depth -= 1;
+			if (depth === 0) return unreadable();
+			depth -= 1;
 			if (depth === 0) {
 				kept += ' ';
 				mask += ' ';
@@ -137,6 +147,8 @@ export function authClauses(text: string | null | undefined): AuthClause[] {
 		kept += char;
 		mask += char;
 	}
+	// Text left open could have swallowed the receiver's own results.
+	if (quoted || depth > 0) return unreadable();
 	parts.push({ text: kept, mask });
 
 	const found: AuthClause[] = [];
@@ -166,6 +178,12 @@ export function parseAuthResults(authResults: string[], receivedSpf: string[] = 
 	const found: Record<'spf' | 'dkim' | 'dmarc', AuthResult[]> = { spf: [], dkim: [], dmarc: [] };
 	const dmarcFrom = new Set<string>();
 	for (const header of authResults) {
+		// Belt and braces: a failure anywhere in the plain text still counts, so
+		// no way of reading the header can turn the receiver's "fail" into a pass.
+		for (const raw of header.slice(0, 8192).split(';')) {
+			const match = raw.match(/\b(spf|dkim|dmarc)\s*=\s*(fail|softfail|permerror)\b/i);
+			if (match) found[match[1].toLowerCase() as 'spf' | 'dkim' | 'dmarc'].push(match[2].toLowerCase() as AuthResult);
+		}
 		for (const clause of authClauses(header)) {
 			const result = asResult(clause.result);
 			if (!result) continue;

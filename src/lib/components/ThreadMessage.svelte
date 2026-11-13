@@ -11,7 +11,7 @@
 	import { isMarkdownAttachment } from '#lib/utils/attachments.ts';
 	import { resolveMessageBody } from '#lib/utils/markdown.ts';
 	import { senderWarning } from '#lib/security/sender.ts';
-	import { parseSecurity } from '#lib/security/phishing.ts';
+	import { parseSecurity } from '#lib/security/security-result.ts';
 	import type { ThreadMessage } from '#lib/types.ts';
 
 	let {

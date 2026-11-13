@@ -1,3 +1,10 @@
+/**
+ * A cheap guess at the organization's domain: the last two labels. Wrong under
+ * multi-label or shared suffixes (victim.co.uk and attacker.co.uk both give
+ * "co.uk"), so it is only for browser-side hints that must stay small. Anything
+ * that decides a verdict uses `organizationDomain` (organization.ts), which reads
+ * the Public Suffix List.
+ */
 export function registrableDomain(host: string): string {
 	let value = host.trim().toLowerCase().replace(/\.$/, '');
 	if (value.startsWith('www.')) value = value.slice(4);

@@ -1,5 +1,17 @@
-import { mixedScripts, oneEditAway, registrableDomain } from './host';
+import { mixedScripts, oneEditAway } from './host';
+import { organizationDomain } from './organization';
 import { senderWarning } from './sender';
+import type {
+	AuthResult,
+	AuthSummary,
+	MessageSecurity,
+	PhishingReason,
+	PhishingReasonCode,
+	PhishingVerdict
+} from './security-result';
+
+export { parseSecurity } from './security-result';
+export type { AuthResult, AuthSummary, MessageSecurity, PhishingReason, PhishingReasonCode, PhishingVerdict };
 
 /**
  * Phishing signals for one inbound message. Pure: the caller gathers what we
@@ -9,43 +21,6 @@ import { senderWarning } from './sender';
  * Authentication results only ever add warnings. A "pass" never removes one,
  * so a forged Authentication-Results header gains a sender nothing.
  */
-
-export type AuthResult = 'pass' | 'fail' | 'softfail' | 'neutral' | 'none' | 'temperror' | 'permerror';
-export type AuthSummary = {
-	spf: AuthResult | null;
-	dkim: AuthResult | null;
-	dmarc: AuthResult | null;
-	/**
-	 * The From domain each DMARC result was about (header.from), lowercased.
-	 * An empty string for a DMARC result that didn't say. A pass only vouches
-	 * for these domains.
-	 */
-	dmarcFrom?: string[];
-};
-
-export type PhishingReasonCode =
-	| 'own_domain_unverified'
-	| 'dmarc_failed'
-	| 'auth_failed'
-	| 'lookalike_brand'
-	| 'lookalike_own'
-	| 'lookalike_contact'
-	| 'lookalike_characters'
-	| 'brand_name'
-	| 'teammate_name'
-	| 'name_mismatch'
-	| 'money_ask'
-	| 'reply_to_elsewhere';
-
-export type PhishingReason = { code: PhishingReasonCode; weight: number; text: string };
-export type PhishingVerdict = 'phishing' | 'suspicious';
-
-/** What's stored on the message and shown above it. */
-export type MessageSecurity = {
-	auth: AuthSummary;
-	verdict: PhishingVerdict | null;
-	reasons: PhishingReason[];
-};
 
 /** At or above: "Looks like phishing". */
 export const PHISHING_SCORE = 3;
@@ -169,7 +144,7 @@ export function looksLike(candidate: string, real: string): boolean {
 
 /** The name part of a registrable domain: "paypal" for paypal-secure.com's "paypal-secure". */
 function nameOf(domain: string): string {
-	return registrableDomain(domain).split('.')[0] ?? '';
+	return organizationDomain(domain).split('.')[0] ?? '';
 }
 
 /**
@@ -178,11 +153,11 @@ function nameOf(domain: string): string {
  * word in it (paypal-secure.com), since real businesses do that too (apple-orchard.com).
  */
 function brandFor(domain: string): { brand: (typeof BRANDS)[number]; strong: boolean } | null {
-	const registrable = registrableDomain(domain);
+	const registrable = organizationDomain(domain);
 	const name = nameOf(domain);
 	const parts = name.split('-').filter(Boolean);
 	for (const brand of BRANDS) {
-		if (brand.domains.some((legit) => registrableDomain(legit) === registrable)) continue;
+		if (brand.domains.some((legit) => organizationDomain(legit) === registrable)) continue;
 		const short = brand.label.length < 5;
 		if (name === brand.label || (!short && looksLike(name, brand.label))) return { brand, strong: true };
 		if (parts.length > 1 && parts.some((part) => part === brand.label || (!short && looksLike(part, brand.label)))) {
@@ -232,8 +207,8 @@ export function assessMessage(input: AssessInput): MessageSecurity {
 	const add = (code: PhishingReasonCode, weight: number, text: string) => reasons.push({ code, weight, text });
 
 	const fromDomain = domainOf(input.fromAddress);
-	const fromRegistrable = registrableDomain(fromDomain);
-	const own = new Set(input.ownDomains.map((domain) => registrableDomain(domain)));
+	const fromRegistrable = organizationDomain(fromDomain);
+	const own = new Set(input.ownDomains.map((domain) => organizationDomain(domain)));
 	const { spf, dkim, dmarc } = input.auth;
 	const authKnown = spf !== null || dkim !== null || dmarc !== null;
 	const failed = (result: AuthResult | null) => result === 'fail' || result === 'softfail' || result === 'permerror';
@@ -267,7 +242,7 @@ export function assessMessage(input: AssessInput): MessageSecurity {
 		if (ownTwin) {
 			add('lookalike_own', 3, `${fromRegistrable} looks like your own domain, ${ownTwin}.`);
 		} else {
-			const contacts = new Set(input.contactDomains.map((domain) => registrableDomain(domain)));
+			const contacts = new Set(input.contactDomains.map((domain) => organizationDomain(domain)));
 			if (!contacts.has(fromRegistrable)) {
 				const twin = [...contacts].find(
 					(domain) => !FREE_MAIL.has(domain) && looksLike(nameOf(fromRegistrable), nameOf(domain))
@@ -280,12 +255,12 @@ export function assessMessage(input: AssessInput): MessageSecurity {
 	// 3. A name that claims to be someone else.
 	const name = input.fromName?.trim() ?? '';
 	if (name) {
-		const mismatch = senderWarning(`${name} <${input.fromAddress}>`);
+		const mismatch = senderWarning(`${name} <${input.fromAddress}>`, organizationDomain);
 		if (mismatch) add('name_mismatch', 2, mismatch);
 		const claimed = BRANDS.find(
 			(item) =>
 				new RegExp(`\\b${item.name.replace(/ /g, '\\s*')}\\b`, 'i').test(name) &&
-				!item.domains.some((legit) => registrableDomain(legit) === fromRegistrable)
+				!item.domains.some((legit) => organizationDomain(legit) === fromRegistrable)
 		);
 		if (claimed && !imitated?.strong) add('brand_name', 2, `It's signed "${name}", but comes from ${fromRegistrable}, not ${claimed.name}.`);
 		const teammate = input.teammateNames.find(
@@ -305,8 +280,8 @@ export function assessMessage(input: AssessInput): MessageSecurity {
 
 	// 5. Replies would go somewhere else.
 	const replyDomain = input.replyTo ? domainOf(input.replyTo.match(/<([^>]+)>/)?.[1] ?? input.replyTo) : '';
-	if (replyDomain && registrableDomain(replyDomain) !== fromRegistrable && input.firstTimeSender) {
-		add('reply_to_elsewhere', 1, `Replies would go to ${registrableDomain(replyDomain)}, not ${fromRegistrable}.`);
+	if (replyDomain && organizationDomain(replyDomain) !== fromRegistrable && input.firstTimeSender) {
+		add('reply_to_elsewhere', 1, `Replies would go to ${organizationDomain(replyDomain)}, not ${fromRegistrable}.`);
 	}
 
 	const score = reasons.reduce((sum, reason) => sum + reason.weight, 0);
@@ -314,22 +289,6 @@ export function assessMessage(input: AssessInput): MessageSecurity {
 		score >= PHISHING_SCORE ? 'phishing' : score >= SUSPICIOUS_SCORE ? 'suspicious' : null;
 	reasons.sort((a, b) => b.weight - a.weight);
 	return { auth: input.auth, verdict, reasons };
-}
-
-/** Stored JSON back to a value the reader can trust the shape of. */
-export function parseSecurity(json: string | null | undefined): MessageSecurity | null {
-	if (!json) return null;
-	try {
-		const value = JSON.parse(json) as MessageSecurity;
-		if (!value || !Array.isArray(value.reasons)) return null;
-		const verdict = value.verdict === 'phishing' || value.verdict === 'suspicious' ? value.verdict : null;
-		const reasons = value.reasons
-			.filter((reason) => reason && typeof reason.text === 'string' && typeof reason.code === 'string')
-			.slice(0, 10);
-		return { auth: value.auth ?? { spf: null, dkim: null, dmarc: null }, verdict, reasons };
-	} catch {
-		return null;
-	}
 }
 
 /** The name Cloudflare Email Routing signs its results with. */

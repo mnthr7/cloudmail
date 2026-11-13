@@ -60,6 +60,8 @@ export async function insertEmail(
 		listUnsubscribe?: string | null;
 		/** Raw `List-Unsubscribe-Post` header. */
 		listUnsubscribePost?: string | null;
+		/** The inbound message's original header block, for "Show details". */
+		rawHeaders?: string | null;
 	}
 ): Promise<string> {
 	const id = crypto.randomUUID();
@@ -87,8 +89,8 @@ export async function insertEmail(
 				body_text, body_html, message_id, in_reply_to, references_header,
 				reply_to_header, reply_to_email_id, thread_id, thread_key,
 				domain_id, provider_id, status, status_at, is_read,
-				list_unsubscribe, list_unsubscribe_post
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?)`
+				list_unsubscribe, list_unsubscribe_post, raw_headers
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?)`
 		)
 		.bind(
 			id,
@@ -114,7 +116,8 @@ export async function insertEmail(
 			input.status ?? null,
 			input.isRead ? 1 : 0,
 			input.listUnsubscribe ?? null,
-			input.listUnsubscribePost ?? null
+			input.listUnsubscribePost ?? null,
+			input.rawHeaders ?? null
 		)
 		.run();
 

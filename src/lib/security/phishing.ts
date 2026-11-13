@@ -10,7 +10,9 @@ import type {
 	PhishingVerdict
 } from './security-result';
 
-export { parseSecurity } from './security-result';
+export { MAX_AUTH_TEXT, authClauses, parseSecurity, storableAuthText } from './security-result';
+import { authClauses, type AuthClause } from './security-result';
+export type { AuthClause };
 export type { AuthResult, AuthSummary, MessageSecurity, PhishingReason, PhishingReasonCode, PhishingVerdict };
 
 /**
@@ -43,16 +45,20 @@ export function parseAuthResults(authResults: string[], receivedSpf: string[] = 
 	const found: Record<'spf' | 'dkim' | 'dmarc', AuthResult[]> = { spf: [], dkim: [], dmarc: [] };
 	const dmarcFrom = new Set<string>();
 	for (const header of authResults) {
-		// Each method's result and its properties sit between semicolons.
-		for (const clause of header.split(';')) {
-			const match = clause.match(/\b(spf|dkim|dmarc)\s*=\s*([a-z]+)/i);
-			if (!match) continue;
-			const method = match[1].toLowerCase() as 'spf' | 'dkim' | 'dmarc';
-			const result = asResult(match[2]);
+		// Belt and braces: a failure anywhere in the plain text still counts, so
+		// no way of reading the header can turn the receiver's "fail" into a pass.
+		// The whole header, however long: nothing past a limit can hide a fail.
+		for (const raw of header.split(';')) {
+			const match = raw.match(/\b(spf|dkim|dmarc)\s*=\s*(fail|softfail|permerror)\b/i);
+			if (match) found[match[1].toLowerCase() as 'spf' | 'dkim' | 'dmarc'].push(match[2].toLowerCase() as AuthResult);
+		}
+		for (const clause of authClauses(header)) {
+			const result = asResult(clause.result);
 			if (!result) continue;
-			found[method].push(result);
-			if (method === 'dmarc') {
-				dmarcFrom.add(clause.match(/\bheader\.from\s*=\s*"?([a-z0-9.-]+)/i)?.[1].toLowerCase().replace(/\.$/, '') ?? '');
+			found[clause.method].push(result);
+			if (clause.method === 'dmarc') {
+				const from = clause.props['header.from'] ?? '';
+				dmarcFrom.add(/^[a-z0-9.-]+$/.test(from) ? from.replace(/\.$/, '') : '');
 			}
 		}
 	}

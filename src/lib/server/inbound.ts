@@ -11,6 +11,7 @@ import { emailExistsByProviderId, insertEmail, updateEmailStatusByProviderId } f
 import { organizeInbound, readInboundHeader } from './organize-inbound';
 import type { ResendClient } from './resend';
 import { resendAuthResults } from '#lib/security/phishing.ts';
+import { headerBlockFromRecord } from '#lib/security/headers.ts';
 
 export type ResendWebhookEvent = {
 	type: string;
@@ -142,7 +143,8 @@ async function handleInboundEmail(
 		domainId: route.domainId,
 		providerId,
 		listUnsubscribe,
-		listUnsubscribePost
+		listUnsubscribePost,
+		rawHeaders: headerBlockFromRecord(received.headers)
 	});
 
 	const calendarFiles: string[] = [];

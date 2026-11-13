@@ -1,6 +1,7 @@
 import type { D1Database } from '@cloudflare/workers-types';
 import {
 	assessMessage,
+	storableAuthText,
 	parseAuthResults,
 	type MessageSecurity
 } from '#lib/security/phishing.ts';
@@ -76,6 +77,9 @@ export async function checkInbound(
 		contactDomains: [...contactDomains],
 		firstTimeSender: !seen
 	});
+
+	// Kept so the details panel can say what the receiving server checked.
+	security.authText = storableAuthText(headers.authenticationResults);
 
 	await db
 		.prepare(`UPDATE emails SET security_json = ? WHERE id = ? AND user_id = ?`)

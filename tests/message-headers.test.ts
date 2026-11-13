@@ -7,7 +7,7 @@ import {
 	parseHeaderBlock,
 	senderDetails
 } from '../src/lib/security/headers';
-import { authClauses, cutAuthText, parseAuthResults, parseSecurity } from '../src/lib/security/phishing';
+import { authClauses, parseAuthResults, parseSecurity, storableAuthText } from '../src/lib/security/phishing';
 
 // A Gmail From sent through a marketing platform: Cloudflare's ARC set on top.
 const SPOOFED = [
@@ -215,20 +215,21 @@ describe('results the sender tries to write into the receiver\'s report', () => 
 		expect(parseAuthResults([openComment]).dmarc).toBe('fail');
 	});
 
-	test('a long report is cut only between clauses', () => {
-		const filler = `mx.cloudflare.net; spf=none smtp.helo=${'a'.repeat(4000)}.test; `;
-		const text = `${filler}dkim=pass header.d=victim.com.attacker.net; dmarc=fail header.from=victim.com`;
-		const at = filler.length + 'dkim=pass header.d=victim.com'.length;
-		const cut = cutAuthText(text, at);
-		expect(cut.endsWith('.test')).toBe(true);
-		expect(authClauses(cut).map((clause) => clause.method)).toEqual(['spf']);
-		expect(senderDetails('From: a@victim.com', cut).signedBy).toEqual([]);
-		// Stored text goes through the same cut when read back.
-		const read = parseSecurity(JSON.stringify({ auth: {}, verdict: null, reasons: [], authText: text.padEnd(5000, ' ') }));
-		const signer = authClauses(read!.authText).find((clause) => clause.method === 'dkim');
-		expect(signer?.props['header.d']).toBe('victim.com.attacker.net');
-		expect(cutAuthText('short; text')).toBe('short; text');
-		expect(cutAuthText('x'.repeat(5000))).toBe('');
+	test('a report too long to trust fails closed, and its real fail still counts', () => {
+		// Padding pushes the receiver's own dmarc=fail far down the report.
+		const padded = `mx.cloudflare.net; dkim=pass header.d=victim.com; spf=none smtp.helo=${'a'.repeat(5000)}.test; dmarc=fail header.from=victim.com`;
+		expect(authClauses(padded).map((clause) => clause.result)).toEqual(['permerror', 'permerror', 'permerror']);
+		expect(parseAuthResults([padded]).dmarc).toBe('fail');
+		expect(senderDetails('From: a@victim.com', padded).signedBy).toEqual([]);
+		expect(storableAuthText(padded)).toBeNull();
+		expect(storableAuthText('mx; dmarc=pass')).toBe('mx; dmarc=pass');
+	});
+
+	test('stored text at the limit may have been cut mid-clause, so it is ignored', () => {
+		const legacy = `mx.cloudflare.net; spf=none smtp.helo=${'a'.repeat(4096)}`.slice(0, 4096 - 31) + '; dkim=pass header.d=victim.com';
+		expect(legacy.length).toBe(4096);
+		const read = parseSecurity(JSON.stringify({ auth: {}, verdict: null, reasons: [], authText: legacy }));
+		expect(read?.authText).toBeUndefined();
 	});
 
 	test('ordinary results still read, versions and quoted values included', () => {

@@ -161,7 +161,7 @@ Every action Ava takes is recorded as an `agent_action` with `kind`, `payload`, 
 When a prospect replies on a booking thread, Ava sorts the reply into one of: reschedule (with or without a specific time), cancel, question, running late, or other. She then acts according to R9.
 - [ ] "Can we do Thursday at 2?" gets rebooked if the slot is free. If it isn't, Ava offers the 3 nearest free slots
 - [ ] "Something came up, need to cancel" cancels the booking, sends the cancel invite, frees the slot, and offers to rebook
-- [ ] If Ava is unsure about the intent (below a confidence threshold), she hands the thread to the founder rather than guessing
+- [x] If Ava is unsure about the intent (below a confidence threshold), she hands the thread to the founder rather than guessing (the `hand_off` tool; her job tells her to use it rather than guess)
 
 **R11. Prep brief**
 At a time the founder sets (default: 7:00 local on the meeting day, or 60 minutes before if the meeting was booked the same day), Ava emails the founder a brief. It includes who is coming, their company (from the email domain and the company's homepage, fetched on the server), their intake answers, the full thread so far, and Ava's suggested focus based on the playbook.
@@ -183,7 +183,7 @@ Every message and action on a thread shows who did it: *"Confirmed by Ava · 2:1
 
 **R15. Take over and hand off**
 The founder can **take over** a thread. Ava then stops acting on it until the founder hands it back. When Ava escalates on her own (low confidence, the playbook says escalate, the prospect asks for a human), she sends *"Looping in Sada"*, CCs the founder, and makes the founder the assignee.
-- [ ] After a takeover, Ava takes no action on the thread, not even a reminder, unless the founder turns reminders back on
+- [x] After a takeover, Ava takes no action on the thread, not even a reminder, unless the founder turns reminders back on (booking reminders to that guest stop; a per-thread switch turns them back on)
 
 **R16. Instructions vs. data (safety)**
 Only the playbook, autonomy settings, and internal notes from human principals count as instructions to Ava. Email bodies, intake answers, attachments, and fetched web pages are passed to the model as clearly marked untrusted data. Ava's tools are limited to the actions in R9, and the server checks every action against autonomy settings no matter what the model asks for.

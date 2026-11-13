@@ -56,15 +56,22 @@ export async function isThreadTakenOver(db: D1Database, userId: string, threadId
  * still waiting for approval on it expire. Asking an agent still works, since
  * that is the owner's own instruction.
  */
-export async function takeOverThread(db: D1Database, userId: string, threadId: string, now = new Date()): Promise<void> {
+export async function takeOverThread(
+	db: D1Database,
+	userId: string,
+	threadId: string,
+	now = new Date(),
+	/** An agent handing the thread to its owner (R15): who, and why. */
+	handOff?: { agentId: string; reason: string }
+): Promise<void> {
 	const at = now.toISOString();
 	await db.batch([
 		db
 			.prepare(
-				`INSERT OR IGNORE INTO thread_takeovers (mailbox_user_id, thread_id, by_principal_id, created_at)
-				 VALUES (?, ?, (SELECT id FROM principals WHERE user_id = ? AND kind = 'human'), ?)`
+				`INSERT OR IGNORE INTO thread_takeovers (mailbox_user_id, thread_id, by_principal_id, created_at, reason)
+				 VALUES (?, ?, coalesce(?, (SELECT id FROM principals WHERE user_id = ? AND kind = 'human')), ?, ?)`
 			)
-			.bind(userId, threadId, userId, at),
+			.bind(userId, threadId, handOff?.agentId ?? null, userId, at, handOff?.reason.slice(0, 500) ?? null),
 		db
 			.prepare(
 				`UPDATE agent_actions SET status = 'expired', decided_at = ?, decision_note = 'thread_taken_over'
@@ -72,6 +79,15 @@ export async function takeOverThread(db: D1Database, userId: string, threadId: s
 			)
 			.bind(at, userId, threadId)
 	]);
+}
+
+/** Booking reminders on a taken-over thread: off unless you turn them back on (R15). */
+export async function setTakeoverReminders(db: D1Database, userId: string, threadId: string, on: boolean): Promise<boolean> {
+	const result = await db
+		.prepare(`UPDATE thread_takeovers SET reminders = ? WHERE mailbox_user_id = ? AND thread_id = ?`)
+		.bind(on ? 1 : 0, userId, threadId)
+		.run();
+	return result.meta.changes > 0;
 }
 
 /** Hands the thread back: agents may act on it again. */
@@ -186,12 +202,12 @@ export async function threadActivity(db: D1Database, userId: string, threadId: s
 			}>(),
 		db
 			.prepare(
-				`SELECT t.created_at, p.display_name AS by_name
+				`SELECT t.created_at, t.reason, t.reminders, p.display_name AS by_name, p.kind AS by_kind
 				 FROM thread_takeovers t LEFT JOIN principals p ON p.id = t.by_principal_id
 				 WHERE t.mailbox_user_id = ? AND t.thread_id = ?`
 			)
 			.bind(userId, threadId)
-			.first<{ created_at: string; by_name: string | null }>()
+			.first<{ created_at: string; reason: string | null; reminders: number; by_name: string | null; by_kind: string | null }>()
 	]);
 
 	const items: ThreadActivityItem[] = [];
@@ -236,7 +252,10 @@ export async function threadActivity(db: D1Database, userId: string, threadId: s
 			at: note.created_at
 		});
 	}
-	if (takeover) items.push({ kind: 'takeover', by: takeover.by_name, at: takeover.created_at });
+	const handedOffBy = takeover?.by_kind === 'agent' ? takeover.by_name : null;
+	if (takeover) {
+		items.push({ kind: 'takeover', by: takeover.by_name, handedOff: !!handedOffBy, reason: takeover.reason, at: takeover.created_at });
+	}
 	items.sort((a, b) => a.at.localeCompare(b.at));
-	return { items, takenOver: !!takeover };
+	return { items, takenOver: !!takeover, handedOffBy, reminders: takeover?.reminders === 1 };
 }

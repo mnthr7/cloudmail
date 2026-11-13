@@ -44,7 +44,9 @@ export const CAPABILITY_TRAITS: Record<Capability, CapabilityTraits> = {
 	send_email: { readOnly: false, reachesOutside: true, defaultLevel: 'approve', externalAutoNeedsTrackRecord: true },
 	set_timer: { readOnly: false, reachesOutside: false, defaultLevel: 'auto', externalAutoNeedsTrackRecord: false },
 	calendar: { readOnly: false, reachesOutside: true, defaultLevel: 'approve', externalAutoNeedsTrackRecord: true },
-	hand_off: { readOnly: false, reachesOutside: false, defaultLevel: 'auto', externalAutoNeedsTrackRecord: false },
+	// Tells the sender the founder is taking over (a fixed note CloudMail writes), so it reaches outside.
+	// Off until someone turns it on: templates that need it (Ava) do.
+	hand_off: { readOnly: false, reachesOutside: true, defaultLevel: 'off', externalAutoNeedsTrackRecord: true },
 	fetch_web: { readOnly: true, reachesOutside: false, defaultLevel: 'auto', externalAutoNeedsTrackRecord: false },
 	propose_memory: { readOnly: false, reachesOutside: false, defaultLevel: 'approve', externalAutoNeedsTrackRecord: false }
 };
@@ -70,7 +72,7 @@ export const CAPABILITY_LABELS: Record<Capability, { name: string; hint: string 
 	send_email: { name: 'Send new email', hint: 'Start new threads with people' },
 	set_timer: { name: 'Set timers', hint: 'Come back to a thread later' },
 	calendar: { name: 'Calendar', hint: 'Hold times and send invites' },
-	hand_off: { name: 'Hand off', hint: 'Pass a thread to you or another agent' },
+	hand_off: { name: 'Hand off', hint: 'Pass a thread to you, telling the sender you’ll take it from here' },
 	fetch_web: { name: 'Fetch web pages', hint: 'Read public pages for context' },
 	propose_memory: { name: 'Remember things', hint: 'Suggest facts to keep for later' }
 };

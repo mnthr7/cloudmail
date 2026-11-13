@@ -38,9 +38,17 @@ export type ThreadActivityItem =
 			body: string;
 			at: string;
 	  }
-	| { kind: 'takeover'; by: string | null; at: string };
+	/** Taken over: by its owner, or handed to them by an agent (with the agent's reason). */
+	| { kind: 'takeover'; by: string | null; handedOff?: boolean; reason?: string | null; at: string };
 
-export type ThreadActivity = { items: ThreadActivityItem[]; takenOver: boolean };
+export type ThreadActivity = {
+	items: ThreadActivityItem[];
+	takenOver: boolean;
+	/** The agent that handed the thread to you, if it was one. */
+	handedOffBy?: string | null;
+	/** Booking reminders still go out on this taken-over thread. */
+	reminders?: boolean;
+};
 
 const REFUSALS: Record<string, string> = {
 	agent_paused: 'the agent was paused',

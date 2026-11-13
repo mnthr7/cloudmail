@@ -409,6 +409,26 @@ export const CALENDAR_TOOLS: Anthropic.Beta.BetaTool[] = [
 	}
 ];
 
+/**
+ * Escalation (demo spec, R15). The model only decides to hand over and says
+ * why, for the founder. What the sender gets is a fixed note CloudMail
+ * writes, so nothing in their mail can make it say anything else.
+ */
+export const HAND_OFF_TOOL: Anthropic.Beta.BetaTool = {
+	name: 'hand_off',
+	description:
+		"Hand this thread to the founder. CloudMail replies to the sender with a short fixed note that you're looping the founder in (copying the founder), leaves the founder your reason, and stops you from acting on this thread until they hand it back. Use it when the sender asks for a person, when you can't tell what they want, or when your job says to. Don't also reply yourself.",
+	input_schema: {
+		type: 'object',
+		properties: {
+			reason: { type: 'string', description: 'For the founder, one or two sentences: why you are handing this over.' }
+		},
+		required: ['reason'],
+		additionalProperties: false
+	},
+	strict: true
+};
+
 export const SUGGEST_TOOL: Anthropic.Beta.BetaTool = {
 	name: 'suggest_replies',
 	description:
@@ -478,22 +498,25 @@ export function toolsFor(
 	};
 	const suggest = on('draft_reply') ? [SUGGEST_TOOL] : [];
 	if (kind === 'suggest') return suggest;
+	// Handing over is for mail from outside. When a teammate asks, they're already here.
+	const handOffLevel = definition.capabilities.hand_off?.level;
+	const handOff = kind === 'mail' && handOffLevel !== undefined && handOffLevel !== 'off' ? [HAND_OFF_TOOL] : [];
 	// An agent with the calendar on handles bookings itself: on new mail it acts (or asks first,
 	// per its settings) instead of only suggesting replies.
 	const calendarOn = definition.capabilities.calendar !== undefined && definition.capabilities.calendar.level !== 'off';
 	if (kind === 'mail' && calendarOn && options.bookings) {
 		const acting = (['send_reply', 'draft_reply', 'write_note', 'organize'] as const).filter(on).map((capability) => TOOL_SPECS[capability]);
-		return [...acting, ...CALENDAR_TOOLS];
+		return [...acting, ...CALENDAR_TOOLS, ...handOff];
 	}
 	if (kind === 'mail' && suggest.length) {
-		return [...suggest, ...(['organize', 'write_note'] as const).filter(on).map((capability) => TOOL_SPECS[capability])];
+		return [...suggest, ...(['organize', 'write_note'] as const).filter(on).map((capability) => TOOL_SPECS[capability]), ...handOff];
 	}
 	const logTask = definition.kind === 'generalist' ? [LOG_TASK_TOOL] : [];
 	// New mail is all outsider content: nothing in it should become something the agent remembers.
 	const runnable = RUNNABLE_CAPABILITIES.filter(on).filter((capability) => kind !== 'mail' || capability !== 'propose_memory');
 	// Asked by a teammate on a booking page's mail: the booking tools too.
 	const calendar = kind === 'ask' && calendarOn && options.bookings ? CALENDAR_TOOLS : [];
-	return [...runnable.map((capability) => TOOL_SPECS[capability]), ...calendar, ...suggest, ...logTask];
+	return [...runnable.map((capability) => TOOL_SPECS[capability]), ...calendar, ...suggest, ...handOff, ...logTask];
 }
 
 export type SuggestionInput = {
@@ -552,6 +575,10 @@ export function toProposal(
 		const start = text(raw.start, 40).trim();
 		if (!Number.isFinite(Date.parse(start))) return null;
 		return { capability: 'calendar', payload: { ...where, op: 'reschedule', bookingId, start }, reason };
+	}
+	if (name === 'hand_off') {
+		// Who it goes to is filled in by the runner: the sender and the founder, nothing from the model.
+		return { capability: 'hand_off', payload: { ...where, reason: text(raw.reason, 500) }, reason };
 	}
 	if (!(RUNNABLE_CAPABILITIES as readonly string[]).includes(name)) return null;
 

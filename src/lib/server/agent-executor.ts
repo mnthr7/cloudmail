@@ -23,7 +23,7 @@ import { applyConversationAction } from './organizing-store.ts';
 import { resolveFromAddress } from './outbox.ts';
 import { queueOutbound } from './queue-outbound.ts';
 import { buildReferences } from './threads.ts';
-import { addThreadNote, isThreadTakenOver } from './thread-activity-store.ts';
+import { addThreadNote, isThreadTakenOver, takeOverThread } from './thread-activity-store.ts';
 import { agentBookingChange, senderVerified } from './booking-manage.ts';
 import { BookingError } from './booking-store.ts';
 import type { EmailProvider } from './email-provider.ts';
@@ -83,6 +83,17 @@ class StopError extends Error {
 		super(code);
 		this.name = 'StopError';
 	}
+}
+
+/**
+ * What the sender gets when an agent hands their thread over (R15). Fixed
+ * text: only a plain first name is taken from their mail, nothing else.
+ */
+export function handOffNote(senderName: string | null | undefined, founderName: string | null | undefined, agentName: string): string {
+	const first = (senderName ?? '').trim().split(/\s+/)[0] ?? '';
+	const greeting = /^[\p{L}][\p{L}'’-]{0,29}$/u.test(first) ? `Hi ${first},` : 'Hi,';
+	const founder = (founderName ?? '').trim().split(/\s+/)[0] || 'the team';
+	return `${greeting}\n\nI'm looping in ${founder}, who'll pick this up from here and get back to you.\n\n${agentName}`;
 }
 
 /** The footer every agent-sent email carries (A12). */
@@ -336,6 +347,56 @@ async function carryOut(db: D1Database, action: ClaimedAction, now: Date, deps: 
 			return queued.id;
 		}
 
+		case 'hand_off': {
+			// The agent hands the thread to its owner (R15): a fixed note to the sender, copying the
+			// owner, then the thread is theirs and the agent stands down.
+			const reason = typeof payload.reason === 'string' ? payload.reason.trim().slice(0, 500) : '';
+			const authorized = action.authorized_json ? (JSON.parse(action.authorized_json) as AuthorizedAddresses) : null;
+			const humans = new Set([...(await liveWorkspaceAddresses(db, action.workspace_id)).keys()].map((address) => address.toLowerCase()));
+			const to = (authorized?.recipients ?? []).filter((address) => !humans.has(address));
+			const cc = (authorized?.recipients ?? []).filter((address) => humans.has(address));
+			let told: string | null = null;
+			let sentId: string | null = null;
+			// Checked again here: the note goes only to a sender whose domain signed their mail.
+			const verified = senderVerified((email as typeof email & { security_json?: string | null }).security_json ?? null, email.from_addr);
+			if (authorized?.from && to.length && verified) {
+				await loopGuard(db, action, [...to, ...cc], thread.length ? thread : [email], now);
+				const text = `${handOffNote(email.from_name, user.name, action.agent_name)}\n\n${disclosureFooter(action.agent_name, user.name)}`;
+				const queued = await queueOutbound(db, user, {
+					fromAddress: authorized.from,
+					receivedAt: threadReceivedAtAddresses(thread.length ? thread : [email]),
+					to: to.join(', '),
+					cc: cc.join(', ') || null,
+					subject: /^re:/i.test(email.subject.trim()) ? email.subject.trim() : `Re: ${email.subject.trim()}`,
+					text,
+					html: textToHtml(text),
+					inReplyTo: email.message_id,
+					references: buildReferences(email.references_header, email.message_id),
+					replyToEmailId: email.id,
+					sourceEmailId: email.id,
+					draftAction: 'reply',
+					threadId
+				});
+				told = to.join(', ');
+				sentId = queued.id;
+			}
+			await takeOverThread(db, user.id, threadId, now, { agentId: action.agent_principal_id, reason });
+			const noteId = await addThreadNote(db, {
+				workspaceId: action.workspace_id,
+				mailboxUserId: user.id,
+				threadId,
+				authorId: action.agent_principal_id,
+				kind: 'alert',
+				body: `${action.agent_name} handed this thread to you${reason ? `: ${reason}` : '.'}${
+					told ? ` ${action.agent_name} told ${told} you're picking it up, and copied you.` : ''
+				} ${action.agent_name} won't act on it again until you let agents work on it.`,
+				actionId: action.id,
+				now
+			});
+			// The email it sent is the action's result, so every agent send stays traceable (R14).
+			return sentId ?? noteId;
+		}
+
 		case 'propose_memory': {
 			// Only ever after a human said yes (the policy never lets it run on its own).
 			if (!action.decided_by_principal_id) throw new StopError('needs_approval');
@@ -486,7 +547,7 @@ async function loopGuard(
 		const row = await db
 			.prepare(
 				`SELECT COUNT(*) AS n FROM agent_actions
-				 WHERE workspace_id = ? AND capability IN ('send_reply', 'send_email') AND id <> ?
+				 WHERE workspace_id = ? AND capability IN ('send_reply', 'send_email', 'hand_off') AND id <> ?
 				   AND ${SENT_OR_SENDING}
 				   AND EXISTS (SELECT 1 FROM json_each(authorized_json, '$.recipients') WHERE value = ?)`
 			)
@@ -510,7 +571,7 @@ async function loopGuard(
 		.prepare(
 			`SELECT COUNT(*) AS n FROM agent_actions
 			 WHERE mailbox_user_id = ? AND thread_id = ? AND id <> ?
-			   AND capability IN ('send_reply', 'send_email') AND ${SENT_OR_SENDING}`
+			   AND capability IN ('send_reply', 'send_email', 'hand_off') AND ${SENT_OR_SENDING}`
 		)
 		.bind(action.mailbox_user_id, action.thread_id, action.id, since, since)
 		.first<{ n: number }>();

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { authLines, senderDetails } from '#lib/security/headers.ts';
-	import type { MessageSecurity } from '#lib/security/phishing.ts';
+	import type { MessageSecurity } from '#lib/security/security-result.ts';
 	import { showToast } from '#lib/toast.ts';
 
 	let {

@@ -4,7 +4,15 @@ const FILE_SUFFIXES = new Set([
 	'pdf', 'png', 'jpg', 'jpeg', 'gif', 'zip', 'txt', 'doc', 'docx', 'xls', 'xlsx', 'html', 'htm'
 ]);
 
-export function senderWarning(fromHeader: string): string | null {
+/**
+ * `organization` decides which domains count as the same sender. The default is
+ * the cheap two-label guess that is safe to ship to the browser; the server's
+ * phishing check passes the Public Suffix List version (organization.ts).
+ */
+export function senderWarning(
+	fromHeader: string,
+	organization: (host: string) => string = registrableDomain
+): string | null {
 	const parsed = splitFrom(fromHeader);
 	if (!parsed.name) return null;
 	const address = parsed.address.toLowerCase();
@@ -15,7 +23,7 @@ export function senderWarning(fromHeader: string): string | null {
 	for (const token of parsed.name.split(/\s+/)) {
 		const domain = token.replace(/^[<(]+|[>),.]+$/g, '');
 		if (!isDomain(domain)) continue;
-		if (registrableDomain(domain) !== registrableDomain(address.split('@')[1] ?? '')) {
+		if (organization(domain) !== organization(address.split('@')[1] ?? '')) {
 			return `This name includes ${domain}, but the message is from ${address}.`;
 		}
 	}

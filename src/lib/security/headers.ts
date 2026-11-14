@@ -1,4 +1,4 @@
-import { authClauses, type AuthSummary } from './phishing';
+import { authClauses, type AuthSummary } from './security-result';
 
 /**
  * A message's original headers, kept so the reader can see who really sent it.

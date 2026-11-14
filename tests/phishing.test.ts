@@ -229,6 +229,53 @@ describe('the verdict', () => {
 		expect(codes({ ...ask, firstTimeSender: false }).verdict).toBeNull();
 	});
 
+	test('siblings under a shared public suffix are different organizations', () => {
+		// Owning you.co.uk doesn't make every co.uk sender "your own domain".
+		const uk = { ownDomains: ['you.co.uk'], contactDomains: ['customer.co.uk'] };
+		expect(codes({ ...uk, fromAddress: 'ceo@stranger.co.uk', auth: { spf: 'fail', dkim: 'none', dmarc: 'fail' } })).toEqual({
+			verdict: 'suspicious',
+			codes: ['dmarc_failed']
+		});
+		expect(
+			assessMessage(input({ ...uk, fromAddress: 'ceo@stranger.co.uk', auth: { spf: 'fail', dkim: 'none', dmarc: 'fail' } }))
+				.reasons[0]?.text
+		).toBe("stranger.co.uk says this message didn't come from them.");
+		// Your own subdomain still counts as you.
+		expect(codes({ ...uk, fromAddress: 'ceo@mail.you.co.uk', auth: { spf: 'fail', dkim: 'none', dmarc: 'fail' } }).codes).toEqual([
+			'own_domain_unverified'
+		]);
+		// A lookalike of your co.uk domain is named, not hidden behind "co.uk".
+		expect(codes({ ...uk, ownDomains: ['acme.co.uk'], fromAddress: 'it@acrne.co.uk' })).toMatchObject({
+			verdict: 'phishing',
+			codes: ['lookalike_own']
+		});
+
+		const au = { ownDomains: ['acme.com.au'], contactDomains: ['globex.com.au'] };
+		expect(codes({ ...au, fromAddress: 'ap@g1obex.com.au' })).toMatchObject({
+			verdict: 'suspicious',
+			codes: ['lookalike_contact']
+		});
+		// A different company under com.au is not your contact, so its lookalike check runs.
+		expect(codes({ ...au, fromAddress: 'pat@globex.com.au' }).verdict).toBeNull();
+
+		// amazon.co.uk being Amazon's doesn't make every co.uk domain Amazon's.
+		expect(codes({ fromAddress: 'orders@amazon.co.uk', fromName: 'Amazon' }).verdict).toBeNull();
+		expect(codes({ fromAddress: 'orders@amaz0n.co.uk', fromName: 'Amazon' }).verdict).toBe('phishing');
+		expect(codes({ fromAddress: 'help@randomshop.co.uk', fromName: 'Amazon Support' }).codes).toContain('brand_name');
+	});
+
+	test('replies to a sibling under github.io go elsewhere', () => {
+		const ask = {
+			fromAddress: 'team@alice.github.io',
+			firstTimeSender: true,
+			replyTo: 'Team <team@bob.github.io>'
+		};
+		const result = assessMessage(input(ask));
+		expect(result.reasons.map((reason) => reason.code)).toEqual(['reply_to_elsewhere']);
+		expect(result.reasons[0]?.text).toBe('Replies would go to bob.github.io, not alice.github.io.');
+		expect(codes({ ...ask, replyTo: 'Team <team@docs.alice.github.io>' }).codes).toEqual([]);
+	});
+
 	test('stored results read back safely', () => {
 		const stored = assessMessage(input({ fromAddress: 'it@acrne.com' }));
 		expect(parseSecurity(JSON.stringify(stored))).toEqual(stored);

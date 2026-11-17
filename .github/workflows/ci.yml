@@ -9,10 +9,19 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request cancels its older run; only the newest head can
+# merge. Pushes to main are never cancelled: each merged commit gets checked.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   verify:
+    # This name is the required check in the "Main Protection" ruleset; keep it.
     name: Verify the template
     runs-on: ubuntu-latest
+    # A normal run takes under a minute; don't let a hang hold a runner for 6 hours.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -25,15 +34,8 @@ jobs:
       - name: Install
         run: bun install --frozen-lockfile
 
-      # Runs first: if a secret leaked, fail before anything else touches it.
-      - name: Check the template is clean
-        run: bun run check:clean
-
-      - name: Typecheck
-        run: bun run check
-
-      - name: Test
-        run: bun run test
-
-      - name: Build
-        run: bun run build
+      # scripts/ci-verify.sh: the template-clean check runs first and alone (a
+      # leaked secret fails before anything else touches it), then typecheck
+      # and build run with the unit tests alongside. Same as `bun run ci`.
+      - name: Clean check, typecheck, test, build
+        run: bun run ci

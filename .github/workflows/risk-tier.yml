@@ -32,6 +32,7 @@ jobs:
   tier:
     name: Risk tier
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: write # enable auto-merge
       pull-requests: write # labels and auto-merge

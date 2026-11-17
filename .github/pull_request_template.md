@@ -8,7 +8,7 @@
 
 ## Checklist
 
-- [ ] `bun run check:clean`, `bun run check`, `bun run test` and `bun run build` pass
+- [ ] `bun run ci` passes (clean check, typecheck, tests, build)
 - [ ] Tests added or updated for changed behaviour
 - [ ] No secrets, account ids, or real domains (use `example.com`)
 - [ ] New migration file added in `migrations/` (if the schema changed), and no released migration edited

@@ -324,6 +324,7 @@ bun run dev                       # D1 and R2 via platformProxy, secrets from .d
 bun run test         # unit tests (bun test)
 bun run check        # svelte-check
 bun run check:clean  # make sure no secrets or live config are tracked
+bun run ci           # the full CI gate: clean check, typecheck, tests, build
 bun run preview      # production build + wrangler dev (needed for Cloudflare inbound)
 bun run deploy       # build, wrap the Worker with email(), ship
 ```

@@ -16,6 +16,7 @@
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:clean": "bun scripts/check-template-clean.mjs",
 		"test": "bun test tests",
+		"ci": "bash scripts/ci-verify.sh",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
 		"cf-typegen": "wrangler types"
 	},

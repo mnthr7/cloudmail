@@ -21,6 +21,7 @@ jobs:
   release:
     name: Package and publish
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -34,15 +35,12 @@ jobs:
       - name: Install
         run: bun install --frozen-lockfile
 
-      # Nothing ships until the template is provably free of personal config.
-      - name: Check the template is clean
-        run: bun run check:clean
-
-      - name: Typecheck
-        run: bun run check
-
-      - name: Build
-        run: bun run build
+      # The full CI gate on the exact commit being released, tests included: a
+      # tag can point at a commit CI never saw, and an old green run is no
+      # proof for it. The clean check runs first, so nothing ships with
+      # personal config in it.
+      - name: Clean check, typecheck, test, build
+        run: bun run ci
 
       - name: Resolve version
         id: version

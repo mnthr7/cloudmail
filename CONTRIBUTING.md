@@ -35,11 +35,12 @@ off (`bun run dev`) once you've set up a real provider; see the README for that.
 Run the same checks CI runs:
 
 ```bash
-bun run check:clean   # no secrets, account ids, or personal hostnames
-bun run check         # typecheck
-bun run test          # unit tests
-bun run build
+bun run ci            # everything CI runs, in the same order
 ```
+
+`bun run ci` runs `check:clean` first (no secrets, account ids, or personal
+hostnames), then the typecheck, unit tests and build, with tests running
+alongside the other two. `CI_SERIAL=1 bun run ci` runs them one at a time.
 
 - **Add or update tests** in `tests/` for any behaviour you change.
 - **Database changes** go in a new numbered file in `migrations/`. Never edit a

@@ -21,27 +21,27 @@
 		"cf-typegen": "wrangler types"
 	},
 	"devDependencies": {
-		"@cloudflare/workers-types": "^5.20261110.1",
-		"@sveltejs/adapter-cloudflare": "^8.0.2",
-		"@sveltejs/kit": "^3.2.0",
+		"@cloudflare/workers-types": "^5.20261118.1",
+		"@sveltejs/adapter-cloudflare": "^8.0.3",
+		"@sveltejs/kit": "^3.3.1",
 		"@sveltejs/vite-plugin-svelte": "^7.3.1",
 		"@tailwindcss/vite": "^4.3.5",
 		"@types/node": "^26.6.6",
 		"@types/sanitize-html": "^2.16.2",
-		"svelte": "^5.57.3",
+		"svelte": "^5.58.0",
 		"svelte-check": "^4.7.8",
 		"tailwindcss": "^4.3.5",
 		"typescript": "^6.0.2",
 		"vite": "^8.3.8",
-		"wrangler": "^4.160.1"
+		"wrangler": "^4.164.0"
 	},
 	"dependencies": {
-		"@anthropic-ai/sdk": "^1.8.0",
-		"marked": "^18.2.0",
+		"@anthropic-ai/sdk": "^1.10.0",
+		"marked": "^18.2.1",
 		"postal-mime": "^4.2.1",
 		"remixicon": "^4.9.1",
-		"sanitize-html": "^2.18.1",
-		"tldts": "^7.5.2"
+		"sanitize-html": "^2.18.2",
+		"tldts": "^7.5.4"
 	},
 	"imports": {
 		"#lib": "./src/lib/index.js",

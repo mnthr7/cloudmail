@@ -9,6 +9,7 @@ import { recordUnroutedEmail, resolveInboundRoute } from './domains';
 import type { EmailProvider } from './email-provider';
 import { emailExistsByProviderId, insertEmail, updateEmailStatusByProviderId } from './mail-store';
 import { organizeInbound, readInboundHeader } from './organize-inbound';
+import { ALL_DOMAINS, addDoNotSend, domainOf } from './do-not-send';
 import type { ResendClient } from './resend';
 import { resendAuthResults } from '#lib/security/phishing.ts';
 import { headerBlockFromRecord } from '#lib/security/headers.ts';
@@ -70,7 +71,47 @@ async function handleDeliveryStatus(
 		null;
 
 	await updateEmailStatusByProviderId(db, providerId, status, detail);
-	return { handled: true, note: `Marked ${providerId} as ${status}` };
+	const listed = await recordDoNotSend(event, db, detail);
+	return {
+		handled: true,
+		note: `Marked ${providerId} as ${status}${listed ? `; ${listed} added to do-not-send` : ''}`
+	};
+}
+
+/**
+ * Hard bounces and spam complaints feed the do-not-send list. A hard bounce
+ * means the address is dead, so it blocks every domain; a complaint blocks
+ * marketing from the domain that sent it. Soft bounces (mailbox full, greylisted)
+ * are left alone: the next send may well arrive.
+ */
+async function recordDoNotSend(event: ResendWebhookEvent, db: D1Database, detail: string | null): Promise<number> {
+	const recipients = readRecipients(event.data?.to);
+	if (recipients.length === 0) return 0;
+
+	if (event.type === 'email.bounced') {
+		const bounce = event.data?.bounce as Record<string, unknown> | undefined;
+		if (readString(bounce?.type)?.toLowerCase() !== 'permanent') return 0;
+		for (const address of recipients) {
+			await addDoNotSend(db, { address, scope: ALL_DOMAINS, reason: 'bounced', detail });
+		}
+		return recipients.length;
+	}
+
+	if (event.type === 'email.complained') {
+		const scope = domainOf(readString(event.data?.from) ?? '');
+		if (!scope) return 0;
+		for (const address of recipients) {
+			await addDoNotSend(db, { address, scope, reason: 'complained', detail: 'Marked as spam' });
+		}
+		return recipients.length;
+	}
+
+	return 0;
+}
+
+function readRecipients(value: unknown): string[] {
+	const list = Array.isArray(value) ? value : typeof value === 'string' ? [value] : [];
+	return list.filter((item): item is string => typeof item === 'string' && item.includes('@'));
 }
 
 async function handleInboundEmail(

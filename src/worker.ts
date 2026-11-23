@@ -18,6 +18,7 @@ import { MCP_PATH, oauthSettings, REGISTER_PATH, TOKEN_PATH } from './lib/server
 import { runAgentsNow, sendBriefsNow } from './lib/server/run-agents';
 import { importMasterKey } from './lib/server/secret-box';
 import { deliverDue } from './lib/server/outbox-schedule';
+import { handleOneClickUnsubscribe } from './lib/server/do-not-send';
 import { syncDueOutsideCalendars } from './lib/server/outside-calendars';
 import { sendDueReminders } from './lib/server/booking-manage';
 import { createVirusTotal } from './lib/server/virus-total';
@@ -122,6 +123,10 @@ function isAgentAuthPath(pathname: string): boolean {
 export default {
 	async fetch(request: Request, env: Env, ctx: ExecutionContext) {
 		if (env.DEMO_MODE !== 'true') {
+			const unsubscribed = await handleOneClickUnsubscribe(request, env.DB);
+			if (unsubscribed) return unsubscribed;
+		}
+		if (env.DEMO_MODE !== 'true') {
 			const keyed = await apiKeyMcp(request, env);
 			if (keyed) return keyed;
 		}
@@ -161,7 +166,7 @@ export default {
 
 	async scheduled(_event: unknown, env: Env, ctx: ExecutionContext) {
 		ctx.waitUntil(
-			deliverDue(env.DB, getEmailProvider({ env }), new Date(), 20)
+			deliverDue(env.DB, getEmailProvider({ env }), new Date(), 20, { origin: env.PUBLIC_ORIGIN })
 				// Booking reminders go out from the host's own address, after scheduled mail.
 				.then(() => (env.DEMO_MODE === 'true' ? 0 : sendDueReminders(env.DB, getEmailProvider({ env }), new Date())))
 				// Prep briefs to the host on the meeting day, written by the agent running the page.

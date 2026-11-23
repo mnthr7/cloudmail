@@ -97,6 +97,52 @@
 		window.location.reload();
 	}
 
+	let blockAddress = $state('');
+	let blockScope = $state('*');
+	let blockError = $state('');
+	let blocking = $state(false);
+
+	const REASON_LABEL: Record<string, string> = {
+		bounced: 'Hard bounce',
+		complained: 'Marked as spam',
+		unsubscribed: 'Unsubscribed',
+		manual: 'Added by admin'
+	};
+
+	async function blockSubmit(event: SubmitEvent) {
+		event.preventDefault();
+		blockError = '';
+		blocking = true;
+		try {
+			const res = await fetch('/api/admin/do-not-send', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ address: blockAddress, scope: blockScope })
+			});
+			const body = await res.json();
+			if (!res.ok) {
+				blockError = body.error ?? 'Could not add that address';
+				return;
+			}
+			window.location.reload();
+		} catch {
+			blockError = 'Network error';
+		} finally {
+			blocking = false;
+		}
+	}
+
+	async function unblock(id: string, address: string) {
+		if (!confirm(`Let ${address} get mail again?`)) return;
+		blockError = '';
+		const res = await fetch(`/api/admin/do-not-send?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+		if (!res.ok) {
+			blockError = (await res.json().catch(() => null))?.error ?? 'Could not remove it';
+			return;
+		}
+		window.location.reload();
+	}
+
 	let aiProvider = $state<AiProvider>('anthropic');
 	let aiKey = $state('');
 	let aiSaving = $state(false);
@@ -413,6 +459,40 @@
 		</Section>
 	</div>
 
+	<Section id="do-not-send" title="Do-not-send list" count={data.doNotSend.length} icon="mail-forbid-line" remember="admin">
+		<p class="card-hint">
+			Marketing mail never goes to these addresses. Hard bounces fill in from Resend and block all mail to
+			the address; spam complaints and unsubscribes block marketing from that domain only.
+		</p>
+		<form class="dns-form" onsubmit={blockSubmit}>
+			<input type="email" bind:value={blockAddress} required placeholder="name@example.com" class="admin-input" />
+			<select bind:value={blockScope} class="admin-input" aria-label="Which domains">
+				<option value="*">All domains</option>
+				{#each data.domains as domain (domain.id)}
+					<option value={domain.name}>{domain.name} only</option>
+				{/each}
+			</select>
+			<button type="submit" disabled={blocking} class="btn-primary">{blocking ? 'Adding…' : 'Add'}</button>
+		</form>
+		{#if blockError}<p class="error">{blockError}</p>{/if}
+		{#if data.doNotSend.length > 0}
+			<ul class="user-list">
+				{#each data.doNotSend as entry (entry.id)}
+					<li class="user-row">
+						<div class="min-w-0 flex-1">
+							<p class="user-name">{entry.address}</p>
+							<p class="user-email">
+								{REASON_LABEL[entry.reason] ?? entry.reason} · {entry.scope === '*' ? 'all domains' : entry.scope}
+								· {formatDate(entry.created_at.replace(' ', 'T') + 'Z')}
+							</p>
+						</div>
+						<button type="button" class="btn-ghost text-xs" onclick={() => unblock(entry.id, entry.address)}>Remove</button>
+					</li>
+				{/each}
+			</ul>
+		{/if}
+	</Section>
+
 	{#if data.unrouted.length > 0}
 		<Section id="unrouted" title="Unrouted mail" icon="question-mark" remember="admin">
 			<p class="card-hint">
@@ -433,6 +513,21 @@
 </div>
 
 <style>
+	.dns-form {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+		margin-top: 1rem;
+	}
+
+	.dns-form input {
+		flex: 2 1 14rem;
+	}
+
+	.dns-form select {
+		flex: 1 1 10rem;
+	}
+
 	.admin-page h1 {
 		font-size: 1.375rem;
 		font-weight: 600;

@@ -46,7 +46,24 @@ CREATE TABLE emails (
 	in_inbox INTEGER NOT NULL DEFAULT 1,
 	snoozed_until TEXT,
 	deleted_at TEXT,
-	is_spam INTEGER NOT NULL DEFAULT 0
+	is_spam INTEGER NOT NULL DEFAULT 0,
+	is_marketing INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE do_not_send (
+	id TEXT PRIMARY KEY,
+	address TEXT NOT NULL,
+	scope TEXT NOT NULL,
+	reason TEXT NOT NULL,
+	detail TEXT,
+	created_at TEXT NOT NULL DEFAULT (datetime('now')),
+	UNIQUE (address, scope)
+);
+CREATE TABLE unsubscribe_links (
+	token TEXT PRIMARY KEY,
+	scope TEXT NOT NULL,
+	address TEXT NOT NULL,
+	created_at TEXT NOT NULL DEFAULT (datetime('now')),
+	UNIQUE (scope, address)
 );
 `;
 
@@ -315,7 +332,7 @@ describe('outbox schedule', () => {
 
 	test('deliverDue is what the worker cron calls, and a second call delivers 0', async () => {
 		const worker = await Bun.file(new URL('../src/worker.ts', import.meta.url)).text();
-		expect(worker).toContain('deliverDue(env.DB, getEmailProvider({ env }), new Date(), 20)');
+		expect(worker).toContain('deliverDue(env.DB, getEmailProvider({ env }), new Date(), 20, { origin: env.PUBLIC_ORIGIN })');
 		expect(worker).toContain('Failed to deliver scheduled mail');
 
 		const { sqlite, db } = open();

@@ -17,6 +17,8 @@ type SendMailBody = {
 	html?: string;
 	/** Schedule send. Absent means an undo hold. */
 	sendAt?: string;
+	/** Marketing mail: one recipient, unsubscribe headers and footer, do-not-send enforced. */
+	marketing?: boolean;
 };
 
 export const GET: RequestHandler = async ({ locals, platform, url }) => {
@@ -87,7 +89,8 @@ export const POST: RequestHandler = async ({ request, locals, platform }) => {
 			subject: body.subject,
 			text: body.text,
 			html: body.html,
-			sendAt: body.sendAt
+			sendAt: body.sendAt,
+			marketing: body.marketing === true
 		});
 
 		if (body.draftId) {

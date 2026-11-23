@@ -160,3 +160,8 @@ conversation opens as its own screen.
   the [README](../README.md#choose-a-mail-provider).
 - **Delivery status.** With Resend, each sent message shows delivered, bounced,
   or complained.
+- **Marketing mail.** A send marked `marketing` goes to one recipient, with
+  one-click `List-Unsubscribe` headers and an unsubscribe footer. The link opens
+  a page where the person can unsubscribe or subscribe again. Hard bounces,
+  spam complaints, and unsubscribes fill the do-not-send list on the Admin page
+  on their own; admins can add or remove addresses there too.

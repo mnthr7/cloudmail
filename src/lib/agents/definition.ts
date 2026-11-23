@@ -48,6 +48,13 @@ export type AgentScope = {
 	/** Addresses the agent may send from. Empty means it can't send. */
 	sendAs: string[];
 	recipients: RecipientScope;
+	/**
+	 * Mail the agent may read: threads with a message to, from or CC'ing one of
+	 * these addresses. Set for external agents, which choose what to read
+	 * themselves (external-agents.md, X2). Built-in agents only ever see the
+	 * thread a trigger hands them, so they leave it unset.
+	 */
+	read?: { addresses: string[] };
 };
 
 /** When the agent wakes up (A5). Asking it on a thread always works. */
@@ -116,6 +123,42 @@ export function defaultDefinition(job: string): AgentDefinition {
 		capabilities[capability] = { level: CAPABILITY_TRAITS[capability].defaultLevel };
 	}
 	return parseDefinition({ job, capabilities, scope: { sendAs: [], recipients: { kind: 'thread' } } });
+}
+
+/**
+ * Where an external agent starts (external-agents.md, X2): it may read, note
+ * and draft on its own; anything that changes mail or reaches outside waits
+ * for the founder. It never hands off or fetches the web through CloudMail, and
+ * its model and budget are its own, so those fields are unused.
+ */
+export const EXTERNAL_DEFAULT_LEVELS: Record<Capability, AutonomyLevel> = {
+	read_threads: 'auto',
+	write_note: 'auto',
+	draft_reply: 'auto',
+	organize: 'approve',
+	send_reply: 'approve',
+	send_email: 'approve',
+	set_timer: 'approve',
+	calendar: 'approve',
+	hand_off: 'off',
+	fetch_web: 'off',
+	propose_memory: 'off'
+};
+
+/** Capabilities an external agent can never be given (they don't go through CloudMail for these). */
+export const EXTERNAL_UNAVAILABLE: readonly Capability[] = ['hand_off', 'fetch_web', 'propose_memory'];
+
+export function externalDefaultDefinition(
+	job: string,
+	input: { readAddresses: string[]; sendAs: string[] }
+): AgentDefinition {
+	const capabilities: AgentDefinition['capabilities'] = {};
+	for (const capability of CAPABILITIES) capabilities[capability] = { level: EXTERNAL_DEFAULT_LEVELS[capability] };
+	return parseDefinition({
+		job,
+		capabilities,
+		scope: { sendAs: input.sendAs, recipients: { kind: 'thread' }, read: { addresses: input.readAddresses } }
+	});
 }
 
 /** Older stored versions predate triggers, model and budget; they get the defaults. */
@@ -216,7 +259,14 @@ function parseScope(value: unknown): AgentScope {
 		throw new AgentDefinitionError('scope');
 	}
 
-	return { sendAs: [...new Set(sendAs as string[])], recipients: parsedRecipients };
+	const scope: AgentScope = { sendAs: [...new Set(sendAs as string[])], recipients: parsedRecipients };
+	if (raw.read !== undefined && raw.read !== null) {
+		const read = raw.read as Record<string, unknown>;
+		const addresses = Array.isArray(read?.addresses) ? read.addresses.map(normalizeAddress) : null;
+		if (!addresses || addresses.some((address) => address === null)) throw new AgentDefinitionError('scope');
+		scope.read = { addresses: [...new Set(addresses as string[])] };
+	}
+	return scope;
 }
 
 function normalizeAddress(value: unknown): string | null {

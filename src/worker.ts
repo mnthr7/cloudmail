@@ -1,4 +1,5 @@
 import type { ExecutionContext } from '@cloudflare/workers-types';
+import { OAuthProvider } from '@cloudflare/workers-oauth-provider';
 import {
 	handleCloudflareInbound,
 	type CloudflareInboundEnv,
@@ -9,7 +10,11 @@ import { scanPending } from './lib/server/attachment-scan';
 import { getEmailProvider } from './lib/server/context';
 import type { EmailProvider } from './lib/server/email-provider';
 import { expireActions } from './lib/server/agents-store';
-import { executePending } from './lib/server/agent-executor';
+import { executePending, fireDueTimers } from './lib/server/agent-executor';
+import { pruneAudit } from './lib/server/external-agents-store';
+import { deliverWebhooks } from './lib/server/agent-webhooks';
+import { handleMcpRequest } from './lib/server/mcp/server';
+import { MCP_PATH, oauthSettings, REGISTER_PATH, TOKEN_PATH } from './lib/server/mcp/oauth';
 import { runAgentsNow, sendBriefsNow } from './lib/server/run-agents';
 import { importMasterKey } from './lib/server/secret-box';
 import { deliverDue } from './lib/server/outbox-schedule';
@@ -48,18 +53,61 @@ function pathRedirect(request: Request, env: Env): Response | null {
 	return Response.redirect(url.toString(), 302);
 }
 
+function serveApp(request: Request, env: Env, ctx: ExecutionContext): Response | Promise<Response> {
+	const redirect = pathRedirect(request, env);
+	if (redirect) return redirect;
+	if (typeof svelteApp.fetch !== 'function') {
+		throw new Error('SvelteKit worker export is missing fetch');
+	}
+	return svelteApp.fetch(request, env, ctx);
+}
+
+/**
+ * External agents (docs/specs/external-agents.md): /mcp needs an OAuth access
+ * token. The provider answers /oauth/token, /oauth/register and the
+ * .well-known metadata; everything else, the consent page included, is SvelteKit.
+ */
+const oauthProviders = new Map<string, OAuthProvider<Env>>();
+
+function oauthProviderFor(origin: string): OAuthProvider<Env> {
+	let provider = oauthProviders.get(origin);
+	if (!provider) {
+		provider = new OAuthProvider<Env>({
+			...oauthSettings(origin),
+			apiRoute: MCP_PATH,
+			apiHandler: {
+				fetch: (request: Request, env: Env, ctx: ExecutionContext & { props?: unknown }) =>
+					handleMcpRequest(request, ctx.props, { db: env.DB, provider: providerOrNull(env), bucket: env.ATTACHMENTS })
+			} as never,
+			defaultHandler: { fetch: serveApp } as never
+		});
+		oauthProviders.set(origin, provider);
+	}
+	return provider;
+}
+
+/** Paths only the OAuth provider serves. Without it (no OAUTH_KV, or demo mode) they don't exist. */
+function isAgentAuthPath(pathname: string): boolean {
+	return (
+		pathname === MCP_PATH ||
+		pathname.startsWith(`${MCP_PATH}/`) ||
+		pathname === TOKEN_PATH ||
+		pathname === REGISTER_PATH ||
+		pathname.startsWith('/.well-known/oauth-')
+	);
+}
+
 /**
  * SvelteKit's generated Worker is fetch-only. This wrapper keeps HTTP on
  * SvelteKit and adds Cloudflare Email Service's `email()` handler.
  */
 export default {
 	fetch(request: Request, env: Env, ctx: ExecutionContext) {
-		const redirect = pathRedirect(request, env);
-		if (redirect) return redirect;
-		if (typeof svelteApp.fetch !== 'function') {
-			throw new Error('SvelteKit worker export is missing fetch');
+		if (env.OAUTH_KV && env.DEMO_MODE !== 'true') {
+			return oauthProviderFor(new URL(request.url).origin).fetch(request as never, env, ctx as never) as Promise<Response>;
 		}
-		return svelteApp.fetch(request, env, ctx);
+		if (isAgentAuthPath(new URL(request.url).pathname)) return new Response('Not found', { status: 404 });
+		return serveApp(request, env, ctx);
 	},
 
 	async email(message: CloudflareInboundMessage, env: Env, ctx: ExecutionContext) {
@@ -106,6 +154,10 @@ export default {
 		ctx.waitUntil(
 			expireActions(env.DB)
 				.then(() => (env.DEMO_MODE === 'true' ? 0 : executePending(env.DB, new Date(), 10, { provider: providerOrNull(env) })))
+				// External agents' follow-up timers, then their 90-day audit window.
+				.then(() => (env.DEMO_MODE === 'true' ? 0 : fireDueTimers(env.DB, new Date())))
+				.then(() => (env.DEMO_MODE === 'true' ? 0 : deliverAgentWebhooks(env).then(() => 0)))
+				.then(() => (new Date().getUTCMinutes() === 7 ? pruneAudit(env.DB, new Date()) : 0))
 				.then(
 					() => undefined,
 					(error) => console.error('Failed to expire or finish agent actions', error)
@@ -140,6 +192,12 @@ export default {
 async function runAgents(env: Env): Promise<void> {
 	if (env.DEMO_MODE === 'true') return;
 	await runAgentsNow(env, providerOrNull(env));
+}
+
+/** Webhooks to external agents. Their signing secrets are sealed with the same key as AI keys. */
+async function deliverAgentWebhooks(env: Env): Promise<void> {
+	const key = env.AI_KEY_ENCRYPTION_KEY ? await importMasterKey(env.AI_KEY_ENCRYPTION_KEY) : null;
+	await deliverWebhooks(env.DB, key, (url, init) => fetch(url, init));
 }
 
 async function scanDueAttachments(env: Env): Promise<void> {

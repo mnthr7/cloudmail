@@ -1,4 +1,5 @@
 import type { D1Database } from '@cloudflare/workers-types';
+import { emitEvent } from './external-agents-store.ts';
 import { looksLikeAutoReply } from '#lib/agents/auto-reply.ts';
 import { parseDefinition } from '#lib/agents/definition.ts';
 import { fromDomainVerified, parseSecurity } from '#lib/security/phishing.ts';
@@ -120,7 +121,7 @@ export async function enqueueMailRuns(
 			 FROM principals p
 			 JOIN agents a ON a.principal_id = p.id
 			 JOIN agent_versions v ON v.id = a.current_version_id
-			 WHERE p.workspace_id = ? AND p.kind = 'agent' AND a.status != 'paused'
+			 WHERE p.workspace_id = ? AND p.kind = 'agent' AND a.status != 'paused' AND a.runtime = 'builtin'
 			 ORDER BY p.created_at ASC, p.id ASC`
 		)
 		.bind(human.workspace_id)
@@ -215,6 +216,13 @@ export async function enqueueAskRun(
 		.first<{ id: string; thread_id: string }>();
 	if (!opened) throw new AskError('email');
 
+	// An external agent thinks elsewhere: it hears about the ask (check_new_mail,
+	// its webhook) and reads the thread itself, which re-checks its read scope.
+	if (agent.runtime === 'external') {
+		const seq = await emitEvent(db, { agentId: agent.id, type: 'mention.created', threadId: opened.thread_id, emailId: opened.id }, now);
+		return `ev_${seq}`;
+	}
+
 	let email: { id: string } = opened;
 	if (request !== null) {
 		// The ask is about the guest's newest message as it stands now, the one on your
@@ -302,6 +310,8 @@ export async function claimRuns(
 			   SELECT id FROM agent_runs
 			   WHERE (status = 'pending' OR (status = 'running' AND started_at < ?)) AND attempts < ?
 			     AND workspace_id IN (SELECT value FROM json_each(?))
+			     -- External agents never run here; they think on their own side.
+			     AND agent_principal_id NOT IN (SELECT principal_id FROM agents WHERE runtime = 'external')
 			   ORDER BY created_at ASC LIMIT ?
 			 )
 			 RETURNING id, workspace_id, agent_principal_id, mailbox_user_id, email_id, trigger_kind, trigger_ref,

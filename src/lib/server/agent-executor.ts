@@ -25,7 +25,8 @@ import { queueOutbound } from './queue-outbound.ts';
 import { buildReferences } from './threads.ts';
 import { addThreadNote, isThreadTakenOver, takeOverThread } from './thread-activity-store.ts';
 import { agentBookingChange, senderVerified } from './booking-manage.ts';
-import { BookingError } from './booking-store.ts';
+import { BookingError, bookSlot } from './booking-store.ts';
+import { emitEvent } from './external-agents-store.ts';
 import type { EmailProvider } from './email-provider.ts';
 
 /**
@@ -67,6 +68,7 @@ type ClaimedAction = {
 	decided_by_principal_id: string | null;
 	agent_name: string;
 	agent_status: string;
+	agent_runtime: string;
 	/** What woke the agent up: 'ask' means the owner asked for this. */
 	trigger_kind: string | null;
 	/** The mail that started the run. */
@@ -101,8 +103,14 @@ export function disclosureFooter(agentName: string, founderName: string): string
 	return `—\n${agentName} is an AI assistant working with ${founderName}.`;
 }
 
-/** What carrying out some actions needs from outside: the mail provider, for calendar updates. */
-export type ExecuteDeps = { provider?: EmailProvider | null };
+/**
+ * What carrying out some actions needs from outside: the mail provider, for
+ * calendar updates, and the site's origin, for links in booking invites.
+ */
+export type ExecuteDeps = { provider?: EmailProvider | null; origin?: string | null };
+
+/** The furthest ahead a follow-up timer may be set. */
+export const MAX_TIMER_DAYS = 90;
 
 export async function executeAction(
 	db: D1Database,
@@ -125,7 +133,7 @@ export async function executeAction(
 		.prepare(
 			`SELECT x.id, x.workspace_id, x.agent_principal_id, x.status, x.capability, x.thread_id, x.payload_json,
 			        x.authorized_json, x.mailbox_user_id, x.decided_by_principal_id,
-			        p.display_name AS agent_name, a.status AS agent_status, r.trigger_kind, r.email_id AS trigger_email_id,
+			        p.display_name AS agent_name, a.status AS agent_status, a.runtime AS agent_runtime, r.trigger_kind, r.email_id AS trigger_email_id,
 			        CASE WHEN asker.id IS NULL THEN NULL ELSE coalesce(asker.display_name, 'a teammate') END AS asked_by_name
 			 FROM agent_actions x
 			 JOIN principals p ON p.id = x.agent_principal_id
@@ -190,6 +198,8 @@ function guardMessage(agent: string, code: string): string {
 async function carryOut(db: D1Database, action: ClaimedAction, now: Date, deps: ExecuteDeps): Promise<string | null> {
 	// Pausing takes effect for actions in flight (A10). recheckPolicy repeats this with the full definition.
 	if (action.agent_status === 'paused') throw new StopError('agent_paused');
+	// A new email is the one action that starts its own thread.
+	if (action.capability === 'send_email') return sendNewEmail(db, action, now);
 	if (!action.mailbox_user_id || !action.thread_id) throw new StopError('no_thread');
 
 	// After a take-over only what a human approved or asked for still happens (A13).
@@ -296,37 +306,12 @@ async function carryOut(db: D1Database, action: ClaimedAction, now: Date, deps: 
 				: null;
 			if (!authorized?.from || authorized.recipients.length === 0) throw new StopError('not_authorized');
 			// Only addresses the policy checked go out, split back into To and Cc.
-			const allowed = new Set(authorized.recipients);
-			const pick = (value: unknown) =>
-				(Array.isArray(value) ? value : [])
-					.filter((item): item is string => typeof item === 'string')
-					.map((item) => item.trim().toLowerCase())
-					.filter((item, index, all) => allowed.has(item) && all.indexOf(item) === index);
-			const to = pick(payload.to);
-			const cc = pick(payload.cc).filter((address) => !to.includes(address));
+			const to = authorizedPick(authorized, payload.to);
+			const cc = authorizedPick(authorized, payload.cc).filter((address) => !to.includes(address));
 			if (to.length === 0) throw new StopError('not_authorized');
 
 			await loopGuard(db, action, [...to, ...cc], thread.length ? thread : [email], now);
-			// The agent's job and our prompt stay private, however the mail asked for them (R16).
-			const agent = await getAgent(db, action.agent_principal_id);
-			if (!agent) throw new StopError('agent_gone');
-			// The job the reply was written under too, in case it changed since.
-			const proposedUnder = await db
-				.prepare(
-					`SELECT v.definition_json FROM agent_actions x JOIN agent_versions v ON v.id = x.version_id WHERE x.id = ?`
-				)
-				.bind(action.id)
-				.first<{ definition_json: string }>();
-			const jobs = [agent.version.definition.job];
-			try {
-				const job = (JSON.parse(proposedUnder?.definition_json ?? 'null') as { job?: unknown } | null)?.job;
-				if (typeof job === 'string') jobs.push(job);
-			} catch {
-				// A version that can't be read only means one less text to check against.
-			}
-			if (quotesInstructions(body, [...jobs, systemPrompt()])) {
-				throw new StopError('leaks_instructions', true);
-			}
+			await assertNoLeak(db, action, body);
 
 			const text = `${body}\n\n${disclosureFooter(action.agent_name, user.name)}`;
 			const queued = await queueOutbound(db, user, {
@@ -419,7 +404,37 @@ async function carryOut(db: D1Database, action: ClaimedAction, now: Date, deps: 
 			}
 		}
 
+		case 'set_timer': {
+			const fireAt = typeof payload.at === 'string' ? Date.parse(payload.at) : NaN;
+			const reason = typeof payload.reason === 'string' ? payload.reason.trim().slice(0, 500) : '';
+			if (!Number.isFinite(fireAt) || !reason) throw new StopError('empty');
+			if (fireAt <= now.getTime() || fireAt > now.getTime() + MAX_TIMER_DAYS * 86_400_000) {
+				throw new StopError('timer_out_of_range');
+			}
+			const id = `tm_${crypto.randomUUID()}`;
+			await db
+				.prepare(
+					`INSERT INTO agent_timers (id, agent_principal_id, mailbox_user_id, thread_id, fire_at, reason, cancel_on_reply, status, action_id, created_at)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
+				)
+				.bind(
+					id,
+					action.agent_principal_id,
+					user.id,
+					threadId,
+					new Date(fireAt).toISOString(),
+					reason,
+					payload.cancelOnReply === false ? 0 : 1,
+					action.id,
+					now.toISOString()
+				)
+				.run();
+			return id;
+		}
+
 		case 'calendar': {
+			if (payload.op === 'book') return bookForGuest(db, action, user, email, payload, now, deps);
+			if (action.agent_runtime === 'external') return changeForGuest(db, action, user, email, payload, now, deps);
 			// Moving or canceling the sender's own booking, for the mail that asked. Everything is
 			// checked again in agentBookingChange: the mail is verified, the booking is the
 			// sender's, on a page this agent sends from, and the host hasn't changed it.
@@ -467,6 +482,225 @@ async function carryOut(db: D1Database, action: ClaimedAction, now: Date, deps: 
 		default:
 			throw new StopError('not_supported');
 	}
+}
+
+type ThreadEmail = NonNullable<Awaited<ReturnType<typeof getEmailForUser>>>;
+type MailboxUser = NonNullable<Awaited<ReturnType<typeof getUserById>>>;
+
+/** Addresses from a payload list that the policy authorized, lowercased and once each. */
+function authorizedPick(authorized: AuthorizedAddresses, value: unknown): string[] {
+	const allowed = new Set(authorized.recipients);
+	return (Array.isArray(value) ? value : [])
+		.filter((item): item is string => typeof item === 'string')
+		.map((item) => item.trim().toLowerCase())
+		.filter((item, index, all) => allowed.has(item) && all.indexOf(item) === index);
+}
+
+/** The agent's job and our prompt stay private, however the mail asked for them (R16). */
+async function assertNoLeak(db: D1Database, action: ClaimedAction, body: string): Promise<void> {
+	const agent = await getAgent(db, action.agent_principal_id);
+	if (!agent) throw new StopError('agent_gone');
+	// The job the message was written under too, in case it changed since.
+	const proposedUnder = await db
+		.prepare(`SELECT v.definition_json FROM agent_actions x JOIN agent_versions v ON v.id = x.version_id WHERE x.id = ?`)
+		.bind(action.id)
+		.first<{ definition_json: string }>();
+	const jobs = [agent.version.definition.job];
+	try {
+		const job = (JSON.parse(proposedUnder?.definition_json ?? 'null') as { job?: unknown } | null)?.job;
+		if (typeof job === 'string') jobs.push(job);
+	} catch {
+		// A version that can't be read only means one less text to check against.
+	}
+	if (quotesInstructions(body, [...jobs, systemPrompt()])) throw new StopError('leaks_instructions', true);
+}
+
+/**
+ * A new email, not on any thread (send_email). Who it may go to was decided by
+ * the policy from the agent's recipient scope alone: there is no thread to
+ * widen it. The same guards and footer as a reply apply.
+ */
+async function sendNewEmail(db: D1Database, action: ClaimedAction, now: Date): Promise<string> {
+	if (!action.mailbox_user_id) throw new StopError('no_mailbox');
+	const user = await getUserById(db, action.mailbox_user_id);
+	if (!user) throw new StopError('mailbox_gone');
+	const payload = JSON.parse(action.payload_json) as Record<string, unknown>;
+	const body = typeof payload.body === 'string' ? payload.body.trim() : '';
+	const subject = typeof payload.subject === 'string' ? payload.subject.replace(/[\r\n]+/g, ' ').trim().slice(0, 300) : '';
+	if (!body || !subject) throw new StopError('empty');
+	await recheckPolicy(db, action, []);
+
+	const authorized = action.authorized_json ? (JSON.parse(action.authorized_json) as AuthorizedAddresses) : null;
+	if (!authorized?.from || authorized.recipients.length === 0) throw new StopError('not_authorized');
+	const to = authorizedPick(authorized, payload.to);
+	const cc = authorizedPick(authorized, payload.cc).filter((address) => !to.includes(address));
+	if (to.length === 0) throw new StopError('not_authorized');
+
+	await loopGuard(db, action, [...to, ...cc], [], now);
+	await assertNoLeak(db, action, body);
+	const text = `${body}\n\n${disclosureFooter(action.agent_name, user.name)}`;
+	const queued = await queueOutbound(db, user, {
+		fromAddress: authorized.from,
+		to: to.join(', '),
+		cc: cc.join(', ') || null,
+		subject,
+		text,
+		html: textToHtml(text)
+	});
+	return queued.id;
+}
+
+/**
+ * Books the guest on this thread into one of the founder's booking pages
+ * (calendar, op 'book'). The guest is the sender of the newest message, and
+ * only when their domain signed it: an unverified "please book me" could be
+ * anyone. The page must send from an address this agent may send as.
+ */
+async function bookForGuest(
+	db: D1Database,
+	action: ClaimedAction,
+	user: MailboxUser,
+	email: ThreadEmail,
+	payload: Record<string, unknown>,
+	now: Date,
+	deps: ExecuteDeps
+): Promise<string> {
+	const slug = typeof payload.slug === 'string' ? payload.slug : '';
+	if (!slug) throw new StopError('empty');
+	if (email.direction !== 'inbound') throw new StopError('not_from_guest');
+	const security = (email as ThreadEmail & { security_json?: string | null }).security_json ?? null;
+	if (!senderVerified(security, email.from_addr)) throw new StopError('booking_not_verified');
+	const page = await db
+		.prepare(`SELECT user_id, send_from, site_origin FROM booking_pages WHERE slug = ? AND enabled = 1`)
+		.bind(slug)
+		.first<{ user_id: string; send_from: string | null; site_origin: string | null }>();
+	if (!page || page.user_id !== user.id) throw new StopError('booking_missing');
+	const agent = await getAgent(db, action.agent_principal_id);
+	if (!agent) throw new StopError('agent_gone');
+	const sendAs = agent.version.definition.scope.sendAs.map((address) => address.toLowerCase());
+	if (!page.send_from || !sendAs.includes(page.send_from.toLowerCase())) throw new StopError('send_as_out_of_scope');
+	const origin = deps.origin ?? page.site_origin;
+	if (!origin) throw new StopError('no_origin');
+	try {
+		const booked = await bookSlot(
+			db,
+			deps.provider ?? null,
+			slug,
+			{
+				start: payload.start,
+				duration: payload.duration,
+				name: email.from_name ?? email.from_addr,
+				email: email.from_addr,
+				note: `Booked by ${action.agent_name} from their email.`
+			},
+			{ uidDomain: new URL(origin).hostname, origin, now }
+		);
+		return booked.start;
+	} catch (error) {
+		if (error instanceof BookingError) throw new StopError(`booking_${error.code}`);
+		throw error;
+	}
+}
+
+/**
+ * Moves or cancels the guest's own booking for an external agent. There is no
+ * run to tie it to, so the newest message on the thread must be the guest's,
+ * and their domain must have signed it (agentBookingChange checks that again,
+ * along with the booking being theirs and on a page this agent sends from).
+ */
+async function changeForGuest(
+	db: D1Database,
+	action: ClaimedAction,
+	user: MailboxUser,
+	email: ThreadEmail,
+	payload: Record<string, unknown>,
+	now: Date,
+	deps: ExecuteDeps
+): Promise<string> {
+	const op = payload.op === 'cancel' ? 'cancel' : payload.op === 'reschedule' ? 'reschedule' : null;
+	const bookingId = typeof payload.bookingId === 'string' ? payload.bookingId : '';
+	if (!op || !bookingId) throw new StopError('empty');
+	if (email.direction !== 'inbound') throw new StopError('not_from_guest');
+	const agent = await getAgent(db, action.agent_principal_id);
+	if (!agent) throw new StopError('agent_gone');
+	try {
+		await agentBookingChange(
+			db,
+			deps.provider ?? null,
+			{
+				userId: user.id,
+				bookingId,
+				email: { from_addr: email.from_addr, security_json: (email as ThreadEmail & { security_json?: string | null }).security_json ?? null },
+				sendFrom: agent.version.definition.scope.sendAs,
+				agentName: action.agent_name,
+				op,
+				start: payload.start,
+				reason: payload.reason,
+				askedBy: null
+			},
+			now
+		);
+	} catch (error) {
+		if (error instanceof BookingError) throw new StopError(`booking_${error.code}`);
+		throw error;
+	}
+	return bookingId;
+}
+
+/** Fires follow-up timers that are due (set_timer), from the cron. */
+export async function fireDueTimers(db: D1Database, now = new Date(), limit = 20): Promise<number> {
+	const at = now.toISOString();
+	const { results } = await db
+		.prepare(
+			`SELECT t.id, t.agent_principal_id, t.mailbox_user_id, t.thread_id, t.reason, t.cancel_on_reply, t.created_at,
+			        p.workspace_id, p.display_name AS agent_name
+			 FROM agent_timers t JOIN principals p ON p.id = t.agent_principal_id
+			 WHERE t.status = 'pending' AND t.fire_at <= ?
+			 ORDER BY t.fire_at ASC LIMIT ?`
+		)
+		.bind(at, limit)
+		.all<{
+			id: string;
+			agent_principal_id: string;
+			mailbox_user_id: string;
+			thread_id: string;
+			reason: string;
+			cancel_on_reply: number;
+			created_at: string;
+			workspace_id: string;
+			agent_name: string;
+		}>();
+	let fired = 0;
+	for (const timer of results) {
+		const replied = timer.cancel_on_reply
+			? await db
+					.prepare(
+						`SELECT 1 AS found FROM emails
+						 WHERE user_id = ? AND COALESCE(thread_id, id) = ? AND direction = 'inbound' AND created_at > ? LIMIT 1`
+					)
+					.bind(timer.mailbox_user_id, timer.thread_id, timer.created_at)
+					.first()
+			: null;
+		const status = replied ? 'cancelled' : 'fired';
+		// Claimed by the status change, so two crons never fire one timer twice.
+		const claim = await db
+			.prepare(`UPDATE agent_timers SET status = ?, fired_at = ? WHERE id = ? AND status = 'pending'`)
+			.bind(status, at, timer.id)
+			.run();
+		if (!claim.meta.changes || replied) continue;
+		await addThreadNote(db, {
+			workspaceId: timer.workspace_id,
+			mailboxUserId: timer.mailbox_user_id,
+			threadId: timer.thread_id,
+			authorId: timer.agent_principal_id,
+			kind: 'alert',
+			body: `${timer.agent_name} asked to come back to this thread: ${timer.reason}`,
+			now
+		});
+		await emitEvent(db, { agentId: timer.agent_principal_id, type: 'timer.fired', threadId: timer.thread_id, timerId: timer.id }, now);
+		fired++;
+	}
+	return fired;
 }
 
 /**

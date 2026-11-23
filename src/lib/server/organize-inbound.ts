@@ -1,13 +1,14 @@
 import type { D1Database } from '@cloudflare/workers-types';
 import { checkInbound, readPhishingToSpam } from './phishing-check.ts';
-import { parseEmailAddress } from '#lib/email-address.ts';
+import { parseEmailAddress, parseEmailAddresses } from '#lib/email-address.ts';
 import {
 	assignCategory,
 	isMailCategory,
 	type CategoryHeaders,
 	type MailCategory
 } from '#lib/organizing/categories.ts';
-import { enqueueMailRuns } from './agent-runs-store.ts';
+import { enqueueMailRuns, isAutomatedMail } from './agent-runs-store.ts';
+import { emitEvent, externalAgentsReading } from './external-agents-store.ts';
 import { filterMatches, type FilterMail, type FilterRule } from '#lib/organizing/filters.ts';
 import { getUserById } from './auth';
 import { getDefaultAddress } from './domains';
@@ -152,6 +153,34 @@ export async function organizeInbound(
 		await enqueueMailRuns(db, userId, emailId, headers);
 	} catch (error) {
 		console.error('Failed to queue agent run', emailId, error);
+	}
+	try {
+		await notifyExternalAgents(db, userId, emailId, headers);
+	} catch (error) {
+		console.error('Failed to notify external agents', emailId, error);
+	}
+}
+
+/**
+ * Tells external agents that read this address about the new mail
+ * (message.received, external-agents.md X4): IDs only. Same exclusions as
+ * waking a built-in agent: no automated mail, no app notices, no phishing.
+ */
+async function notifyExternalAgents(
+	db: D1Database,
+	userId: string,
+	emailId: string,
+	headers: OrganizeInboundHeaders
+): Promise<void> {
+	if (isAutomatedMail(headers) || headers.appNotice?.trim()) return;
+	const mail = await db
+		.prepare(`SELECT COALESCE(thread_id, id) AS thread_id, from_addr, to_addr, cc_addr FROM emails WHERE id = ? AND user_id = ?`)
+		.bind(emailId, userId)
+		.first<{ thread_id: string; from_addr: string; to_addr: string; cc_addr: string | null }>();
+	if (!mail) return;
+	const addresses = parseEmailAddresses([mail.to_addr, mail.cc_addr ?? '']);
+	for (const agentId of await externalAgentsReading(db, userId, addresses)) {
+		await emitEvent(db, { agentId, type: 'message.received', threadId: mail.thread_id, emailId });
 	}
 }
 

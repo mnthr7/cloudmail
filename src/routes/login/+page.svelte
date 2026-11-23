@@ -1,5 +1,6 @@
 <script lang="ts">
 	import Logo from '#lib/components/Logo.svelte';
+	import { safeReturnPath } from '#lib/return-path.ts';
 
 	let email = $state('');
 	let password = $state('');
@@ -22,7 +23,7 @@
 				error = data.error ?? 'Login failed';
 				return;
 			}
-			window.location.href = '/inbox';
+			window.location.href = safeReturnPath(new URLSearchParams(window.location.search).get('next')) ?? '/inbox';
 		} catch {
 			error = 'Network error';
 		} finally {

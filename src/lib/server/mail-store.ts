@@ -216,6 +216,13 @@ export type MailboxQuery = {
 	labelId?: string | null;
 	category?: MailCategory | null;
 	priorityInbox?: boolean;
+	/**
+	 * Only threads with a message to, from or CC'ing one of these addresses (an
+	 * external agent's read scope). An empty list matches nothing.
+	 */
+	addresses?: string[];
+	/** Only messages that arrived at or after this ISO time. */
+	since?: string | null;
 	page?: number;
 	pageSize?: number;
 };
@@ -283,6 +290,16 @@ function buildScope(userId: string, query: MailboxQuery): { where: string; bindi
 		bindings.push(like, like, like, like);
 	}
 
+	if (query.addresses) {
+		const scope = threadInAddressesSql('e', query.addresses);
+		filters.push(scope.sql);
+		bindings.push(...scope.bindings);
+	}
+	if (query.since) {
+		filters.push('datetime(e.created_at) >= datetime(?)');
+		bindings.push(query.since);
+	}
+
 	if (query.unreadOnly) filters.push('e.is_read = 0');
 	if (query.starredOnly) filters.push('e.is_starred = 1');
 	if (query.attachmentsOnly) {
@@ -290,6 +307,75 @@ function buildScope(userId: string, query: MailboxQuery): { where: string; bindi
 	}
 
 	return { where: filters.join(' AND '), bindings };
+}
+
+/**
+ * One header field (a list like `"Ann" <ann@x.com>, bob@y.com`) with every
+ * address set off by spaces, so `instr(field, ' ' || address || ' ')` matches
+ * whole addresses only: scope `sales@acme.com` never matches `presales@acme.com`.
+ */
+function spacedAddressesSql(column: string): string {
+	return `(' ' || replace(replace(replace(replace(replace(lower(COALESCE(${column}, '')), ',', ' '), '<', ' '), '>', ' '), ';', ' '), '"', ' ') || ' ')`;
+}
+
+/**
+ * SQL (and bindings) that's true when the thread of `alias` has any message
+ * to, from or CC'ing one of `addresses`. Matching is on the whole thread, so a
+ * reply from an outsider stays visible once the thread is in scope.
+ */
+export function threadInAddressesSql(alias: string, addresses: string[]): { sql: string; bindings: unknown[] } {
+	const wanted = [...new Set(addresses.map((address) => address.trim().toLowerCase()).filter(Boolean))];
+	if (wanted.length === 0) return { sql: '0', bindings: [] };
+	const fields = ['s.from_addr', 's.to_addr', 's.cc_addr'].map(spacedAddressesSql);
+	const any = wanted
+		.map(() => `(${fields.map((field) => `instr(${field}, ?) > 0`).join(' OR ')})`)
+		.join(' OR ');
+	const bindings: unknown[] = [];
+	for (const address of wanted) for (let i = 0; i < fields.length; i++) bindings.push(` ${address} `);
+	return {
+		sql: `EXISTS (SELECT 1 FROM emails s
+		         WHERE s.user_id = ${alias}.user_id
+		           AND COALESCE(s.thread_id, s.id) = COALESCE(${alias}.thread_id, ${alias}.id)
+		           AND (${any}))`,
+		bindings
+	};
+}
+
+/** Whether `threadId` in this mailbox falls inside `addresses` (see `threadInAddressesSql`). */
+export async function threadInAddresses(
+	db: D1Database,
+	userId: string,
+	threadId: string,
+	addresses: string[]
+): Promise<boolean> {
+	const scope = threadInAddressesSql('e', addresses);
+	const row = await db
+		.prepare(
+			`SELECT 1 AS ok FROM emails e
+			 WHERE e.user_id = ? AND COALESCE(e.thread_id, e.id) = ? AND ${scope.sql}
+			 LIMIT 1`
+		)
+		.bind(userId, threadId, ...scope.bindings)
+		.first<{ ok: number }>();
+	return !!row;
+}
+
+/**
+ * The newest message in a thread that isn't trashed, a draft or spam: what a
+ * reply, note or label on "this thread" attaches to. Null if there's none.
+ */
+export async function latestEmailInThread(db: D1Database, userId: string, threadId: string): Promise<EmailRow | null> {
+	return db
+		.prepare(
+			`SELECT * FROM emails
+			 WHERE user_id = ? AND COALESCE(thread_id, id) = ?
+			   AND deleted_at IS NULL AND is_spam = 0
+			   AND (status IS NULL OR (status <> 'draft' AND status <> 'scheduled'))
+			 ORDER BY datetime(created_at) DESC
+			 LIMIT 1`
+		)
+		.bind(userId, threadId)
+		.first<EmailRow>();
 }
 
 /**

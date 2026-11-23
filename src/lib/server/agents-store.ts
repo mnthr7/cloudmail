@@ -1,5 +1,10 @@
 import type { D1Database } from '@cloudflare/workers-types';
-import { AgentDefinitionError, parseDefinition, type AgentDefinition } from '#lib/agents/definition.ts';
+import {
+	AgentDefinitionError,
+	EXTERNAL_UNAVAILABLE,
+	parseDefinition,
+	type AgentDefinition
+} from '#lib/agents/definition.ts';
 import type { Capability } from '#lib/agents/capabilities.ts';
 import {
 	authorize,
@@ -148,7 +153,8 @@ export async function sendableForAuthor(
  * means reading that mail, so it takes the same standing as sending from it.
  */
 async function assertSendAsAllowed(db: D1Database, human: HumanPrincipal, definition: AgentDefinition) {
-	if (definition.scope.sendAs.length === 0 && definition.triggers.watch.length === 0) return;
+	const read = definition.scope.read?.addresses ?? [];
+	if (definition.scope.sendAs.length === 0 && definition.triggers.watch.length === 0 && read.length === 0) return;
 	const owned = await liveWorkspaceAddresses(db, human.workspace_id);
 	const allowed = (address: string) => {
 		const owner = owned.get(address);
@@ -156,6 +162,16 @@ async function assertSendAsAllowed(db: D1Database, human: HumanPrincipal, defini
 	};
 	if (!definition.scope.sendAs.every(allowed)) throw new AgentDefinitionError('send_as');
 	if (!definition.triggers.watch.every(allowed)) throw new AgentDefinitionError('watch');
+	if (!read.every(allowed)) throw new AgentDefinitionError('scope');
+}
+
+/** External agents never get the capabilities CloudMail can't vouch for over MCP (X1). */
+function assertRuntimeAllowed(runtime: AgentRuntime, definition: AgentDefinition) {
+	if (runtime !== 'external') return;
+	for (const capability of EXTERNAL_UNAVAILABLE) {
+		const level = definition.capabilities[capability]?.level ?? 'off';
+		if (level !== 'off') throw new AgentDefinitionError('capability');
+	}
 }
 
 export async function createAgent(
@@ -165,6 +181,7 @@ export async function createAgent(
 ): Promise<AgentRecord> {
 	const owner = await humanPrincipalForUser(db, input.ownerUserId);
 	const definition = parseDefinition(input.definition);
+	assertRuntimeAllowed(input.runtime ?? 'builtin', definition);
 	await assertSendAsAllowed(db, owner, definition);
 	const displayName = input.displayName.trim();
 	if (!displayName || displayName.length > 80) throw new Error('Enter a name for the agent');
@@ -265,6 +282,11 @@ export async function updateAgentDefinition(
 	const { agent, human } = await requireAgentForUser(db, input.agentId, input.byUserId);
 	if (!canManage(agent, human)) throw new NotAllowedError();
 	const definition = parseDefinition(input.definition);
+	// An editor that doesn't know about read scope (the Staff form) keeps the one the agent has.
+	if (!definition.scope.read && agent.version.definition.scope.read) {
+		definition.scope.read = agent.version.definition.scope.read;
+	}
+	assertRuntimeAllowed(agent.runtime, definition);
 	await assertSendAsAllowed(db, human, definition);
 	const versionId = crypto.randomUUID();
 
@@ -295,10 +317,11 @@ export async function setAgentStatus(
 	await db
 		.prepare(
 			`UPDATE agents
-			 SET status = ?, shadow_remaining = CASE WHEN ? = 'shadow' THEN ? ELSE shadow_remaining END
+			 SET status = ?, shadow_remaining = CASE WHEN ? = 'shadow' THEN ? ELSE shadow_remaining END,
+			     paused_reason = CASE WHEN ? = 'paused' THEN paused_reason ELSE NULL END
 			 WHERE principal_id = ?`
 		)
-		.bind(input.status, input.status, SHADOW_PROPOSALS, agent.id)
+		.bind(input.status, input.status, SHADOW_PROPOSALS, input.status, agent.id)
 		.run();
 }
 
@@ -684,6 +707,8 @@ export type AgentSummary = {
 	createdAt: string;
 	/** Owner or admin: may edit, resume, and approve. Anyone may pause. */
 	canManage: boolean;
+	/** Why CloudMail paused it on its own, if it did. */
+	pausedReason: string | null;
 };
 
 /** Every agent in the user's workspace, oldest first, for the Staff page (A10). */
@@ -692,7 +717,7 @@ export async function listAgents(db: D1Database, userId: string, now = new Date(
 	await expireActions(db, now);
 	const { results } = await db
 		.prepare(
-			`SELECT p.id, p.display_name, p.created_at, p.owner_principal_id, a.status, a.runtime, a.shadow_remaining,
+			`SELECT p.id, p.display_name, p.created_at, p.owner_principal_id, a.status, a.runtime, a.shadow_remaining, a.paused_reason,
 			        v.version, v.definition_json,
 			        (SELECT COUNT(*) FROM agent_actions x
 			         WHERE x.agent_principal_id = p.id AND x.status = 'queued') AS queued
@@ -711,6 +736,7 @@ export async function listAgents(db: D1Database, userId: string, now = new Date(
 			status: AgentStatus;
 			runtime: AgentRuntime;
 			shadow_remaining: number;
+			paused_reason: string | null;
 			version: number;
 			definition_json: string;
 			queued: number;
@@ -726,7 +752,8 @@ export async function listAgents(db: D1Database, userId: string, now = new Date(
 		definition: parseDefinition(JSON.parse(row.definition_json)),
 		queued: row.queued,
 		createdAt: row.created_at,
-		canManage: canManage({ ownerPrincipalId: row.owner_principal_id }, human)
+		canManage: canManage({ ownerPrincipalId: row.owner_principal_id }, human),
+		pausedReason: row.paused_reason
 	}));
 }
 

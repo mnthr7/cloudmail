@@ -40,9 +40,11 @@ export type CapabilitySetting = {
 
 /**
  * Who the agent may email. Everyone already on the thread and the founder are
- * always allowed; `domains` widens that to whole domains.
+ * always allowed; `domains` widens that to whole domains, and `anyone` lifts
+ * the limit. Whatever the scope, each capability's level, the daily limit and
+ * the do-not-send list still apply.
  */
-export type RecipientScope = { kind: 'thread' } | { kind: 'domains'; domains: string[] };
+export type RecipientScope = { kind: 'thread' } | { kind: 'domains'; domains: string[] } | { kind: 'anyone' };
 
 export type AgentScope = {
 	/** Addresses the agent may send from. Empty means it can't send. */
@@ -249,6 +251,8 @@ function parseScope(value: unknown): AgentScope {
 	let parsedRecipients: RecipientScope;
 	if (recipients?.kind === 'thread') {
 		parsedRecipients = { kind: 'thread' };
+	} else if (recipients?.kind === 'anyone') {
+		parsedRecipients = { kind: 'anyone' };
 	} else if (recipients?.kind === 'domains' && Array.isArray(recipients.domains)) {
 		const domains = recipients.domains.map(normalizeDomain);
 		if (domains.length === 0 || domains.some((domain) => domain === null)) {

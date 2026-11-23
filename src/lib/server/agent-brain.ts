@@ -242,10 +242,13 @@ ${parts.join('\n')}
 export function buildUserMessage(input: BrainInput): string {
 	const { definition } = input;
 	const sendAs = definition.scope.sendAs;
+	const scope = definition.scope.recipients;
 	const recipients =
-		definition.scope.recipients.kind === 'domains'
-			? `people already on the thread, the founder, and anyone at ${definition.scope.recipients.domains.join(', ')}`
-			: 'people already on the thread and the founder';
+		scope.kind === 'anyone'
+			? 'anyone'
+			: scope.kind === 'domains'
+				? `people already on the thread, the founder, and anyone at ${scope.domains.join(', ')}`
+				: 'people already on the thread and the founder';
 	const suggesting = input.definition.capabilities.draft_reply?.level !== 'off' && !input.bookings;
 	const trigger =
 		input.trigger.kind === 'ask'

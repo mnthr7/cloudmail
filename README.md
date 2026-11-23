@@ -337,7 +337,8 @@ in shadow mode, so its first 20 actions only show you what it would do. Sending
 on its own also needs 20 of your approvals first. As its owner you can skip
 either on the Staff page: **End shadow mode**, and **Skip the 20-approval
 wait** (also offered when you hire an agent with an API key). Daily limits,
-recipient scope and the do-not-send list still apply.
+recipient scope and the do-not-send list still apply. Under **Edit → Who it may
+email**, recipients can be people on the thread, whole domains, or **Anyone**.
 
 It works through tools: `search_threads`, `get_thread`, `draft_reply`,
 `send_reply`, `send_email`, `organize`, `set_timer`, calendar booking, and

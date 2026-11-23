@@ -162,6 +162,7 @@ function checkScope(
 		const allowedDomains = scope.kind === 'domains' ? new Set(scope.domains) : null;
 
 		for (const recipient of recipients) {
+			if (scope.kind === 'anyone') break;
 			if (allowed.has(recipient)) continue;
 			const domain = recipient.slice(recipient.lastIndexOf('@') + 1);
 			if (allowedDomains?.has(domain)) continue;

@@ -195,6 +195,34 @@ describe('authorize: shadow mode', () => {
 	});
 });
 
+describe('authorize: recipients set to anyone', () => {
+	const anyone = (extra: Partial<PolicyContext> = {}) =>
+		context({
+			definition: definition({ scope: { sendAs: ['billing@acme.com'], recipients: { kind: 'anyone' } } }),
+			threadParticipants: [],
+			...extra
+		});
+	const newEmail: Proposal = { capability: 'send_email', fromAddress: 'billing@acme.com', recipients: ['someone@gmail.com'] };
+
+	test('any recipient is in scope; the capability level still decides', () => {
+		// send_email is "ask me first" in this definition, so it queues rather than being refused.
+		expect(authorize(newEmail, anyone())).toMatchObject({ outcome: 'queue', reason: 'needs_approval' });
+		expect(authorize({ ...reply, recipients: ['a@x.test', 'b@y.test'] }, anyone()).outcome).toBe('execute');
+	});
+
+	test('the other checks still hold', () => {
+		expect(authorize(newEmail, anyone({ usedToday: 0, status: 'paused' })).reason).toBe('agent_paused');
+		expect(authorize(reply, anyone({ usedToday: 3 })).reason).toBe('daily_limit_reached');
+		expect(authorize({ ...newEmail, fromAddress: 'sada@acme.com' }, anyone()).reason).toBe('send_as_out_of_scope');
+		expect(authorize({ ...newEmail, recipients: ['not an address'] }, anyone()).reason).toBe('invalid_address');
+	});
+
+	test('parses and round-trips', () => {
+		const def = parseDefinition({ job: 'Marketing', scope: { sendAs: [], recipients: { kind: 'anyone' } } });
+		expect(def.scope.recipients).toEqual({ kind: 'anyone' });
+	});
+});
+
 describe('authorize: external agents', () => {
 	test('auto sends queue until the agent has 20 human approvals', () => {
 		expect(authorize(reply, context({ runtime: 'external', humanApprovals: 19 }))).toMatchObject({
@@ -252,7 +280,7 @@ describe('agent definitions', () => {
 			[{ job: 'x', capabilities: { send_reply: { level: 'auto', dailyLimit: -1 } }, scope }, 'limit'],
 			[{ job: 'x', capabilities: { send_reply: { level: 'auto', dailyLimit: 1.5 } }, scope }, 'limit'],
 			[{ job: 'x', capabilities: {}, scope: { sendAs: ['not an address'], recipients: { kind: 'thread' } } }, 'scope'],
-			[{ job: 'x', capabilities: {}, scope: { sendAs: [], recipients: { kind: 'anyone' } } }, 'scope'],
+			[{ job: 'x', capabilities: {}, scope: { sendAs: [], recipients: { kind: 'everyone' } } }, 'scope'],
 			[{ job: 'x', capabilities: {}, scope: { sendAs: [], recipients: { kind: 'domains', domains: [] } } }, 'scope']
 		];
 		for (const [input, code] of bad) {

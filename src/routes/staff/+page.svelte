@@ -357,6 +357,34 @@
 		}
 	}
 
+	async function setTrusted(id: string, name: string, trusted: boolean) {
+		if (
+			trusted &&
+			!confirm(
+				`Let ${name} send on its own without your first 20 approvals? Sends you've set to "on its own" will go out at once. Daily limits and the do-not-send list still apply.`
+			)
+		)
+			return;
+		listError = '';
+		busy = `trust:${id}`;
+		try {
+			const res = await fetch(`/api/agents/${id}`, {
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ trustedToSend: trusted })
+			});
+			if (!res.ok) {
+				listError = res.status === 403 ? 'Only its owner or an admin can do that.' : 'Could not change that agent.';
+				return;
+			}
+			window.location.reload();
+		} catch {
+			listError = 'Network error';
+		} finally {
+			busy = null;
+		}
+	}
+
 	async function setStatus(id: string, status: AgentStatus) {
 		listError = '';
 		busy = id;
@@ -631,7 +659,7 @@
 
 	// API keys: shown once, right after they're made.
 	let newKey = $state<{ agentId: string; key: string } | null>(null);
-	let keyForm = $state({ name: '', job: '', read: [] as string[], sendAs: [] as string[] });
+	let keyForm = $state({ name: '', job: '', read: [] as string[], sendAs: [] as string[], startActive: false, trustedToSend: false });
 	let keyError = $state('');
 
 	async function hireWithKey(event: SubmitEvent) {
@@ -642,7 +670,14 @@
 			const res = await fetch('/api/agents/external', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ name: keyForm.name, job: keyForm.job, readAddresses: keyForm.read, sendAs: keyForm.sendAs })
+				body: JSON.stringify({
+					name: keyForm.name,
+					job: keyForm.job,
+					readAddresses: keyForm.read,
+					sendAs: keyForm.sendAs,
+					startActive: keyForm.startActive,
+					trustedToSend: keyForm.trustedToSend
+				})
 			});
 			const result = await res.json().catch(() => ({}));
 			if (!res.ok) {
@@ -656,7 +691,7 @@
 				return;
 			}
 			newKey = { agentId: result.agentId, key: result.key };
-			keyForm = { name: '', job: '', read: [], sendAs: [] };
+			keyForm = { name: '', job: '', read: [], sendAs: [], startActive: false, trustedToSend: false };
 		} catch {
 			keyError = 'Network error';
 		} finally {
@@ -816,6 +851,9 @@
 									? `${live.auth === 'api_key' ? `Uses API key ${live.keyHint ?? ''}…` : `Connected through ${live.clientName}`}${live.lastSeenAt ? `, last active ${when(live.lastSeenAt)}` : ', not used yet'}`
 									: 'Disconnected'}
 							</p>
+							{#if agent.trustedToSend}
+								<p class="item-sub">Sends on its own without the 20-approval wait.</p>
+							{/if}
 							{#if newKey?.agentId === agent.id}
 								{@render keyReveal(newKey.key)}
 							{/if}
@@ -1036,6 +1074,15 @@
 									onclick={() => rotateKey(agent.id, agent.displayName, hasKey)}
 								>
 									<Icon name="key-2-line" size={14} /> {hasKey ? 'New API key' : 'Add an API key'}
+								</button>
+								<button
+									type="button"
+									class="btn-ghost text-xs"
+									disabled={busy === `trust:${agent.id}`}
+									onclick={() => setTrusted(agent.id, agent.displayName, !agent.trustedToSend)}
+								>
+									<Icon name={agent.trustedToSend ? 'shield-line' : 'shield-check-line'} size={14} />
+									{agent.trustedToSend ? 'Require 20 approvals again' : 'Skip the 20-approval wait'}
 								</button>
 							{/if}
 							{#if agent.runtime === 'external'}
@@ -1306,9 +1353,19 @@
 					{/each}
 				</fieldset>
 				<p class="item-sub">It starts with reading, notes and drafts on its own; anything else asks you first. Change that with Edit once it’s hired.</p>
+				<label class="key-check">
+					<input type="checkbox" bind:checked={keyForm.startActive} />
+					Skip shadow mode: let it act from its first call
+				</label>
+				<label class="key-check">
+					<input type="checkbox" bind:checked={keyForm.trustedToSend} />
+					Skip the 20-approval wait: sends you set to “on its own” go out without your first 20 OKs
+				</label>
 				{#if keyError}<p class="error" role="alert">{keyError}</p>{/if}
 				<div class="item-actions">
-					<button type="submit" class="btn-primary text-xs" disabled={busy === 'key'}>Hire in shadow mode and make a key</button>
+					<button type="submit" class="btn-primary text-xs" disabled={busy === 'key'}>
+						{keyForm.startActive ? 'Hire and make a key' : 'Hire in shadow mode and make a key'}
+					</button>
 				</div>
 				{#if newKey && !data.agents.some((agent) => agent.id === newKey?.agentId)}
 					{@render keyReveal(newKey.key)}

@@ -47,6 +47,8 @@ export type PolicyContext = {
 	usedToday: number;
 	/** Times a human approved this capability for this agent. */
 	humanApprovals: number;
+	/** The owner waived the 20-approval track record for this external agent. */
+	trustedToSend?: boolean;
 	/** A human took the thread over, so the agent stands down (A13). */
 	threadTakenOver?: boolean;
 };
@@ -116,6 +118,7 @@ export function authorize(proposal: Proposal, context: PolicyContext): PolicyDec
 	if (
 		context.runtime === 'external' &&
 		traits.externalAutoNeedsTrackRecord &&
+		!context.trustedToSend &&
 		context.humanApprovals < EXTERNAL_AUTO_MIN_APPROVALS
 	) {
 		return { outcome: 'queue', reason: 'external_track_record', addresses };

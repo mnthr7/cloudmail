@@ -1,12 +1,15 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
 import { caller, failure, readBody } from '#lib/server/agents-http.ts';
 import { createApiKey, hireExternalAgent } from '#lib/server/external-agents-store.ts';
+import { setAgentStatus, setAgentTrustedToSend } from '#lib/server/agents-store.ts';
 
 /**
  * Hires an external agent that signs in with an API key (external-agents.md,
  * X9): for Grok's API, scripts and other agents that can't do an OAuth sign-in
- * in a browser. Starts in shadow mode with the external defaults. The key is
- * in the response and never shown again.
+ * in a browser. Starts in shadow mode with the external defaults, unless the
+ * owner asks for `startActive` (skip shadow mode) and/or `trustedToSend` (send
+ * on its own without the 20-approval track record). The key is in the
+ * response and never shown again.
  */
 export const POST: RequestHandler = async ({ request, locals, platform }) => {
 	const who = caller(locals, platform, { write: true });
@@ -27,6 +30,12 @@ export const POST: RequestHandler = async ({ request, locals, platform }) => {
 			readAddresses,
 			sendAs: list(body?.sendAs)
 		});
+		if (body?.startActive === true) {
+			await setAgentStatus(who.db, { agentId: agent.id, byUserId: who.userId, status: 'active' });
+		}
+		if (body?.trustedToSend === true) {
+			await setAgentTrustedToSend(who.db, { agentId: agent.id, byUserId: who.userId, trusted: true });
+		}
 		const { key, connection } = await createApiKey(who.db, { agentId: agent.id, byUserId: who.userId });
 		return json({ agentId: agent.id, connectionId: connection.id, key }, { status: 201 });
 	} catch (error) {

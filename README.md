@@ -334,7 +334,10 @@ In Claude apps, add the same URL as a custom connector. The app sends you to
 a consent screen here. You choose which of your addresses it can read and
 send from, and set each action to off, ask me first, or on its own. It starts
 in shadow mode, so its first 20 actions only show you what it would do. Sending
-on its own also needs 20 of your approvals first.
+on its own also needs 20 of your approvals first. As its owner you can skip
+either on the Staff page: **End shadow mode**, and **Skip the 20-approval
+wait** (also offered when you hire an agent with an API key). Daily limits,
+recipient scope and the do-not-send list still apply.
 
 It works through tools: `search_threads`, `get_thread`, `draft_reply`,
 `send_reply`, `send_email`, `organize`, `set_timer`, calendar booking, and

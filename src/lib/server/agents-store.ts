@@ -29,6 +29,8 @@ export type AgentRecord = {
 	status: AgentStatus;
 	runtime: AgentRuntime;
 	shadowRemaining: number;
+	/** The owner let it send on its own without the 20-approval track record. */
+	trustedToSend: boolean;
 	version: { id: string; number: number; definition: AgentDefinition; createdByPrincipalId: string | null };
 };
 
@@ -224,6 +226,7 @@ type AgentRow = {
 	status: AgentStatus;
 	runtime: AgentRuntime;
 	shadow_remaining: number;
+	trusted_to_send: number | null;
 	version_id: string;
 	version_created_by: string | null;
 	version: number;
@@ -234,7 +237,7 @@ export async function getAgent(db: D1Database, agentId: string): Promise<AgentRe
 	const row = await db
 		.prepare(
 			`SELECT p.id, p.workspace_id, p.display_name, p.owner_principal_id,
-			        a.status, a.runtime, a.shadow_remaining,
+			        a.status, a.runtime, a.shadow_remaining, a.trusted_to_send,
 			        v.id AS version_id, v.created_by_principal_id AS version_created_by, v.version, v.definition_json
 			 FROM principals p
 			 JOIN agents a ON a.principal_id = p.id
@@ -253,6 +256,7 @@ export async function getAgent(db: D1Database, agentId: string): Promise<AgentRe
 		status: row.status,
 		runtime: row.runtime,
 		shadowRemaining: row.shadow_remaining,
+		trustedToSend: row.trusted_to_send === 1,
 		version: {
 			id: row.version_id,
 			number: row.version,
@@ -326,6 +330,23 @@ export async function setAgentStatus(
 		.run();
 }
 
+/**
+ * Let an external agent send on its own without first collecting 20 human
+ * approvals, or take that back. Owner or admin only. Each capability's own
+ * level still decides: a send set to "ask me first" still asks.
+ */
+export async function setAgentTrustedToSend(
+	db: D1Database,
+	input: { agentId: string; byUserId: string; trusted: boolean }
+): Promise<void> {
+	const { agent, human } = await requireAgentForUser(db, input.agentId, input.byUserId);
+	if (!canManage(agent, human)) throw new NotAllowedError();
+	await db
+		.prepare('UPDATE agents SET trusted_to_send = ? WHERE principal_id = ?')
+		.bind(input.trusted ? 1 : 0, agent.id)
+		.run();
+}
+
 export type ProposeInput = {
 	agentId: string;
 	proposal: Proposal;
@@ -392,6 +413,7 @@ export async function proposeAction(db: D1Database, input: ProposeInput, now = n
 		sendableAddresses: sendable,
 		usedToday: usage?.used_today ?? 0,
 		humanApprovals: usage?.approvals ?? 0,
+		trustedToSend: agent.trustedToSend,
 		threadTakenOver: input.threadTakenOver
 	});
 
@@ -718,6 +740,7 @@ export type AgentSummary = {
 	status: AgentStatus;
 	runtime: AgentRuntime;
 	shadowRemaining: number;
+	trustedToSend: boolean;
 	versionNumber: number;
 	definition: AgentDefinition;
 	queued: number;
@@ -734,7 +757,7 @@ export async function listAgents(db: D1Database, userId: string, now = new Date(
 	await expireActions(db, now);
 	const { results } = await db
 		.prepare(
-			`SELECT p.id, p.display_name, p.created_at, p.owner_principal_id, a.status, a.runtime, a.shadow_remaining, a.paused_reason,
+			`SELECT p.id, p.display_name, p.created_at, p.owner_principal_id, a.status, a.runtime, a.shadow_remaining, a.paused_reason, a.trusted_to_send,
 			        v.version, v.definition_json,
 			        (SELECT COUNT(*) FROM agent_actions x
 			         WHERE x.agent_principal_id = p.id AND x.status = 'queued') AS queued
@@ -754,6 +777,7 @@ export async function listAgents(db: D1Database, userId: string, now = new Date(
 			runtime: AgentRuntime;
 			shadow_remaining: number;
 			paused_reason: string | null;
+			trusted_to_send: number | null;
 			version: number;
 			definition_json: string;
 			queued: number;
@@ -765,6 +789,7 @@ export async function listAgents(db: D1Database, userId: string, now = new Date(
 		status: row.status,
 		runtime: row.runtime,
 		shadowRemaining: row.shadow_remaining,
+		trustedToSend: row.trusted_to_send === 1,
 		versionNumber: row.version,
 		definition: parseDefinition(JSON.parse(row.definition_json)),
 		queued: row.queued,

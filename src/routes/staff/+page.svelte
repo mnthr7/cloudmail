@@ -676,7 +676,7 @@
 			});
 			const result = await res.json().catch(() => ({}));
 			if (!res.ok) {
-				listError = res.status === 403 ? 'Only its owner or an admin can do that.' : 'Could not make a key.';
+				listError = res.status === 403 ? 'Only the person who hired this agent can make its keys.' : 'Could not make a key.';
 				return;
 			}
 			newKey = { agentId, key: result.key };

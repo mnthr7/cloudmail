@@ -183,7 +183,7 @@ function newApiKey(): string {
 }
 
 /**
- * A new API key for an external agent. Its earlier keys stop working (one key
+ * A new API key for an external agent, made by its owner. Its earlier keys stop working (one key
  * per agent, so rotating is one click); its OAuth connections are left alone.
  * Returns the key once: only its hash is kept.
  */
@@ -197,16 +197,14 @@ export async function createApiKey(
 	if (!agent || agent.runtime !== 'external' || agent.workspaceId !== human.workspace_id) {
 		throw new ConnectionNotAllowedError();
 	}
-	if (!(human.is_admin === 1 || agent.ownerPrincipalId === human.id)) throw new ConnectionNotAllowedError();
+	// Only the owner: a key acts in the owner's mailbox, so an admin making one could read mail
+	// they can't otherwise. Admins can still disconnect it (revokeConnection).
+	if (agent.ownerPrincipalId !== human.id) throw new ConnectionNotAllowedError();
 	const key = newApiKey();
 	const id = `ac_${crypto.randomUUID()}`;
 	const stamp = now.toISOString();
-	// Whose mailbox it works in: the person the agent was hired by, as with OAuth.
-	const owner = await db
-		.prepare(`SELECT u.user_id FROM principals a JOIN principals u ON u.id = a.owner_principal_id WHERE a.id = ?`)
-		.bind(agent.id)
-		.first<{ user_id: string | null }>();
-	const mailboxUserId = owner?.user_id ?? input.byUserId;
+	// It works in the owner's mailbox, the same as their OAuth connections.
+	const mailboxUserId = input.byUserId;
 	await db.batch([
 		db
 			.prepare(

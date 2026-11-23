@@ -115,10 +115,15 @@ describe('API keys', () => {
 		expect(await connectionForApiKey(db, second.key)).toBeNull();
 	});
 
-	test('only the agent’s owner or an admin makes keys, and only for external agents', async () => {
-		const { db } = open();
+	test('only the agent’s owner makes keys (not even an admin), and only for external agents', async () => {
+		const { sqlite, db } = open();
+		sqlite.run(`INSERT INTO users (id, email, name, password_hash, is_admin) VALUES ('admin', 'a@login.test', 'Ada', 'x', 1)`);
 		const agent = await hire(db);
 		await expect(createApiKey(db, { agentId: agent.id, byUserId: 'u2' }, NOW)).rejects.toThrow();
+		// A key reads the owner's mailbox; an admin can disconnect it but not mint one.
+		await expect(createApiKey(db, { agentId: agent.id, byUserId: 'admin' }, NOW)).rejects.toThrow();
+		const { connection } = await createApiKey(db, { agentId: agent.id, byUserId: 'u1' }, NOW);
+		expect((await revokeConnection(db, { connectionId: connection.id, byUserId: 'admin' }, NOW)).status).toBe('revoked');
 		await expect(createApiKey(db, { agentId: 'p_u1', byUserId: 'u1' }, NOW)).rejects.toThrow();
 	});
 });

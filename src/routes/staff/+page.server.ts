@@ -127,8 +127,21 @@ export const load: PageServerLoad = async ({ locals, platform, url }) => {
 	for (const agent of agents.filter((item) => item.runtime === 'external')) {
 		const connections = await connectionsForAgent(db, agent.id).catch(() => []);
 		external[agent.id] = {
+			// Teammates who can't manage the agent see only what the Disconnect brake needs.
 			connections: await Promise.all(
-				connections.map(async (connection) => ({ ...connection, deliveries: await recentDeliveries(db, connection.id, 10).catch(() => []) }))
+				connections.map(async (connection) =>
+					agent.canManage
+						? { ...connection, deliveries: await recentDeliveries(db, connection.id, 10).catch(() => []) }
+						: {
+								...connection,
+								clientId: '',
+								grantRef: null,
+								webhookUrl: null,
+								hasWebhookSecret: false,
+								mailboxUserId: '',
+								deliveries: []
+							}
+				)
 			),
 			audit: agent.canManage ? await recentToolCalls(db, agent.id, 50).catch(() => []) : []
 		};

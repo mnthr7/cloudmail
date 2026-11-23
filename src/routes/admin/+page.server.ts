@@ -9,6 +9,7 @@ import {
 import { listAllAddresses, listUnroutedEmails } from '#lib/server/domains.ts';
 import { providerStatusForUser, type ProviderStatus } from '#lib/server/ai-provider-store.ts';
 import { DEMO_MODE } from '#lib/server/demo.ts';
+import { listDoNotSend, type DoNotSendEntry } from '#lib/server/do-not-send.ts';
 
 export const load: PageServerLoad = async ({ locals, platform }) => {
 	if (!locals.user?.is_admin) {
@@ -24,17 +25,19 @@ export const load: PageServerLoad = async ({ locals, platform }) => {
 			domains: locals.domains,
 			available: [],
 			unrouted: [],
+			doNotSend: [] as DoNotSendEntry[],
 			providerKind,
 			ai: { providers: [] as ProviderStatus[], encryptionReady: false, demo: DEMO_MODE },
 			loadError: 'Database unavailable'
 		};
 	}
 
-	const [users, addresses, unrouted, providers] = await Promise.all([
+	const [users, addresses, unrouted, providers, doNotSend] = await Promise.all([
 		listUsers(db),
 		listAllAddresses(db),
 		listUnroutedEmails(db, 25),
-		providerStatusForUser(db, locals.user.id).catch(() => [] as ProviderStatus[])
+		providerStatusForUser(db, locals.user.id).catch(() => [] as ProviderStatus[]),
+		listDoNotSend(db)
 	]);
 	// Only whether the secret is set reaches the page, never its value.
 	const ai = { providers, encryptionReady: Boolean(platform?.env.AI_KEY_ENCRYPTION_KEY), demo: DEMO_MODE };
@@ -49,6 +52,7 @@ export const load: PageServerLoad = async ({ locals, platform }) => {
 			users,
 			addresses,
 			unrouted,
+			doNotSend,
 			domains: locals.domains,
 			available,
 			providerKind,
@@ -60,6 +64,7 @@ export const load: PageServerLoad = async ({ locals, platform }) => {
 			users,
 			addresses,
 			unrouted,
+			doNotSend,
 			domains: locals.domains,
 			available: [],
 			providerKind,

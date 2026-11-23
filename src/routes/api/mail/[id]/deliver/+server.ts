@@ -8,7 +8,7 @@ import { claimScheduled, loadScheduledOutbound } from '#lib/server/outbox-schedu
 import { sendOutboundEmail } from '#lib/server/send-mail.ts';
 
 /** Sends one due scheduled row. The cron uses the same claim. */
-export const POST: RequestHandler = async ({ params, locals, platform }) => {
+export const POST: RequestHandler = async ({ params, locals, platform, url }) => {
 	const db = platform?.env.DB;
 	if (!locals.user || !db) {
 		return json({ error: 'Unauthorized' }, { status: 401 });
@@ -40,7 +40,9 @@ export const POST: RequestHandler = async ({ params, locals, platform }) => {
 	try {
 		const result = await sendOutboundEmail(
 			provider,
-			await loadScheduledOutbound(db, { id, user_id: locals.user.id })
+			await loadScheduledOutbound(db, { id, user_id: locals.user.id }, {
+				origin: platform?.env.PUBLIC_ORIGIN?.trim() || url.origin
+			})
 		);
 		await db
 			.prepare('UPDATE emails SET provider_id = ? WHERE id = ? AND user_id = ?')

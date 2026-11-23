@@ -62,6 +62,12 @@ For a full tour with screenshots of every screen, see **[docs/FEATURES.md](docs/
 - Admins get a domain catch-all and a view of unrouted mail
 - Delivery status (delivered, bounced, complained) via Resend webhooks
 
+**Marketing mail**
+
+- Send with `marketing: true` (REST `POST /api/mail`, or the MCP `send_email` tool) for newsletters and promotions. Each message goes to one recipient and carries one-click `List-Unsubscribe` headers (RFC 8058, required by Gmail and Yahoo for bulk senders) plus a visible unsubscribe footer
+- An unsubscribe page where the recipient can unsubscribe or subscribe again. It changes nothing when opened, so link scanners can't unsubscribe anyone
+- A do-not-send list on the Admin page. Resend's hard bounces block an address on every domain; spam complaints and unsubscribes block marketing from that domain. One-to-one mail is only stopped by hard bounces and addresses an admin added
+
 ---
 
 # Choose a mail provider
@@ -306,6 +312,7 @@ bun run deploy:live <name>
 |---|---|---|
 | `AI_KEY_ENCRYPTION_KEY` | `openssl rand -base64 32 \| wrangler secret put AI_KEY_ENCRYPTION_KEY` | Lets admins connect an AI provider on the Admin page, which turns agents on. Each workspace brings its own Anthropic key; it's checked when saved and stored encrypted under this secret, and never shown again. Agents read threads and propose replies, labels and notes; each has a monthly budget on the Staff page. Without this secret or a saved key, agents don't run and their work waits. Changing the secret makes saved keys unreadable, so admins would need to save them again. |
 | `VIRUSTOTAL_API_KEY` | `wrangler secret put` | Scans incoming attachments. A free key works: the once-a-minute cron stays within the public rate limit. Without a key, attachments are not scanned and stay downloadable. |
+| `PUBLIC_ORIGIN` | `vars` | This app's public URL, such as `https://mail.example.com`. Unsubscribe links in marketing mail point here. Marketing mail is refused until it is set. |
 | `PATH_REDIRECT_FROM` / `PATH_REDIRECT_TO` | `vars` | Redirects a path on another host to the mail host. For example, `example.com/mail` → `mail.example.com`. |
 | `SETUP_TOKEN` | `wrangler secret put` | **Recommended for public URLs.** Until the first admin exists, whoever opens `/setup` can create the admin account. With this set, setup also asks for the token. |
 | `DEMO_MODE` | dev server environment | `"true"` runs a read-only demo with sample data. Set it on the command, not in `.dev.vars`. See below. |

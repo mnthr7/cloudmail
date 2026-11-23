@@ -24,6 +24,8 @@ declare global {
 				AI_KEY_ENCRYPTION_KEY?: string;
 				/** When set, first-run setup asks for this value. */
 				SETUP_TOKEN?: string;
+				/** This app's public URL (https://mail.example.com). Unsubscribe links in marketing mail point here. */
+				PUBLIC_ORIGIN?: string;
 				/** Grants and tokens for external agents' OAuth (MCP). Without it, /mcp is off. */
 				OAUTH_KV?: KVNamespace;
 				DEMO_MODE?: string;

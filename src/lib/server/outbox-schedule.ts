@@ -3,7 +3,8 @@ import type { MailAddress } from '#lib/types.ts';
 import { scheduleError } from '../writing/timing';
 import { initialOutboundStatus, type EmailProvider } from './email-provider';
 import { setThreadColumns } from './organizing-store';
-import { sendOutboundEmail } from './send-mail';
+import { parseRecipients, sendOutboundEmail } from './send-mail';
+import { assertSendable, domainOf, marketingParts, unsubscribeToken } from './do-not-send';
 
 export type ScheduledMailInsert = {
 	userId: string;
@@ -26,6 +27,8 @@ export type ScheduledMailInsert = {
 	undoInbox?: boolean;
 	domainId?: string | null;
 	threadId?: string | null;
+	/** Marketing mail: gets unsubscribe headers and footer at delivery. */
+	marketing?: boolean;
 };
 
 type DueRow = {
@@ -44,7 +47,11 @@ type OutboundRow = {
 	in_reply_to: string | null;
 	references_header: string | null;
 	domain_id: string | null;
+	is_marketing: number | null;
 };
+
+/** Where unsubscribe links point: the app's public origin, e.g. https://mail.example.com. */
+export type DeliverOptions = { origin?: string | null };
 
 /**
  * Stores an outbound row as scheduled. Archive is the caller's job: this
@@ -63,8 +70,8 @@ export async function insertScheduled(db: D1Database, row: ScheduledMailInsert):
 				id, user_id, direction, from_addr, to_addr, cc_addr, bcc_addr,
 				subject, body_text, body_html, in_reply_to, references_header,
 				reply_to_email_id, thread_id, domain_id, status, send_at,
-				undo_inbox, source_email_id, draft_action
-			) VALUES (?, ?, 'outbound', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, ?, ?, ?)`
+				undo_inbox, source_email_id, draft_action, is_marketing
+			) VALUES (?, ?, 'outbound', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, ?, ?, ?, ?)`
 		)
 		.bind(
 			id,
@@ -84,7 +91,8 @@ export async function insertScheduled(db: D1Database, row: ScheduledMailInsert):
 			row.sendAt,
 			row.undoInbox ? 1 : 0,
 			row.sourceEmailId ?? null,
-			row.draftAction ?? null
+			row.draftAction ?? null,
+			row.marketing ? 1 : 0
 		)
 		.run();
 
@@ -154,7 +162,8 @@ export async function deliverDue(
 	db: D1Database,
 	provider: EmailProvider,
 	now: Date,
-	limit = 20
+	limit = 20,
+	options: DeliverOptions = {}
 ): Promise<number> {
 	const { results } = await db
 		.prepare(
@@ -174,7 +183,7 @@ export async function deliverDue(
 
 		let result: { providerId: string };
 		try {
-			result = await sendOutboundEmail(provider, await outboundInput(db, due));
+			result = await sendOutboundEmail(provider, await outboundInput(db, due, options));
 		} catch (error) {
 			const message = error instanceof Error && error.message ? error.message : 'Send failed';
 			await db
@@ -198,15 +207,15 @@ export async function deliverDue(
 }
 
 /** The claimed row, shaped for `sendOutboundEmail`. No attachment bytes. */
-export async function loadScheduledOutbound(db: D1Database, due: DueRow) {
-	return outboundInput(db, due);
+export async function loadScheduledOutbound(db: D1Database, due: DueRow, options: DeliverOptions = {}) {
+	return outboundInput(db, due, options);
 }
 
-async function outboundInput(db: D1Database, due: DueRow) {
+async function outboundInput(db: D1Database, due: DueRow, options: DeliverOptions = {}) {
 	const stored = await db
 		.prepare(
 			`SELECT from_addr, to_addr, cc_addr, bcc_addr, subject, body_text, body_html,
-			        in_reply_to, references_header, domain_id
+			        in_reply_to, references_header, domain_id, is_marketing
 			   FROM emails
 			  WHERE id = ? AND user_id = ?`
 		)
@@ -222,6 +231,31 @@ async function outboundInput(db: D1Database, due: DueRow) {
 		.bind(due.user_id)
 		.first<{ name: string }>();
 
+	const marketing = stored.is_marketing === 1;
+	const recipients = [
+		...parseRecipients(stored.to_addr),
+		...parseRecipients(stored.cc_addr),
+		...parseRecipients(stored.bcc_addr)
+	];
+	// Checked again here: a bounce or unsubscribe may have landed during the hold.
+	await assertSendable(db, recipients, stored.from_addr, marketing);
+
+	let text = stored.body_text ?? '';
+	let html = stored.body_html ?? undefined;
+	let headers: Record<string, string> | undefined;
+	if (marketing) {
+		const origin = options.origin?.trim();
+		if (!origin) {
+			throw new Error('Marketing mail needs PUBLIC_ORIGIN set to this app\'s URL, for unsubscribe links');
+		}
+		const domain = domainOf(stored.from_addr);
+		const token = await unsubscribeToken(db, domain, recipients[0]!);
+		const parts = marketingParts(origin, token, domain, text, html);
+		text = parts.text;
+		html = parts.html;
+		headers = parts.headers;
+	}
+
 	return {
 		from: mailAddress(due.user_id, stored.from_addr, stored.domain_id),
 		senderName: user?.name?.trim() || stored.from_addr,
@@ -229,10 +263,11 @@ async function outboundInput(db: D1Database, due: DueRow) {
 		cc: stored.cc_addr ?? undefined,
 		bcc: stored.bcc_addr ?? undefined,
 		subject: stored.subject,
-		text: stored.body_text ?? '',
-		html: stored.body_html ?? undefined,
+		text,
+		html,
 		inReplyTo: stored.in_reply_to,
 		references: stored.references_header,
+		...(headers ? { headers } : {}),
 		idempotencyKey: due.id
 	};
 }

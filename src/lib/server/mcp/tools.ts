@@ -1,4 +1,5 @@
 import type { D1Database, R2Bucket } from '@cloudflare/workers-types';
+import { blockedRecipients, domainOf } from '../do-not-send';
 import { z } from 'zod';
 import { CAPABILITY_LABELS, type Capability } from '#lib/agents/capabilities.ts';
 import { explainDetail } from '#lib/agents/activity.ts';
@@ -616,24 +617,39 @@ const TOOLS: ToolDef[] = [
 		capability: 'send_email',
 		readOnly: false,
 		description:
-			'Start a new email thread. Recipients must be teammates or in the domains your scope allows. Sent with a short undo hold and an AI-assistant footer.',
+			'Start a new email thread. Recipients must be teammates or in the domains your scope allows. Sent with a short undo hold and an AI-assistant footer. Set marketing for newsletters and promotions: one recipient per call, an unsubscribe link and headers are added, and anyone who unsubscribed, bounced or complained is refused.',
 		input: {
 			to: emailList.min(1),
 			cc: emailList.optional(),
 			subject: z.string().min(1).max(300),
 			body: z.string().min(1).max(50_000),
 			from: z.string().max(320).optional().describe('One of your send_as addresses. Defaults to the first.'),
+			marketing: z
+				.boolean()
+				.optional()
+				.describe('Marketing or bulk mail. Requires exactly one recipient in to and no cc.'),
 			reason
 		},
 		async run(ctx, args) {
 			const from = (args.from ?? ctx.agent.version.definition.scope.sendAs[0] ?? '').trim().toLowerCase();
 			const to = args.to.map((address) => address.trim().toLowerCase());
 			const cc = (args.cc ?? []).map((address) => address.trim().toLowerCase());
+			if (args.marketing && (to.length !== 1 || cc.length > 0)) {
+				return rejected('marketing_one_recipient', 'Marketing mail goes to one recipient per call, with no cc.');
+			}
+			// Say so now rather than after an approval: these would be refused at send.
+			const blocked = await blockedRecipients(ctx.db, [...to, ...cc], domainOf(from), args.marketing === true);
+			if (blocked.length > 0) {
+				return rejected(
+					'do_not_send',
+					`On the do-not-send list: ${blocked.map((row) => `${row.address} (${row.reason})`).join(', ')}. Skip them.`
+				);
+			}
 			return propose(ctx, {
 				capability: 'send_email',
 				fromAddress: from,
 				recipients: [...to, ...cc],
-				payload: { from, to, cc, subject: args.subject, body: args.body },
+				payload: { from, to, cc, subject: args.subject, body: args.body, ...(args.marketing ? { marketing: true } : {}) },
 				reason: args.reason
 			});
 		}

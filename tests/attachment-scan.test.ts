@@ -793,7 +793,7 @@ describe('scheduled scan', () => {
 		expect(scheduled).toContain('syncDueOutsideCalendars(env.DB, key,');
 		expect(scheduled).toContain('expireActions(env.DB)');
 		expect(scheduled).toContain('Failed to expire or finish agent actions');
-		expect(scheduled).toContain('deliverDue(env.DB, getEmailProvider({ env }), new Date(), 20)');
+		expect(scheduled).toContain('deliverDue(env.DB, getEmailProvider({ env }), new Date(), 20, { origin: env.PUBLIC_ORIGIN })');
 		expect(scheduled).toContain('Failed to deliver scheduled mail');
 		const guard = scheduled.search(/!env\.VIRUSTOTAL_API_KEY \|\| env\.DEMO_MODE === 'true'/);
 		const call = scheduled.indexOf('createVirusTotal(');

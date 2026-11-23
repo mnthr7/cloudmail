@@ -18,6 +18,8 @@ declare global {
 		PATH_REDIRECT_FROM?: string;
 		PATH_REDIRECT_TO?: string;
 		SETUP_TOKEN?: string;
+		/** This app's public URL (https://mail.example.com). Unsubscribe links in marketing mail point here. */
+		PUBLIC_ORIGIN?: string;
 		/** Grants and tokens for external agents' OAuth (MCP). Without it, /mcp is off. */
 		OAUTH_KV?: KVNamespace;
 	}

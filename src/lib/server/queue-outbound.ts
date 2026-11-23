@@ -6,6 +6,7 @@ import { stripHtml } from './html';
 import { resolveFromAddress } from './outbox';
 import { insertScheduled, type ScheduledMailInsert } from './outbox-schedule';
 import { parseRecipients } from './send-mail';
+import { assertSendable } from './do-not-send';
 
 export type QueueOutboundInput = {
 	fromAddressId?: string | null;
@@ -26,6 +27,11 @@ export type QueueOutboundInput = {
 	draftAction?: ScheduledMailInsert['draftAction'];
 	undoInbox?: boolean;
 	threadId?: string | null;
+	/**
+	 * Marketing mail: one recipient, one-click unsubscribe headers and footer,
+	 * and anyone who unsubscribed, complained or bounced is refused.
+	 */
+	marketing?: boolean;
 };
 
 /**
@@ -54,14 +60,26 @@ export async function queueOutbound(
 		throw new Error('At least one valid recipient is required');
 	}
 
+	const marketing = input.marketing === true;
+	const cc = parseRecipients(input.cc);
+	const bcc = parseRecipients(input.bcc);
+	const recipients = [...parseRecipients(input.to), ...cc, ...bcc];
+	// Each marketing message carries the recipient's own unsubscribe link.
+	if (marketing && recipients.length !== 1) {
+		throw new Error('Marketing mail goes to one recipient at a time (no cc or bcc)');
+	}
+	// Refuse now so the caller hears it; delivery checks again in case a
+	// bounce or unsubscribe arrives during the hold.
+	await assertSendable(db, recipients, from.address, marketing);
+
 	const id = await insertScheduled(db, {
 		userId: user.id,
 		kind: explicit ? 'schedule' : 'hold',
 		sendAt,
 		from: from.address,
 		to,
-		cc: parseRecipients(input.cc).join(', ') || null,
-		bcc: parseRecipients(input.bcc).join(', ') || null,
+		cc: cc.join(', ') || null,
+		bcc: bcc.join(', ') || null,
 		subject: input.subject.trim(),
 		text,
 		html: html ?? (text ? text.replaceAll('\n', '<br>\n') : null),
@@ -72,7 +90,8 @@ export async function queueOutbound(
 		draftAction: input.draftAction ?? null,
 		undoInbox: input.undoInbox,
 		domainId: from.domain_id,
-		threadId: input.threadId ?? null
+		threadId: input.threadId ?? null,
+		marketing
 	});
 
 	return { id, sendAt };

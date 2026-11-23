@@ -545,7 +545,8 @@ async function sendNewEmail(db: D1Database, action: ClaimedAction, now: Date): P
 		cc: cc.join(', ') || null,
 		subject,
 		text,
-		html: textToHtml(text)
+		html: textToHtml(text),
+		marketing: payload.marketing === true
 	});
 	return queued.id;
 }

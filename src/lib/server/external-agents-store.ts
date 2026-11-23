@@ -14,6 +14,10 @@ export type ConnectionStatus = 'active' | 'revoked';
 export type AgentConnection = {
 	id: string;
 	agentId: string;
+	/** How it signs in: an OAuth grant, or an API key. */
+	auth: 'oauth' | 'api_key';
+	/** The start of an API key, to tell keys apart. Null for OAuth. */
+	keyHint: string | null;
 	clientName: string;
 	clientId: string;
 	grantRef: string | null;
@@ -28,6 +32,8 @@ export type AgentConnection = {
 type ConnectionRow = {
 	id: string;
 	agent_principal_id: string;
+	auth: 'oauth' | 'api_key';
+	key_hint: string | null;
 	client_name: string;
 	client_id: string;
 	grant_ref: string | null;
@@ -43,6 +49,8 @@ function toConnection(row: ConnectionRow): AgentConnection {
 	return {
 		id: row.id,
 		agentId: row.agent_principal_id,
+		auth: row.auth,
+		keyHint: row.key_hint,
 		clientName: row.client_name,
 		clientId: row.client_id,
 		grantRef: row.grant_ref,
@@ -63,37 +71,41 @@ export function cleanClientName(name: unknown): string {
 	return (text || 'Unnamed client').slice(0, MAX_CLIENT_NAME);
 }
 
-/**
- * Hires an external agent from the consent screen: a new agent principal in
- * shadow mode, plus the connection its OAuth grant points at.
- */
-export async function createExternalAgent(
-	db: D1Database,
-	input: {
-		ownerUserId: string;
-		displayName: string;
-		job: string;
-		readAddresses: string[];
-		sendAs: string[];
-		/** Levels chosen on the consent screen, over the external defaults. */
-		levels?: Partial<Record<string, string>>;
-		clientName: string;
-		clientId: string;
-	},
-	now = new Date()
-): Promise<{ agent: AgentRecord; connection: AgentConnection }> {
+export type ExternalAgentInput = {
+	ownerUserId: string;
+	displayName: string;
+	job: string;
+	readAddresses: string[];
+	sendAs: string[];
+	/** Levels chosen by the founder, over the external defaults. */
+	levels?: Partial<Record<string, string>>;
+};
+
+/** A new external agent in shadow mode, with no connection yet. */
+export async function hireExternalAgent(db: D1Database, input: ExternalAgentInput, now = new Date()): Promise<AgentRecord> {
 	const base = externalDefaultDefinition(input.job, { readAddresses: input.readAddresses, sendAs: input.sendAs });
 	const definition: AgentDefinition = { ...base, capabilities: { ...base.capabilities } };
 	for (const [capability, level] of Object.entries(input.levels ?? {})) {
 		// parseDefinition (inside createAgent) rejects unknown names and levels.
 		(definition.capabilities as Record<string, unknown>)[capability] = { level };
 	}
-	const agent = await createAgent(
+	return createAgent(
 		db,
 		{ ownerUserId: input.ownerUserId, displayName: input.displayName, definition, runtime: 'external' },
 		now
 	);
+}
 
+/**
+ * Hires an external agent from the consent screen: a new agent principal in
+ * shadow mode, plus the connection its OAuth grant points at.
+ */
+export async function createExternalAgent(
+	db: D1Database,
+	input: ExternalAgentInput & { clientName: string; clientId: string },
+	now = new Date()
+): Promise<{ agent: AgentRecord; connection: AgentConnection }> {
+	const agent = await hireExternalAgent(db, input, now);
 	const id = `ac_${crypto.randomUUID()}`;
 	await db
 		.prepare(
@@ -153,6 +165,74 @@ export async function reconnectableAgents(db: D1Database, userId: string): Promi
 		.bind(human.workspace_id, human.id, human.is_admin)
 		.all<{ id: string; name: string }>();
 	return results;
+}
+
+// ---- API keys (X9) ------------------------------------------------------------
+
+/** Every key starts with this, so leaks are easy to spot and the worker can tell keys from OAuth tokens. */
+export const API_KEY_PREFIX = 'cmk_';
+
+export function isApiKey(token: string): boolean {
+	return token.startsWith(API_KEY_PREFIX) && token.length > API_KEY_PREFIX.length + 20;
+}
+
+function newApiKey(): string {
+	const bytes = crypto.getRandomValues(new Uint8Array(32));
+	const text = btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+	return `${API_KEY_PREFIX}${text}`;
+}
+
+/**
+ * A new API key for an external agent, made by its owner. Its earlier keys stop working (one key
+ * per agent, so rotating is one click); its OAuth connections are left alone.
+ * Returns the key once: only its hash is kept.
+ */
+export async function createApiKey(
+	db: D1Database,
+	input: { agentId: string; byUserId: string },
+	now = new Date()
+): Promise<{ connection: AgentConnection; key: string }> {
+	const agent = await getAgent(db, input.agentId);
+	const human = await humanPrincipalForUser(db, input.byUserId);
+	if (!agent || agent.runtime !== 'external' || agent.workspaceId !== human.workspace_id) {
+		throw new ConnectionNotAllowedError();
+	}
+	// Only the owner: a key acts in the owner's mailbox, so an admin making one could read mail
+	// they can't otherwise. Admins can still disconnect it (revokeConnection).
+	if (agent.ownerPrincipalId !== human.id) throw new ConnectionNotAllowedError();
+	const key = newApiKey();
+	const id = `ac_${crypto.randomUUID()}`;
+	const stamp = now.toISOString();
+	// It works in the owner's mailbox, the same as their OAuth connections.
+	const mailboxUserId = input.byUserId;
+	await db.batch([
+		db
+			.prepare(
+				`UPDATE agent_connections SET status = 'revoked', revoked_at = ?
+				 WHERE agent_principal_id = ? AND auth = 'api_key' AND status = 'active'`
+			)
+			.bind(stamp, agent.id),
+		db
+			.prepare(
+				`INSERT INTO agent_connections
+				   (id, agent_principal_id, kind, auth, client_name, client_id, mailbox_user_id, key_hash, key_hint, status, created_at)
+				 VALUES (?, ?, 'mcp', 'api_key', 'API key', ?, ?, ?, ?, 'active', ?)`
+			)
+			.bind(id, agent.id, id, mailboxUserId, await hashToken(key), key.slice(0, API_KEY_PREFIX.length + 6), stamp)
+	]);
+	const connection = await getConnection(db, id);
+	if (!connection) throw new Error('Failed to record the key');
+	return { connection, key };
+}
+
+/** The live connection an API key belongs to, or null. */
+export async function connectionForApiKey(db: D1Database, key: string): Promise<AgentConnection | null> {
+	if (!isApiKey(key)) return null;
+	const row = await db
+		.prepare(`SELECT * FROM agent_connections WHERE key_hash = ? AND auth = 'api_key' AND status = 'active'`)
+		.bind(await hashToken(key))
+		.first<ConnectionRow>();
+	return row ? toConnection(row) : null;
 }
 
 export async function setGrantRef(db: D1Database, connectionId: string, grantRef: string): Promise<void> {

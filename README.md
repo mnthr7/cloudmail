@@ -336,6 +336,14 @@ untrusted. Every call is logged on the Staff page, where you can pause or
 disconnect it at once. An agent running on a server can also get signed
 webhooks for new mail, your decisions, @mentions and timers.
 
+**Agents that can't sign in through a browser** (Grok's API, scripts, n8n)
+use an API key instead. On the Staff page, under **Connect your own agent**,
+hire an agent with a key (or add one to an existing external agent). The key is
+shown once, and only its fingerprint is stored. The agent calls the same
+`/mcp` endpoint with `Authorization: Bearer cmk_…` and gets the same tools,
+limits, shadow mode and audit. Making a new key stops the old one, and
+Disconnect stops it at once. API keys work even without `OAUTH_KV`.
+
 ---
 
 # Development

@@ -67,12 +67,15 @@ export const load: PageServerLoad = async ({ locals, platform, url }) => {
 		external: Record<string, ExternalDetail>;
 		/** Where MCP clients connect, or null when agents can't connect here (no OAUTH_KV). */
 		mcpUrl: string | null;
+		/** The /mcp endpoint, for agents using an API key (works without OAUTH_KV). */
+		mcpEndpoint: string;
 		/** Webhook secrets need the encryption key. */
 		webhooksReady: boolean;
 		demo: boolean;
 	} = {
 		external: {},
 		mcpUrl: null,
+		mcpEndpoint: '',
 		webhooksReady: false,
 		bookingPages: [],
 		memory: {},
@@ -167,6 +170,7 @@ export const load: PageServerLoad = async ({ locals, platform, url }) => {
 		bookingPages,
 		external,
 		mcpUrl: (platform?.env as Env | undefined)?.OAUTH_KV ? `${url.origin}/mcp` : null,
+		mcpEndpoint: `${url.origin}/mcp`,
 		webhooksReady: !!platform?.env.AI_KEY_ENCRYPTION_KEY,
 		demo: false
 	};

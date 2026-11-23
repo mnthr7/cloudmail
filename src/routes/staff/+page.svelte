@@ -629,6 +629,68 @@
 		}
 	}
 
+	// API keys: shown once, right after they're made.
+	let newKey = $state<{ agentId: string; key: string } | null>(null);
+	let keyForm = $state({ name: '', job: '', read: [] as string[], sendAs: [] as string[] });
+	let keyError = $state('');
+
+	async function hireWithKey(event: SubmitEvent) {
+		event.preventDefault();
+		keyError = '';
+		busy = 'key';
+		try {
+			const res = await fetch('/api/agents/external', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ name: keyForm.name, job: keyForm.job, readAddresses: keyForm.read, sendAs: keyForm.sendAs })
+			});
+			const result = await res.json().catch(() => ({}));
+			if (!res.ok) {
+				const messages: Record<string, string> = {
+					name: 'Give the agent a name.',
+					read: 'Pick at least one address it can read.',
+					scope: 'Only your own addresses can be chosen.',
+					send_as: 'Only your own addresses can be chosen.'
+				};
+				keyError = messages[result.error] ?? 'Could not create the agent.';
+				return;
+			}
+			newKey = { agentId: result.agentId, key: result.key };
+			keyForm = { name: '', job: '', read: [], sendAs: [] };
+		} catch {
+			keyError = 'Network error';
+		} finally {
+			busy = null;
+		}
+	}
+
+	async function rotateKey(agentId: string, name: string, hasKey: boolean) {
+		if (hasKey && !confirm(`Make a new API key for ${name}? The current key stops working at once.`)) return;
+		busy = `key:${agentId}`;
+		listError = '';
+		try {
+			const res = await fetch(`/api/agents/${agentId}/connection`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ action: 'api_key' })
+			});
+			const result = await res.json().catch(() => ({}));
+			if (!res.ok) {
+				listError = res.status === 403 ? 'Only its owner or an admin can do that.' : 'Could not make a key.';
+				return;
+			}
+			newKey = { agentId, key: result.key };
+		} catch {
+			listError = 'Network error';
+		} finally {
+			busy = null;
+		}
+	}
+
+	function curlExample(key: string): string {
+		return `curl -X POST ${data.mcpEndpoint} \\\n  -H "Authorization: Bearer ${key}" \\\n  -H "Content-Type: application/json" \\\n  -H "Accept: application/json, text/event-stream" \\\n  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"whoami","arguments":{}}}'`;
+	}
+
 	async function revoke(agentId: string, connectionId: string, name: string) {
 		if (!confirm(`Disconnect ${name}? It stops working at once. Reconnecting it from its app brings it back.`)) return;
 		if (await connectionAction(agentId, connectionId, { action: 'revoke' })) window.location.reload();
@@ -751,9 +813,12 @@
 							<p class="item-sub">
 								Reads mail to {(agent.definition.scope.read?.addresses ?? []).join(', ') || 'nothing'} ·
 								{live
-									? `Connected through ${live.clientName}${live.lastSeenAt ? `, last active ${when(live.lastSeenAt)}` : ', not used yet'}`
+									? `${live.auth === 'api_key' ? `Uses API key ${live.keyHint ?? ''}…` : `Connected through ${live.clientName}`}${live.lastSeenAt ? `, last active ${when(live.lastSeenAt)}` : ', not used yet'}`
 									: 'Disconnected'}
 							</p>
+							{#if newKey?.agentId === agent.id}
+								{@render keyReveal(newKey.key)}
+							{/if}
 							{#if live && agent.canManage}
 								<details class="memory">
 									<summary>Connection and webhook</summary>
@@ -960,6 +1025,17 @@
 									onclick={() => setStatus(agent.id, 'paused')}
 								>
 									<Icon name="pause-line" size={14} /> Pause
+								</button>
+							{/if}
+							{#if agent.runtime === 'external' && agent.canManage}
+								{@const hasKey = !!data.external[agent.id]?.connections.some((connection) => connection.auth === 'api_key' && connection.status === 'active')}
+								<button
+									type="button"
+									class="btn-ghost text-xs"
+									disabled={busy === `key:${agent.id}`}
+									onclick={() => rotateKey(agent.id, agent.displayName, hasKey)}
+								>
+									<Icon name="key-2-line" size={14} /> {hasKey ? 'New API key' : 'Add an API key'}
 								</button>
 							{/if}
 							{#if agent.runtime === 'external'}
@@ -1184,17 +1260,14 @@
 
 	{#if !data.demo}
 		<Section id="connect" title="Connect your own agent" icon="plug-line" open={!data.agents.some((agent) => agent.runtime === 'external')}>
-			{#if !data.mcpUrl}
-				<p class="card-hint">
-					Agents like Claude can work in your mail once an admin adds the OAUTH_KV storage binding to this deploy.
-				</p>
-			{:else}
-				<p class="card-hint">
-					Use Claude, or any app that speaks MCP, as staff here. It gets the same limits as the agents above: it
-					starts in shadow mode, you choose what it may read and do, and you can pause or disconnect it any time.
-				</p>
+			<p class="card-hint">
+				Use Claude, Grok, or any agent that speaks MCP, as staff here. It gets the same limits as the agents above:
+				it starts in shadow mode, you choose what it may read and do, every call is logged, and you can pause or
+				disconnect it any time.
+			</p>
+			{#if data.mcpUrl}
 				<div class="sam-card">
-					<p class="item-title"><Icon name="terminal-box-line" size={16} /> Claude Code</p>
+					<p class="item-title"><Icon name="terminal-box-line" size={16} /> Claude Code (signs in with OAuth)</p>
 					<p class="secret"><code>claude mcp add --transport http cloudmail {data.mcpUrl}</code>
 						<button type="button" class="btn-ghost text-xs" onclick={() => copy(`claude mcp add --transport http cloudmail ${data.mcpUrl}`, 'cmd')}>
 							{copied === 'cmd' ? 'Copied' : 'Copy'}
@@ -1203,7 +1276,7 @@
 					<p class="item-sub">Then run /mcp in Claude Code and pick cloudmail to sign in.</p>
 				</div>
 				<div class="sam-card">
-					<p class="item-title"><Icon name="chat-smile-2-line" size={16} /> Claude apps and other MCP clients</p>
+					<p class="item-title"><Icon name="chat-smile-2-line" size={16} /> Claude apps and other MCP clients (OAuth)</p>
 					<p class="secret"><code>{data.mcpUrl}</code>
 						<button type="button" class="btn-ghost text-xs" onclick={() => copy(data.mcpUrl ?? '', 'url')}>
 							{copied === 'url' ? 'Copied' : 'Copy'}
@@ -1212,10 +1285,51 @@
 					<p class="item-sub">Add it as a custom connector (in Claude: Settings, Connectors). You’ll sign in here and choose its limits.</p>
 				</div>
 			{/if}
+			<form class="sam-card" onsubmit={hireWithKey}>
+				<p class="item-title"><Icon name="key-2-line" size={16} /> Grok, scripts and other agents (API key)</p>
+				<p class="item-sub">
+					For agents that can’t sign in through a browser. They call <code>{data.mcpEndpoint}</code> with the key as
+					<code>Authorization: Bearer …</code>. Anyone with the key acts as this agent, so keep it secret.
+				</p>
+				<label class="key-field">Name <input type="text" maxlength="80" placeholder="Grok" bind:value={keyForm.name} /></label>
+				<label class="key-field">What it’s for <input type="text" maxlength="2000" placeholder="Triage investor mail and draft replies" bind:value={keyForm.job} /></label>
+				<fieldset class="key-fieldset">
+					<legend>Mail it can read</legend>
+					{#each data.sendAs as address (address)}
+						<label class="key-check"><input type="checkbox" value={address} bind:group={keyForm.read} /> {address}</label>
+					{/each}
+				</fieldset>
+				<fieldset class="key-fieldset">
+					<legend>Addresses it can send from</legend>
+					{#each data.sendAs as address (address)}
+						<label class="key-check"><input type="checkbox" value={address} bind:group={keyForm.sendAs} /> {address}</label>
+					{/each}
+				</fieldset>
+				<p class="item-sub">It starts with reading, notes and drafts on its own; anything else asks you first. Change that with Edit once it’s hired.</p>
+				{#if keyError}<p class="error" role="alert">{keyError}</p>{/if}
+				<div class="item-actions">
+					<button type="submit" class="btn-primary text-xs" disabled={busy === 'key'}>Hire in shadow mode and make a key</button>
+				</div>
+				{#if newKey && !data.agents.some((agent) => agent.id === newKey?.agentId)}
+					{@render keyReveal(newKey.key)}
+					<button type="button" class="btn-ghost text-xs" onclick={() => window.location.reload()}>Done, show it in Agents</button>
+				{/if}
+			</form>
 		</Section>
 	{/if}
 </div>
 
+
+{#snippet keyReveal(key: string)}
+	<div class="key-reveal" role="status">
+		<p class="item-sub"><strong>API key, shown once.</strong> Copy it now; CloudMail keeps only a fingerprint.</p>
+		<p class="secret"><code>{key}</code>
+			<button type="button" class="btn-ghost text-xs" onclick={() => copy(key, 'key')}>{copied === 'key' ? 'Copied' : 'Copy'}</button>
+		</p>
+		<p class="item-sub">Try it:</p>
+		<pre class="key-example">{curlExample(key)}</pre>
+	</div>
+{/snippet}
 
 {#snippet agentForm()}
 		<form class={editingId ? 'edit-form' : 'surface-lg card'} onsubmit={save}>
@@ -1459,6 +1573,61 @@
 		padding: 0.25rem 0.5rem;
 		border-radius: 0.375rem;
 		background: var(--color-surface-2, rgba(127, 127, 127, 0.12));
+	}
+
+	.key-reveal {
+		display: flex;
+		flex-direction: column;
+		gap: 0.375rem;
+		padding: 0.75rem;
+		border-radius: 0.5rem;
+		box-shadow: inset 0 0 0 1px var(--color-line);
+	}
+
+	.key-example {
+		margin: 0;
+		padding: 0.5rem;
+		overflow-x: auto;
+		font-size: 0.75rem;
+		white-space: pre;
+		border-radius: 0.375rem;
+		background: var(--color-surface-2, rgba(127, 127, 127, 0.12));
+	}
+
+	.key-field {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+		font-size: 0.8125rem;
+		font-weight: 600;
+	}
+
+	.key-field input {
+		font: inherit;
+		font-weight: 400;
+		color: inherit;
+		background: transparent;
+		border: 1px solid var(--color-line);
+		border-radius: 0.375rem;
+		padding: 0.375rem 0.5rem;
+	}
+
+	.key-fieldset {
+		border: 0;
+		padding: 0;
+		margin: 0;
+		font-size: 0.8125rem;
+	}
+
+	.key-fieldset legend {
+		font-weight: 600;
+		margin-bottom: 0.25rem;
+	}
+
+	.key-check {
+		display: flex;
+		align-items: center;
+		gap: 0.375rem;
 	}
 
 	.warn-line {

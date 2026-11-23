@@ -11,7 +11,7 @@ import { getEmailProvider } from './lib/server/context';
 import type { EmailProvider } from './lib/server/email-provider';
 import { expireActions } from './lib/server/agents-store';
 import { executePending, fireDueTimers } from './lib/server/agent-executor';
-import { pruneAudit } from './lib/server/external-agents-store';
+import { connectionForApiKey, isApiKey, pruneAudit } from './lib/server/external-agents-store';
 import { deliverWebhooks } from './lib/server/agent-webhooks';
 import { handleMcpRequest } from './lib/server/mcp/server';
 import { MCP_PATH, oauthSettings, REGISTER_PATH, TOKEN_PATH } from './lib/server/mcp/oauth';
@@ -86,6 +86,24 @@ function oauthProviderFor(origin: string): OAuthProvider<Env> {
 	return provider;
 }
 
+/**
+ * /mcp with an API key (`Authorization: Bearer cmk_…`), for agents that can't
+ * sign in through a browser. Null when the request isn't one, so OAuth handles it.
+ */
+async function apiKeyMcp(request: Request, env: Env): Promise<Response | null> {
+	if (new URL(request.url).pathname !== MCP_PATH) return null;
+	const token = /^Bearer\s+(\S+)$/i.exec(request.headers.get('authorization') ?? '')?.[1];
+	if (!token || !isApiKey(token)) return null;
+	const connection = await connectionForApiKey(env.DB, token);
+	if (!connection) {
+		return Response.json(
+			{ jsonrpc: '2.0', error: { code: -32001, message: 'invalid_api_key' }, id: null },
+			{ status: 401, headers: { 'WWW-Authenticate': 'Bearer error="invalid_token"' } }
+		);
+	}
+	return handleMcpRequest(request, { connectionId: connection.id }, { db: env.DB, provider: providerOrNull(env), bucket: env.ATTACHMENTS });
+}
+
 /** Paths only the OAuth provider serves. Without it (no OAUTH_KV, or demo mode) they don't exist. */
 function isAgentAuthPath(pathname: string): boolean {
 	return (
@@ -102,7 +120,11 @@ function isAgentAuthPath(pathname: string): boolean {
  * SvelteKit and adds Cloudflare Email Service's `email()` handler.
  */
 export default {
-	fetch(request: Request, env: Env, ctx: ExecutionContext) {
+	async fetch(request: Request, env: Env, ctx: ExecutionContext) {
+		if (env.DEMO_MODE !== 'true') {
+			const keyed = await apiKeyMcp(request, env);
+			if (keyed) return keyed;
+		}
 		if (env.OAUTH_KV && env.DEMO_MODE !== 'true') {
 			return oauthProviderFor(new URL(request.url).origin).fetch(request as never, env, ctx as never) as Promise<Response>;
 		}

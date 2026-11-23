@@ -256,9 +256,11 @@ const TOOLS: ToolDef[] = [
 					read_addresses: readScope(ctx.agent),
 					send_as: definition.scope.sendAs,
 					recipients:
-						definition.scope.recipients.kind === 'domains'
-							? { people_on_the_thread: true, teammates: true, domains: definition.scope.recipients.domains }
-							: { people_on_the_thread: true, teammates: true, domains: [] },
+						definition.scope.recipients.kind === 'anyone'
+							? { anyone: true }
+							: definition.scope.recipients.kind === 'domains'
+								? { people_on_the_thread: true, teammates: true, domains: definition.scope.recipients.domains }
+								: { people_on_the_thread: true, teammates: true, domains: [] },
 					capabilities,
 					job: { untrusted: false, source: 'principal', text: definition.job },
 					rules: [

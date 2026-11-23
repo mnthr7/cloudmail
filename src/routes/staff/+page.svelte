@@ -33,7 +33,7 @@
 		levels: Record<Capability, AutonomyLevel>;
 		limits: Record<Capability, string>;
 		sendAs: string[];
-		recipientKind: 'thread' | 'domains';
+		recipientKind: 'thread' | 'domains' | 'anyone';
 		domains: string;
 		watch: string[];
 		/** Only mail a teammate forwards or CCs wakes it. */
@@ -82,7 +82,9 @@
 		draft.kind = definition.kind;
 		draft.model = definition.model;
 		draft.budget = String(definition.monthlyBudgetCents / 100);
-		if (definition.scope.recipients.kind === 'domains') {
+		if (definition.scope.recipients.kind === 'anyone') {
+			draft.recipientKind = 'anyone';
+		} else if (definition.scope.recipients.kind === 'domains') {
 			draft.recipientKind = 'domains';
 			draft.domains = definition.scope.recipients.domains.join(', ');
 		}
@@ -183,7 +185,12 @@
 			capabilities,
 			scope: {
 				sendAs: draft.sendAs,
-				recipients: draft.recipientKind === 'domains' ? { kind: 'domains', domains } : { kind: 'thread' }
+				recipients:
+					draft.recipientKind === 'anyone'
+						? { kind: 'anyone' }
+						: draft.recipientKind === 'domains'
+							? { kind: 'domains', domains }
+							: { kind: 'thread' }
 			},
 			triggers: { watch: draft.watch, teamOnly: draft.teamOnly },
 			model: draft.model,
@@ -1540,6 +1547,15 @@
 						placeholder="customer.com, partner.io"
 						aria-label="Domains"
 					/>
+				{/if}
+				<label class="check">
+					<input type="radio" value="anyone" bind:group={draft.recipientKind} />
+					<span>Anyone</span>
+				</label>
+				{#if draft.recipientKind === 'anyone'}
+					<p class="card-hint">
+						No limit on recipients. Whether a send asks you first, the daily limit, and the do-not-send list still apply.
+					</p>
 				{/if}
 			</fieldset>
 

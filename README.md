@@ -110,10 +110,14 @@ the outdated `/email/sending/enable` path and get a 404. Check your version with
 ```bash
 bunx wrangler d1 create cloudmail
 bunx wrangler r2 bucket create cloudmail-attachments
+bunx wrangler kv namespace create OAUTH_KV
 ```
 
 `d1 create` prints a `database_id`. In `wrangler.jsonc`, replace
-`REPLACE_WITH_YOUR_D1_DATABASE_ID` with it.
+`REPLACE_WITH_YOUR_D1_DATABASE_ID` with it. `kv namespace create` prints an
+`id`; replace `REPLACE_WITH_YOUR_KV_NAMESPACE_ID` with it. That namespace
+holds sign-ins for agents you connect (see **Connect your own agent**). To keep
+that turned off, delete the `kv_namespaces` block instead.
 
 Set `"name"` to whatever you want the Worker to be called. To serve CloudMail
 from your own hostname, add a `routes` block. The zone has to be on the same
@@ -308,6 +312,29 @@ bun run deploy:live <name>
 
 The Worker runs a cron every minute (`* * * * *`). It sends any scheduled mail
 that is due and scans pending attachments.
+
+## Connect your own agent
+
+Claude, or any app that speaks MCP, can work in your mail as staff with the
+same limits as CloudMail's own agents (`docs/specs/external-agents.md`). It
+needs the `OAUTH_KV` binding above; webhooks also need `AI_KEY_ENCRYPTION_KEY`.
+
+```bash
+claude mcp add --transport http cloudmail https://mail.example.com/mcp
+```
+
+In Claude apps, add the same URL as a custom connector. The app sends you to
+a consent screen here. You choose which of your addresses it can read and
+send from, and set each action to off, ask me first, or on its own. It starts
+in shadow mode, so its first 20 actions only show you what it would do. Sending
+on its own also needs 20 of your approvals first.
+
+It works through tools: `search_threads`, `get_thread`, `draft_reply`,
+`send_reply`, `send_email`, `organize`, `set_timer`, calendar booking, and
+`check_new_mail` to monitor the mailbox. Email content comes back marked
+untrusted. Every call is logged on the Staff page, where you can pause or
+disconnect it at once. An agent running on a server can also get signed
+webhooks for new mail, your decisions, @mentions and timers.
 
 ---
 

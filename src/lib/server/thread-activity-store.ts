@@ -167,14 +167,19 @@ function stateOf(row: ActionRow): ActivityState {
 
 /** Everything agents did, proposed, or noted on a thread, oldest first. */
 export async function threadActivity(db: D1Database, userId: string, threadId: string): Promise<ThreadActivity> {
+	// External agents show where they run: "Research (Claude · external)" (external-agents.md, X7).
+	const named = (principal: string, agent: string) => `CASE WHEN ${agent}.runtime = 'external' THEN ${principal}.display_name || ' (' ||
+		COALESCE((SELECT c.client_name || ' · ' FROM agent_connections c WHERE c.agent_principal_id = ${principal}.id ORDER BY c.created_at DESC LIMIT 1), '')
+		|| 'external)' ELSE ${principal}.display_name END`;
 	const [actions, notes, takeover] = await Promise.all([
 		db
 			.prepare(
 				`SELECT x.id, x.capability, x.status, x.reason, x.payload_json, x.policy_reason, x.exec_error,
 				        x.decision_note, x.created_at, x.decided_at, x.executed_at,
-				        p.display_name AS agent_name, d.display_name AS decided_by, r.trigger_kind
+				        ${named('p', 'a')} AS agent_name, d.display_name AS decided_by, r.trigger_kind
 				 FROM agent_actions x
 				 JOIN principals p ON p.id = x.agent_principal_id
+				 LEFT JOIN agents a ON a.principal_id = x.agent_principal_id
 				 LEFT JOIN principals d ON d.id = x.decided_by_principal_id
 				 LEFT JOIN agent_runs r ON r.id = x.run_id
 				 WHERE x.mailbox_user_id = ? AND x.thread_id = ?
@@ -185,8 +190,9 @@ export async function threadActivity(db: D1Database, userId: string, threadId: s
 			.all<ActionRow>(),
 		db
 			.prepare(
-				`SELECT n.id, n.kind, n.body, n.created_at, p.display_name AS agent_name, p.kind AS author_kind
+				`SELECT n.id, n.kind, n.body, n.created_at, ${named('p', 'a')} AS agent_name, p.kind AS author_kind
 				 FROM thread_notes n LEFT JOIN principals p ON p.id = n.author_principal_id
+				 LEFT JOIN agents a ON a.principal_id = n.author_principal_id
 				 WHERE n.mailbox_user_id = ? AND n.thread_id = ?
 				 ORDER BY n.created_at ASC
 				 LIMIT 100`

@@ -74,6 +74,27 @@ export async function verifyWebhookSignature(
 	return { ok: false, reason: 'No matching signature' };
 }
 
+/**
+ * Signs an outgoing webhook the same way (Standard Webhooks): the value for
+ * the `webhook-signature` header, `v1,<base64 HMAC-SHA256 of id.timestamp.body>`.
+ */
+export async function signWebhook(secret: string, id: string, timestamp: number, rawBody: string): Promise<string> {
+	const key = await crypto.subtle.importKey(
+		'raw',
+		base64ToBytes(secret.replace(/^whsec_/, '')) as BufferSource,
+		{ name: 'HMAC', hash: 'SHA-256' },
+		false,
+		['sign']
+	);
+	const digest = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`${id}.${timestamp}.${rawBody}`));
+	return `v1,${bytesToBase64(new Uint8Array(digest))}`;
+}
+
+/** A new signing secret in the usual `whsec_` form: 32 random bytes. */
+export function newWebhookSecret(): string {
+	return `whsec_${bytesToBase64(crypto.getRandomValues(new Uint8Array(32)))}`;
+}
+
 function timingSafeEqual(a: string, b: string): boolean {
 	if (a.length !== b.length) return false;
 	let mismatch = 0;

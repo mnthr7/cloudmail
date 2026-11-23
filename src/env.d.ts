@@ -1,4 +1,4 @@
-import type { D1Database, R2Bucket } from '@cloudflare/workers-types';
+import type { D1Database, KVNamespace, R2Bucket } from '@cloudflare/workers-types';
 import type { CloudflareSendEmailBinding } from '#lib/server/providers/cloudflare-provider.ts';
 
 declare global {
@@ -18,6 +18,8 @@ declare global {
 		PATH_REDIRECT_FROM?: string;
 		PATH_REDIRECT_TO?: string;
 		SETUP_TOKEN?: string;
+		/** Grants and tokens for external agents' OAuth (MCP). Without it, /mcp is off. */
+		OAUTH_KV?: KVNamespace;
 	}
 }
 

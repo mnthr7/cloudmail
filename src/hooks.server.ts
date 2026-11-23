@@ -12,6 +12,7 @@ import {
 	isDemoRequestAllowed
 } from '#lib/server/demo.ts';
 import { SKIN_COOKIE, isSkin, parseSkin } from '#lib/skin.ts';
+import { safeReturnPath } from '#lib/return-path.ts';
 
 // /api/calendar/feed: secret subscribe links, authenticated by the token in the path.
 // /book and /api/book: public booking pages, open to anyone with the link.
@@ -126,7 +127,7 @@ export const handle: Handle = async ({ event, resolve: resolvePage }) => {
 
 	if (pathname === '/login') {
 		if (event.locals.user) {
-			throw redirect(303, '/inbox');
+			throw redirect(303, safeReturnPath(event.url.searchParams.get('next')) ?? '/inbox');
 		}
 		return resolve(event);
 	}
@@ -136,7 +137,9 @@ export const handle: Handle = async ({ event, resolve: resolvePage }) => {
 	}
 
 	if (!event.locals.user) {
-		throw redirect(303, '/login');
+		// Connecting an agent (OAuth consent) comes back here once signed in.
+		const back = safeReturnPath(`${pathname}${event.url.search}`);
+		throw redirect(303, back ? `/login?next=${encodeURIComponent(back)}` : '/login');
 	}
 
 	// Nothing works until a provider domain is connected and the user owns an

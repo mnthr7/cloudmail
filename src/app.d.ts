@@ -1,4 +1,4 @@
-import type { D1Database, R2Bucket } from '@cloudflare/workers-types';
+import type { D1Database, KVNamespace, R2Bucket } from '@cloudflare/workers-types';
 import type { CloudflareSendEmailBinding } from '#lib/server/providers/cloudflare-provider.ts';
 import type { Domain, MailAddress, User } from '#lib/types.ts';
 
@@ -24,6 +24,9 @@ declare global {
 				AI_KEY_ENCRYPTION_KEY?: string;
 				/** When set, first-run setup asks for this value. */
 				SETUP_TOKEN?: string;
+				/** Grants and tokens for external agents' OAuth (MCP). Without it, /mcp is off. */
+				OAUTH_KV?: KVNamespace;
+				DEMO_MODE?: string;
 			};
 			/** For work that finishes after the response, like starting an agent run. */
 			ctx?: { waitUntil(promise: Promise<unknown>): void };

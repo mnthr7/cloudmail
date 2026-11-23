@@ -3,6 +3,7 @@ import { json, type RequestHandler } from '@sveltejs/kit';
 import { caller, failure, readBody } from '#lib/server/agents-http.ts';
 import { decideAction } from '#lib/server/agents-store.ts';
 import { executeAction } from '#lib/server/agent-executor.ts';
+import { emitActionDecided } from '#lib/server/agent-webhooks.ts';
 
 /**
  * Approve or decline a queued proposal. 409 if it was already decided or has
@@ -27,6 +28,8 @@ export const POST: RequestHandler = async ({ params, request, locals, platform }
 			note
 		});
 		const execution = status === 'approved' ? await executeAction(who.db, params.id ?? '', new Date(), { provider: inviteProvider(platform) }) : null;
+		// An external agent waiting on this hears the outcome (check_new_mail, its webhook).
+		await emitActionDecided(who.db, params.id ?? '').catch((error) => console.error('Failed to record action.decided', error));
 		return json({ status: execution?.status === 'executed' ? 'executed' : status, execution });
 	} catch (error) {
 		return failure(error);

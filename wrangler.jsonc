@@ -31,6 +31,16 @@
 		}
 	],
 
+	// External agents (Claude and other MCP clients) sign in with OAuth; its grants
+	// and tokens live here. Create one with `wrangler kv namespace create OAUTH_KV`.
+	// Leave this out to keep /mcp turned off.
+	"kv_namespaces": [
+		{
+			"binding": "OAUTH_KV",
+			"id": "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+		}
+	],
+
 	"r2_buckets": [
 		{
 			"binding": "ATTACHMENTS",

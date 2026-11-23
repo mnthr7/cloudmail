@@ -569,6 +569,77 @@
 	function when(iso: string | null): string {
 		return iso ? new Date(iso).toLocaleString() : '';
 	}
+
+	// External agents (Claude and other MCP clients).
+	const PAUSE_REASONS: Record<string, string> = {
+		too_many_rejections: 'CloudMail paused it: more than 10 of its requests were refused in an hour.',
+		webhooks_failing: 'CloudMail paused it: its webhook has been failing for a day.'
+	};
+	const AUDIT_LABELS: Record<string, string> = {
+		read: 'read',
+		executed: 'done',
+		queued: 'waiting for you',
+		shadowed: 'shadow mode',
+		rejected: 'refused',
+		error: 'failed',
+		rate_limited: 'over its rate limit',
+		refused: 'refused'
+	};
+	let webhookDrafts = $state<Record<string, string>>({});
+	let webhookSecret = $state<Record<string, string>>({});
+	let connectionError = $state<Record<string, string>>({});
+	let copied = $state('');
+
+	async function copy(text: string, what: string) {
+		try {
+			await navigator.clipboard.writeText(text);
+			copied = what;
+			setTimeout(() => (copied = copied === what ? '' : copied), 1500);
+		} catch {
+			copied = '';
+		}
+	}
+
+	async function connectionAction(agentId: string, connectionId: string, body: Record<string, unknown>) {
+		busy = `conn:${connectionId}`;
+		connectionError = { ...connectionError, [connectionId]: '' };
+		try {
+			const res = await fetch(`/api/agents/${agentId}/connection`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ connectionId, ...body })
+			});
+			const result = await res.json().catch(() => ({}));
+			if (!res.ok) {
+				const messages: Record<string, string> = {
+					not_https: 'Use an https:// address.',
+					not_public: 'Use a public address, not a local or private one.',
+					invalid: 'That isn’t a valid address.',
+					no_key: 'Webhooks need the encryption key set up first (AI_KEY_ENCRYPTION_KEY).'
+				};
+				connectionError = { ...connectionError, [connectionId]: messages[result.error] ?? 'Could not change that.' };
+				return null;
+			}
+			return result as { url?: string | null; secret?: string | null; status?: string };
+		} catch {
+			connectionError = { ...connectionError, [connectionId]: 'Network error' };
+			return null;
+		} finally {
+			busy = null;
+		}
+	}
+
+	async function revoke(agentId: string, connectionId: string, name: string) {
+		if (!confirm(`Disconnect ${name}? It stops working at once. Reconnecting it from its app brings it back.`)) return;
+		if (await connectionAction(agentId, connectionId, { action: 'revoke' })) window.location.reload();
+	}
+
+	async function saveWebhook(agentId: string, connectionId: string, url: string | null) {
+		const result = await connectionAction(agentId, connectionId, { action: 'webhook', url });
+		if (!result) return;
+		webhookSecret = { ...webhookSecret, [connectionId]: result.secret ?? '' };
+		if (!result.secret) window.location.reload();
+	}
 </script>
 
 <svelte:head>
@@ -671,6 +742,91 @@
 						</div>
 						<p class="job">{agent.definition.job}</p>
 						<p class="item-sub">{enabled(agent.definition)}</p>
+						{#if agent.pausedReason}
+							<p class="item-sub warn-line"><Icon name="error-warning-line" size={14} /> {PAUSE_REASONS[agent.pausedReason] ?? agent.pausedReason}</p>
+						{/if}
+						{#if agent.runtime === 'external'}
+							{@const detail = data.external[agent.id]}
+							{@const live = detail?.connections.find((connection) => connection.status === 'active')}
+							<p class="item-sub">
+								Reads mail to {(agent.definition.scope.read?.addresses ?? []).join(', ') || 'nothing'} ·
+								{live
+									? `Connected through ${live.clientName}${live.lastSeenAt ? `, last active ${when(live.lastSeenAt)}` : ', not used yet'}`
+									: 'Disconnected'}
+							</p>
+							{#if live && agent.canManage}
+								<details class="memory">
+									<summary>Connection and webhook</summary>
+									<p class="item-sub">
+										Events (new mail, your decisions, @mentions, timers) can also be sent to a URL your agent runs. Most
+										apps, like Claude, check with check_new_mail instead and don’t need this.
+									</p>
+									{#if !data.webhooksReady}
+										<p class="item-sub">Webhooks need the encryption key (AI_KEY_ENCRYPTION_KEY) set on this deploy.</p>
+									{:else}
+										<form
+											class="fact-form"
+											onsubmit={(event) => {
+												event.preventDefault();
+												saveWebhook(agent.id, live.id, webhookDrafts[live.id] ?? live.webhookUrl ?? '');
+											}}
+										>
+											<input
+												type="url"
+												placeholder="https://your-agent.example/cloudmail"
+												aria-label={`Webhook URL for ${agent.displayName}`}
+												value={webhookDrafts[live.id] ?? live.webhookUrl ?? ''}
+												oninput={(event) => (webhookDrafts = { ...webhookDrafts, [live.id]: event.currentTarget.value })}
+											/>
+											<button type="submit" class="btn-ghost text-xs" disabled={busy === `conn:${live.id}`}>
+												{live.webhookUrl ? 'Save and new secret' : 'Save'}
+											</button>
+											{#if live.webhookUrl}
+												<button type="button" class="btn-ghost text-xs" disabled={busy === `conn:${live.id}`} onclick={() => saveWebhook(agent.id, live.id, null)}>
+													Remove
+												</button>
+											{/if}
+										</form>
+										{#if webhookSecret[live.id]}
+											<p class="item-sub">
+												Signing secret, shown once. Give it to your agent to check the <code>webhook-signature</code> header (Standard Webhooks):
+											</p>
+											<p class="secret"><code>{webhookSecret[live.id]}</code>
+												<button type="button" class="btn-ghost text-xs" onclick={() => copy(webhookSecret[live.id], `secret:${live.id}`)}>
+													{copied === `secret:${live.id}` ? 'Copied' : 'Copy'}
+												</button>
+											</p>
+										{/if}
+										{#if live.deliveries.length}
+											<ul class="runs">
+												{#each live.deliveries as delivery (delivery.id)}
+													<li class="item-sub">
+														{delivery.type} · {delivery.status}{delivery.statusCode ? ` (${delivery.statusCode})` : ''}{delivery.lastError && delivery.status !== 'delivered' ? ` · ${delivery.lastError}` : ''} · {when(delivery.deliveredAt ?? delivery.createdAt)}
+													</li>
+												{/each}
+											</ul>
+										{/if}
+									{/if}
+									{#if connectionError[live.id]}<p class="error" role="alert">{connectionError[live.id]}</p>{/if}
+								</details>
+							{/if}
+							{#if agent.canManage}
+								<details class="memory">
+									<summary>Tool calls ({detail?.audit.length ?? 0}{(detail?.audit.length ?? 0) >= 50 ? '+' : ''})</summary>
+									{#if !detail?.audit.length}
+										<p class="item-sub">Nothing yet. Every call {agent.displayName} makes shows here, allowed or not.</p>
+									{:else}
+										<ul class="runs">
+											{#each detail.audit as call (call.id)}
+												<li class="item-sub">
+													<code>{call.tool}</code> · {AUDIT_LABELS[call.decision] ?? call.decision}{call.reason ? ` (${call.reason})` : ''} · {when(call.createdAt)}
+												</li>
+											{/each}
+										</ul>
+									{/if}
+								</details>
+							{/if}
+						{:else}
 						<p class="item-sub">
 							{agent.definition.triggers.watch.length
 								? agent.definition.triggers.teamOnly
@@ -680,6 +836,7 @@
 								data.spend[agent.id] ?? 0
 							)} of {dollars(agent.definition.monthlyBudgetCents * 10_000)} this month
 						</p>
+						{/if}
 						{#if suggestionLine(agent.id)}
 							<p class="item-sub">{suggestionLine(agent.id)}</p>
 						{/if}
@@ -694,6 +851,7 @@
 								</button>
 							</div>
 						{/each}
+						{#if agent.runtime !== 'external'}
 						<details class="memory">
 							<summary>
 								Remembers {(data.memory[agent.id] ?? []).length}
@@ -760,6 +918,7 @@
 								{/if}
 							{/if}
 						</details>
+						{/if}
 						<div class="item-actions">
 							{#if agent.canManage}
 								<button type="button" class="btn-ghost text-xs" onclick={() => openEdit(agent.id)}>
@@ -802,6 +961,19 @@
 								>
 									<Icon name="pause-line" size={14} /> Pause
 								</button>
+							{/if}
+							{#if agent.runtime === 'external'}
+								{@const live = data.external[agent.id]?.connections.find((connection) => connection.status === 'active')}
+								{#if live}
+									<button
+										type="button"
+										class="btn-ghost text-xs"
+										disabled={busy === `conn:${live.id}`}
+										onclick={() => revoke(agent.id, live.id, agent.displayName)}
+									>
+										<Icon name="link-unlink" size={14} /> Disconnect
+									</button>
+								{/if}
 							{/if}
 						</div>
 						{/if}
@@ -1006,6 +1178,39 @@
 						</div>
 					{/if}
 				</form>
+			{/if}
+		</Section>
+	{/if}
+
+	{#if !data.demo}
+		<Section id="connect" title="Connect your own agent" icon="plug-line" open={!data.agents.some((agent) => agent.runtime === 'external')}>
+			{#if !data.mcpUrl}
+				<p class="card-hint">
+					Agents like Claude can work in your mail once an admin adds the OAUTH_KV storage binding to this deploy.
+				</p>
+			{:else}
+				<p class="card-hint">
+					Use Claude, or any app that speaks MCP, as staff here. It gets the same limits as the agents above: it
+					starts in shadow mode, you choose what it may read and do, and you can pause or disconnect it any time.
+				</p>
+				<div class="sam-card">
+					<p class="item-title"><Icon name="terminal-box-line" size={16} /> Claude Code</p>
+					<p class="secret"><code>claude mcp add --transport http cloudmail {data.mcpUrl}</code>
+						<button type="button" class="btn-ghost text-xs" onclick={() => copy(`claude mcp add --transport http cloudmail ${data.mcpUrl}`, 'cmd')}>
+							{copied === 'cmd' ? 'Copied' : 'Copy'}
+						</button>
+					</p>
+					<p class="item-sub">Then run /mcp in Claude Code and pick cloudmail to sign in.</p>
+				</div>
+				<div class="sam-card">
+					<p class="item-title"><Icon name="chat-smile-2-line" size={16} /> Claude apps and other MCP clients</p>
+					<p class="secret"><code>{data.mcpUrl}</code>
+						<button type="button" class="btn-ghost text-xs" onclick={() => copy(data.mcpUrl ?? '', 'url')}>
+							{copied === 'url' ? 'Copied' : 'Copy'}
+						</button>
+					</p>
+					<p class="item-sub">Add it as a custom connector (in Claude: Settings, Connectors). You’ll sign in here and choose its limits.</p>
+				</div>
 			{/if}
 		</Section>
 	{/if}
@@ -1238,6 +1443,28 @@
 		font-size: 0.8125rem;
 		line-height: 1.45;
 		color: var(--color-text-secondary);
+	}
+
+	.secret {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.5rem;
+		margin: 0;
+	}
+
+	.secret code {
+		overflow-wrap: anywhere;
+		font-size: 0.8125rem;
+		padding: 0.25rem 0.5rem;
+		border-radius: 0.375rem;
+		background: var(--color-surface-2, rgba(127, 127, 127, 0.12));
+	}
+
+	.warn-line {
+		display: flex;
+		align-items: center;
+		gap: 0.375rem;
 	}
 
 	.sam-card {

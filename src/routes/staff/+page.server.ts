@@ -24,8 +24,21 @@ import { memoryByAgent, type MemoryFact } from '#lib/server/agent-memory-store.t
 import { SPECIALIST_AFTER } from '#lib/agents/sam.ts';
 import { listBookingPages } from '#lib/server/booking-store.ts';
 import { listOpenChecks, type OpenCheck } from '#lib/server/no-show.ts';
+import {
+	connectionsForAgent,
+	recentToolCalls,
+	type AgentConnection,
+	type AuditRow
+} from '#lib/server/external-agents-store.ts';
+import { recentDeliveries, type DeliveryLogRow } from '#lib/server/agent-webhooks.ts';
 
-export const load: PageServerLoad = async ({ locals, platform }) => {
+/** What the Staff page shows for an external agent: how it connects and what it called. */
+export type ExternalDetail = {
+	connections: Array<AgentConnection & { deliveries: DeliveryLogRow[] }>;
+	audit: AuditRow[];
+};
+
+export const load: PageServerLoad = async ({ locals, platform, url }) => {
 	const empty: {
 		agents: AgentSummary[];
 		queue: QueuedAction[];
@@ -50,8 +63,17 @@ export const load: PageServerLoad = async ({ locals, platform }) => {
 		patterns: TaskPattern[];
 		/** Booking pages Ava could run. */
 		bookingPages: Array<{ id: string; title: string; slug: string; sendFrom: string | null }>;
+		/** Connections, deliveries and tool calls of each external agent. */
+		external: Record<string, ExternalDetail>;
+		/** Where MCP clients connect, or null when agents can't connect here (no OAUTH_KV). */
+		mcpUrl: string | null;
+		/** Webhook secrets need the encryption key. */
+		webhooksReady: boolean;
 		demo: boolean;
 	} = {
+		external: {},
+		mcpUrl: null,
+		webhooksReady: false,
 		bookingPages: [],
 		memory: {},
 		patterns: [],
@@ -101,6 +123,16 @@ export const load: PageServerLoad = async ({ locals, platform }) => {
 		slug: page.slug,
 		sendFrom: page.sendFrom
 	}));
+	const external: Record<string, ExternalDetail> = {};
+	for (const agent of agents.filter((item) => item.runtime === 'external')) {
+		const connections = await connectionsForAgent(db, agent.id).catch(() => []);
+		external[agent.id] = {
+			connections: await Promise.all(
+				connections.map(async (connection) => ({ ...connection, deliveries: await recentDeliveries(db, connection.id, 10).catch(() => []) }))
+			),
+			audit: agent.canManage ? await recentToolCalls(db, agent.id, 50).catch(() => []) : []
+		};
+	}
 	const key = providers.find((row) => row.provider === 'anthropic');
 	const aiKey: 'ready' | 'missing' | 'rejected' =
 		!key || !platform?.env.AI_KEY_ENCRYPTION_KEY ? 'missing' : key.rejectedAt ? 'rejected' : 'ready';
@@ -120,6 +152,9 @@ export const load: PageServerLoad = async ({ locals, platform }) => {
 		patterns,
 		suggestions,
 		bookingPages,
+		external,
+		mcpUrl: (platform?.env as Env | undefined)?.OAUTH_KV ? `${url.origin}/mcp` : null,
+		webhooksReady: !!platform?.env.AI_KEY_ENCRYPTION_KEY,
 		demo: false
 	};
 };

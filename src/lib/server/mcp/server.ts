@@ -14,6 +14,7 @@ import {
 } from '../external-agents-store.ts';
 import type { User } from '#lib/types.ts';
 import { callTool, toolsFor, type ToolResult } from './tools.ts';
+import { notifyAgentPaused } from '../agent-notices.ts';
 
 /**
  * The /mcp endpoint (docs/specs/external-agents.md, X3), stateless: a fresh
@@ -126,6 +127,7 @@ export async function runTool(
 	if (result.outcome.decision === 'rejected' && result.outcome.actionId) {
 		const paused = await maybeAutoPause(deps.db, session.agent.id, now);
 		if (paused) {
+			await notifyAgentPaused(deps.db, deps.provider, session.agent.id, paused);
 			result.body.agent_paused = true;
 			result.body.message = `${String(result.body.message ?? '')} You have been paused after too many refused requests; the founder has to resume you.`.trim();
 		}

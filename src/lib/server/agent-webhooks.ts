@@ -9,6 +9,8 @@ import {
 	ConnectionNotAllowedError
 } from './external-agents-store.ts';
 import { getAgent, humanPrincipalForUser } from './agents-store.ts';
+import { notifyAgentPaused } from './agent-notices.ts';
+import type { EmailProvider } from './email-provider.ts';
 
 /**
  * Webhooks to external agents (docs/specs/external-agents.md, X4). Each event
@@ -173,7 +175,9 @@ export async function deliverWebhooks(
 	masterKey: CryptoKey | null,
 	fetcher: Fetcher,
 	now = new Date(),
-	limit = 20
+	limit = 20,
+	/** Sends the owner a notice when failing webhooks pause an agent. */
+	provider: EmailProvider | null = null
 ): Promise<{ delivered: number; failed: number; dead: number }> {
 	const at = now.toISOString();
 	const { results } = await db
@@ -202,7 +206,7 @@ export async function deliverWebhooks(
 			.bind(id)
 			.first<DueDelivery>();
 		if (!row) continue;
-		const outcome = await deliverOne(db, masterKey, fetcher, row, now);
+		const outcome = await deliverOne(db, masterKey, fetcher, row, now, provider);
 		tally[outcome]++;
 	}
 	return tally;
@@ -213,7 +217,8 @@ async function deliverOne(
 	masterKey: CryptoKey | null,
 	fetcher: Fetcher,
 	row: DueDelivery,
-	now: Date
+	now: Date,
+	provider: EmailProvider | null
 ): Promise<'delivered' | 'failed' | 'dead'> {
 	const attempt = row.attempt + 1;
 	const markDead = async (error: string, statusCode: number | null) => {
@@ -278,7 +283,9 @@ async function deliverOne(
 
 	if (now.getTime() - Date.parse(row.event_created_at) >= DELIVERY_WINDOW_MS) {
 		const dead = await markDead(error, statusCode);
-		await pauseIfFailingForADay(db, row.connection_id, row.agent_principal_id, now);
+		if (await pauseIfFailingForADay(db, row.connection_id, row.agent_principal_id, now)) {
+			await notifyAgentPaused(db, provider, row.agent_principal_id, 'webhooks_failing');
+		}
 		return dead;
 	}
 	await db
@@ -291,13 +298,13 @@ async function deliverOne(
 }
 
 /** Nothing delivered to this webhook in the last 24 hours, only failures: pause the agent. */
-async function pauseIfFailingForADay(db: D1Database, connectionId: string, agentId: string, now: Date): Promise<void> {
+async function pauseIfFailingForADay(db: D1Database, connectionId: string, agentId: string, now: Date): Promise<boolean> {
 	const dayAgo = new Date(now.getTime() - DELIVERY_WINDOW_MS).toISOString();
 	const delivered = await db
 		.prepare(`SELECT 1 AS ok FROM webhook_deliveries WHERE connection_id = ? AND status = 'delivered' AND delivered_at >= ? LIMIT 1`)
 		.bind(connectionId, dayAgo)
 		.first<{ ok: number }>();
-	if (!delivered) await pauseForFailingWebhooks(db, agentId);
+	return !delivered && (await pauseForFailingWebhooks(db, agentId));
 }
 
 export type DeliveryLogRow = {

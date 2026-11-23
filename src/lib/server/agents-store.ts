@@ -6,6 +6,7 @@ import {
 	type AgentDefinition
 } from '#lib/agents/definition.ts';
 import type { Capability } from '#lib/agents/capabilities.ts';
+import { emitEvent } from './agent-events.ts';
 import {
 	authorize,
 	type AgentRuntime,
@@ -603,14 +604,30 @@ export async function decideAction(
 
 /** Queued proposals past their expiry are never sent late (story 16). Returns how many expired. */
 export async function expireActions(db: D1Database, now = new Date()): Promise<number> {
-	const result = await db
+	const { results } = await db
 		.prepare(
 			`UPDATE agent_actions SET status = 'expired', decided_at = ?
-			 WHERE status = 'queued' AND expires_at IS NOT NULL AND expires_at <= ?`
+			 WHERE status = 'queued' AND expires_at IS NOT NULL AND expires_at <= ?
+			 RETURNING id, agent_principal_id, thread_id`
 		)
 		.bind(now.toISOString(), now.toISOString())
-		.run();
-	return result.meta.changes ?? 0;
+		.all<{ id: string; agent_principal_id: string; thread_id: string | null }>();
+	// An external agent waiting on one hears it ran out (action.decided; get_action says expired).
+	if (results.length) {
+		const { results: external } = await db
+			.prepare(
+				`SELECT principal_id FROM agents WHERE runtime = 'external'
+				 AND principal_id IN (SELECT value FROM json_each(?))`
+			)
+			.bind(JSON.stringify([...new Set(results.map((row) => row.agent_principal_id))]))
+			.all<{ principal_id: string }>();
+		const externalIds = new Set(external.map((row) => row.principal_id));
+		for (const row of results) {
+			if (!externalIds.has(row.agent_principal_id)) continue;
+			await emitEvent(db, { agentId: row.agent_principal_id, type: 'action.decided', threadId: row.thread_id, actionId: row.id }, now);
+		}
+	}
+	return results.length;
 }
 
 /** The effect happened. Only allowed actions can be marked, and only once. */

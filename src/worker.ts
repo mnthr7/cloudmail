@@ -219,7 +219,7 @@ async function runAgents(env: Env): Promise<void> {
 /** Webhooks to external agents. Their signing secrets are sealed with the same key as AI keys. */
 async function deliverAgentWebhooks(env: Env): Promise<void> {
 	const key = env.AI_KEY_ENCRYPTION_KEY ? await importMasterKey(env.AI_KEY_ENCRYPTION_KEY) : null;
-	await deliverWebhooks(env.DB, key, (url, init) => fetch(url, init));
+	await deliverWebhooks(env.DB, key, (url, init) => fetch(url, init), new Date(), 20, providerOrNull(env));
 }
 
 async function scanDueAttachments(env: Env): Promise<void> {

@@ -105,6 +105,9 @@ function rejected(reason: string, detail: string): ToolResult {
 	return { body: { status: 'rejected', reason, message: detail }, outcome: { decision: 'rejected', reason } };
 }
 
+/** How long a request waits for the founder's approval before it expires. */
+export const QUEUE_DAYS = 7;
+
 const SHADOW_DESCRIPTIONS: Partial<Record<Capability, string>> = {
 	write_note: 'left a note on the thread',
 	draft_reply: 'saved a draft reply',
@@ -139,7 +142,9 @@ async function propose(
 			reason: input.reason?.slice(0, 2000),
 			threadParticipants: input.participants ?? [],
 			threadTakenOver: takenOver,
-			mailboxUserId: ctx.mailbox.id
+			mailboxUserId: ctx.mailbox.id,
+			// Waiting for approval doesn't last forever; the agent hears when it runs out.
+			expiresAt: new Date(ctx.now.getTime() + QUEUE_DAYS * 86_400_000)
 		},
 		ctx.now
 	);
@@ -179,6 +184,7 @@ async function describeDecision(
 					status: 'queued',
 					action_id: actionId,
 					reason: decision.reason,
+					expires_at: new Date(ctx.now.getTime() + QUEUE_DAYS * 86_400_000).toISOString(),
 					message:
 						decision.reason === 'external_track_record'
 							? `Waiting for ${ctx.mailbox.name}'s approval: external agents need 20 approvals before this can run on its own. Check back with get_action.`

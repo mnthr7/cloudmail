@@ -4,7 +4,7 @@ import type { D1Database } from '@cloudflare/workers-types';
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { AgentDefinition } from '../src/lib/agents/definition';
-import { decideAction, proposeAction, setAgentStatus, updateAgentDefinition } from '../src/lib/server/agents-store';
+import { decideAction, getAgent, proposeAction, setAgentAiFooter, setAgentStatus, updateAgentDefinition } from '../src/lib/server/agents-store';
 import { disclosureFooter, executeAction, fireDueTimers } from '../src/lib/server/agent-executor';
 import { DEFAULT_HOURS } from '../src/lib/calendar/availability';
 import { ensureCalendars } from '../src/lib/server/calendar-store';
@@ -159,6 +159,25 @@ describe('new email (send_email)', () => {
 		expect(sent.to_addr).toBe('lee@vc.com');
 		expect(sent.subject).toBe('Intro');
 		expect(sent.body_text).toContain(disclosureFooter('Research', 'Sada'));
+	});
+
+	test('with the AI footer turned off, the new email goes out without it', async () => {
+		const w = await open();
+		await widen(w, (definition) => {
+			definition.scope.recipients = { kind: 'domains', domains: ['vc.com'] };
+		});
+		await setAgentAiFooter(w.db, { agentId: w.agent.id, byUserId: 'u1', on: false });
+		const { result } = await proposeAndRun(w, {
+			proposal: { capability: 'send_email', fromAddress: 'sada@acme.com', recipients: ['lee@vc.com'] },
+			payload: { to: ['lee@vc.com'], subject: 'Intro', body: 'Hi Lee, following up on our chat.' }
+		});
+		expect(result.status).toBe('executed');
+		const sent = w.sqlite
+			.query(`SELECT body_text FROM emails WHERE id = ?`)
+			.get((result as { ref: string }).ref) as Record<string, string>;
+		expect(sent.body_text).toBe('Hi Lee, following up on our chat.');
+		expect(sent.body_text).not.toContain('AI assistant');
+		expect(await getAgent(w.db, w.agent.id)).toMatchObject({ aiFooter: false });
 	});
 
 	test('to someone outside its scope, it is refused before anything is queued', async () => {

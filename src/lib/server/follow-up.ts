@@ -7,7 +7,7 @@ import type { MessagesClient } from './agent-runner.ts';
 import type { AgentRecord } from './agents-store.ts';
 import { proposeAction } from './agents-store.ts';
 import { spentThisMonth } from './agent-runs-store.ts';
-import { disclosureFooter } from './agent-executor.ts';
+import { signBody } from './agent-executor.ts';
 import { senderVerified } from './booking-manage.ts';
 import { formatWhen } from './booking-store.ts';
 import { stripHtml } from './html.ts';
@@ -274,7 +274,7 @@ async function draftOne(
 
 	// No thread with the guest to reply on, or replies are off: a draft in your Drafts, to them.
 	const owner = await db.prepare(`SELECT name FROM users WHERE id = ?`).bind(row.user_id).first<{ name: string | null }>();
-	const signed = `${body}\n\n${disclosureFooter(agent.displayName, owner?.name?.trim() || pageAddress)}`;
+	const signed = signBody(body, agent.displayName, owner?.name?.trim() || pageAddress, agent.aiFooter);
 	const draftId = await saveDraft(db, row.user_id, {
 		from: pageAddress,
 		to: guest,

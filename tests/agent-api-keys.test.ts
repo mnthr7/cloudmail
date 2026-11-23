@@ -14,6 +14,7 @@ import {
 } from '../src/lib/server/external-agents-store';
 import { handleMcpRequest } from '../src/lib/server/mcp/server';
 import { POST as hireWithKey } from '../src/routes/api/agents/external/+server';
+import { getAgent, setAgentTrustedToSend } from '../src/lib/server/agents-store';
 
 /** API keys for agents that can't sign in through a browser (external-agents.md, X9). */
 
@@ -144,6 +145,31 @@ describe('hiring an agent with a key from the Staff page', () => {
 		const body = (await response.json()) as { agentId: string; key: string };
 		expect(isApiKey(body.key)).toBe(true);
 		expect((await connectionForApiKey(db, body.key))?.agentId).toBe(body.agentId);
+	});
+
+	test('the owner can skip shadow mode and the 20-approval wait when hiring', async () => {
+		const { db } = open();
+		const plain = (await (await hireWithKey(event(db, { name: 'Grok', readAddresses: ['sada@acme.com'] }))).json()) as {
+			agentId: string;
+		};
+		expect(await getAgent(db, plain.agentId)).toMatchObject({ status: 'shadow', trustedToSend: false });
+
+		const response = await hireWithKey(
+			event(db, { name: 'Mailer', readAddresses: ['sada@acme.com'], startActive: true, trustedToSend: true })
+		);
+		expect(response.status).toBe(201);
+		const { agentId } = (await response.json()) as { agentId: string };
+		expect(await getAgent(db, agentId)).toMatchObject({ status: 'active', trustedToSend: true });
+	});
+
+	test('only the owner or an admin can waive the track record later', async () => {
+		const { db } = open();
+		const { agentId } = (await (await hireWithKey(event(db, { name: 'Grok', readAddresses: ['sada@acme.com'] }))).json()) as {
+			agentId: string;
+		};
+		await expect(setAgentTrustedToSend(db, { agentId, byUserId: 'u2', trusted: true })).rejects.toThrow();
+		await setAgentTrustedToSend(db, { agentId, byUserId: 'u1', trusted: true });
+		expect((await getAgent(db, agentId))?.trustedToSend).toBe(true);
 	});
 
 	test('refuses addresses that aren’t yours, or no read scope', async () => {

@@ -204,6 +204,14 @@ describe('authorize: external agents', () => {
 		expect(authorize(reply, context({ runtime: 'external', humanApprovals: 20 })).outcome).toBe('execute');
 	});
 
+	test('an owner can waive the 20-approval track record', () => {
+		expect(authorize(reply, context({ runtime: 'external', humanApprovals: 0, trustedToSend: true })).outcome).toBe('execute');
+	});
+
+	test('waiving the track record does not get past shadow mode', () => {
+		expect(authorize(reply, context({ runtime: 'external', status: 'shadow', trustedToSend: true })).outcome).toBe('shadow');
+	});
+
 	test('internal-only capabilities run on auto straight away', () => {
 		expect(authorize({ capability: 'draft_reply' }, context({ runtime: 'external' })).outcome).toBe('execute');
 	});

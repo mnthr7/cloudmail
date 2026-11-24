@@ -188,7 +188,10 @@ describe('reading stays inside the read scope, and mail comes back untrusted', (
 		const { body } = await call(w, 'get_thread', { thread_id: thread });
 		const [received, reply] = body.messages as Array<Record<string, unknown>>;
 		expect(received.delivery).toBeUndefined();
-		expect(reply.delivery).toEqual({ status: 'bounced', detail: 'Mailbox does not exist' });
+		expect(reply.delivery).toEqual({
+			status: 'bounced',
+			detail: { untrusted: true, source: 'delivery_report', from: null, text: 'Mailbox does not exist' }
+		});
 	});
 });
 

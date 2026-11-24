@@ -237,10 +237,12 @@ export function marketingParts(origin: string, token: string, domain: string, te
 		'List-Unsubscribe': `<${oneClickUrl(origin, token)}>`,
 		'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click'
 	};
-	const textFooter = `\n\n--\nYou're getting this because you're on the ${domain} mailing list.\nUnsubscribe: ${page}`;
+	// Worded to be true for a newsletter and for a first email to a business alike:
+	// it claims no sign-up the recipient may never have made.
+	const textFooter = `\n\n--\nDon't want emails like this from ${domain}? Unsubscribe: ${page}`;
 	const htmlFooter =
 		`<p style="margin:32px 0 0;padding-top:12px;border-top:1px solid #e5e5e5;font-size:12px;line-height:1.5;color:#6b6b6b;">` +
-		`You're getting this because you're on the ${escapeHtml(domain)} mailing list. ` +
+		`Don't want emails like this from ${escapeHtml(domain)}? ` +
 		`<a href="${escapeHtml(page)}" style="color:#6b6b6b;text-decoration:underline;">Unsubscribe</a></p>`;
 	return {
 		headers,

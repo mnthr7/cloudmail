@@ -139,7 +139,10 @@ describe('marketing delivery', () => {
 		expect(message.headers?.['List-Unsubscribe-Post']).toBe('List-Unsubscribe=One-Click');
 		expect(message.text).toContain(`Unsubscribe: ${ORIGIN}/unsubscribe/${token}`);
 		expect(message.html).toContain(`href="${ORIGIN}/unsubscribe/${token}"`);
-		expect(message.html).toContain('mail.rititech.app mailing list');
+		expect(message.html).toContain("Don't want emails like this from mail.rititech.app?");
+		expect(message.text).toContain("Don't want emails like this from mail.rititech.app? Unsubscribe:");
+		// No claim of a sign-up: true for a newsletter and for a first email to a business.
+		expect(`${message.text}${message.html}`).not.toContain('mailing list');
 	});
 
 	test('ordinary mail carries no unsubscribe header or footer', async () => {

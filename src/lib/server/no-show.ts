@@ -2,7 +2,7 @@ import type { D1Database } from '@cloudflare/workers-types';
 import type { Slot } from '#lib/calendar/availability.ts';
 import { textToHtml } from '#lib/agents/suggestions.ts';
 import { proposeAction, type AgentRecord } from './agents-store.ts';
-import { disclosureFooter } from './agent-executor.ts';
+import { signBody } from './agent-executor.ts';
 import { pageBySlug, slotsFor } from './booking-store.ts';
 import { guestThreads } from './follow-up.ts';
 import { saveDraft } from './mail-store.ts';
@@ -353,7 +353,7 @@ async function queueSorry(db: D1Database, row: CheckRow, now: Date): Promise<{ k
 		if (result.decision.outcome === 'queue') return { kind: 'queued', ref: result.actionId };
 	}
 	// No thread with the guest to reply on, or replies are off: a draft in the host's Drafts.
-	const signed = `${body}\n\n${disclosureFooter(agent.displayName, row.host_name?.trim() || pageAddress)}`;
+	const signed = signBody(body, agent.displayName, row.host_name?.trim() || pageAddress, agent.aiFooter);
 	const draftId = await saveDraft(db, row.mailbox_user_id, {
 		from: pageAddress,
 		to: guest,

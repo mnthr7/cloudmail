@@ -364,6 +364,34 @@
 		}
 	}
 
+	async function setAiFooter(id: string, name: string, on: boolean) {
+		if (
+			!on &&
+			!confirm(
+				`Stop adding "${name} is an AI assistant working with you" to the mail ${name} sends? Recipients won't be told an AI wrote it.`
+			)
+		)
+			return;
+		listError = '';
+		busy = `footer:${id}`;
+		try {
+			const res = await fetch(`/api/agents/${id}`, {
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ aiFooter: on })
+			});
+			if (!res.ok) {
+				listError = res.status === 403 ? 'Only its owner or an admin can do that.' : 'Could not change that agent.';
+				return;
+			}
+			window.location.reload();
+		} catch {
+			listError = 'Network error';
+		} finally {
+			busy = null;
+		}
+	}
+
 	async function setTrusted(id: string, name: string, trusted: boolean) {
 		if (
 			trusted &&
@@ -861,6 +889,9 @@
 							{#if agent.trustedToSend}
 								<p class="item-sub">Sends on its own without the 20-approval wait.</p>
 							{/if}
+							{#if !agent.aiFooter}
+								<p class="item-sub">Sends without the AI-assistant footer.</p>
+							{/if}
 							{#if newKey?.agentId === agent.id}
 								{@render keyReveal(newKey.key)}
 							{/if}
@@ -1070,6 +1101,16 @@
 									onclick={() => setStatus(agent.id, 'paused')}
 								>
 									<Icon name="pause-line" size={14} /> Pause
+								</button>
+							{/if}
+							{#if agent.canManage}
+								<button
+									type="button"
+									class="btn-ghost text-xs"
+									disabled={busy === `footer:${agent.id}`}
+									onclick={() => setAiFooter(agent.id, agent.displayName, !agent.aiFooter)}
+								>
+									{agent.aiFooter ? 'Hide AI footer' : 'Show AI footer'}
 								</button>
 							{/if}
 							{#if agent.runtime === 'external' && agent.canManage}

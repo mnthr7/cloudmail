@@ -69,6 +69,8 @@ type ClaimedAction = {
 	agent_name: string;
 	agent_status: string;
 	agent_runtime: string;
+	/** 0 when the owner turned off the AI-assistant footer. */
+	agent_ai_footer: number | null;
 	/** What woke the agent up: 'ask' means the owner asked for this. */
 	trigger_kind: string | null;
 	/** The mail that started the run. */
@@ -98,9 +100,14 @@ export function handOffNote(senderName: string | null | undefined, founderName: 
 	return `${greeting}\n\nI'm looping in ${founder}, who'll pick this up from here and get back to you.\n\n${agentName}`;
 }
 
-/** The footer every agent-sent email carries (A12). */
+/** The footer agent-sent email carries (A12), unless the owner turned it off. */
 export function disclosureFooter(agentName: string, founderName: string): string {
 	return `—\n${agentName} is an AI assistant working with ${founderName}.`;
+}
+
+/** The body as sent: with the disclosure footer when the agent's setting has it on. */
+export function signBody(body: string, agentName: string, founderName: string, aiFooter: boolean): string {
+	return aiFooter ? `${body}\n\n${disclosureFooter(agentName, founderName)}` : body;
 }
 
 /**
@@ -133,7 +140,7 @@ export async function executeAction(
 		.prepare(
 			`SELECT x.id, x.workspace_id, x.agent_principal_id, x.status, x.capability, x.thread_id, x.payload_json,
 			        x.authorized_json, x.mailbox_user_id, x.decided_by_principal_id,
-			        p.display_name AS agent_name, a.status AS agent_status, a.runtime AS agent_runtime, r.trigger_kind, r.email_id AS trigger_email_id,
+			        p.display_name AS agent_name, a.status AS agent_status, a.runtime AS agent_runtime, a.ai_footer AS agent_ai_footer, r.trigger_kind, r.email_id AS trigger_email_id,
 			        CASE WHEN asker.id IS NULL THEN NULL ELSE coalesce(asker.display_name, 'a teammate') END AS asked_by_name
 			 FROM agent_actions x
 			 JOIN principals p ON p.id = x.agent_principal_id
@@ -313,7 +320,7 @@ async function carryOut(db: D1Database, action: ClaimedAction, now: Date, deps: 
 			await loopGuard(db, action, [...to, ...cc], thread.length ? thread : [email], now);
 			await assertNoLeak(db, action, body);
 
-			const text = `${body}\n\n${disclosureFooter(action.agent_name, user.name)}`;
+			const text = signBody(body, action.agent_name, user.name, action.agent_ai_footer !== 0);
 			const queued = await queueOutbound(db, user, {
 				fromAddress: authorized.from,
 				receivedAt: threadReceivedAtAddresses(thread.length ? thread : [email]),
@@ -346,7 +353,7 @@ async function carryOut(db: D1Database, action: ClaimedAction, now: Date, deps: 
 			const verified = senderVerified((email as typeof email & { security_json?: string | null }).security_json ?? null, email.from_addr);
 			if (authorized?.from && to.length && verified) {
 				await loopGuard(db, action, [...to, ...cc], thread.length ? thread : [email], now);
-				const text = `${handOffNote(email.from_name, user.name, action.agent_name)}\n\n${disclosureFooter(action.agent_name, user.name)}`;
+				const text = signBody(handOffNote(email.from_name, user.name, action.agent_name), action.agent_name, user.name, action.agent_ai_footer !== 0);
 				const queued = await queueOutbound(db, user, {
 					fromAddress: authorized.from,
 					receivedAt: threadReceivedAtAddresses(thread.length ? thread : [email]),
@@ -538,7 +545,7 @@ async function sendNewEmail(db: D1Database, action: ClaimedAction, now: Date): P
 
 	await loopGuard(db, action, [...to, ...cc], [], now);
 	await assertNoLeak(db, action, body);
-	const text = `${body}\n\n${disclosureFooter(action.agent_name, user.name)}`;
+	const text = signBody(body, action.agent_name, user.name, action.agent_ai_footer !== 0);
 	const queued = await queueOutbound(db, user, {
 		fromAddress: authorized.from,
 		to: to.join(', '),

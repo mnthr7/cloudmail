@@ -33,6 +33,8 @@ export type AgentRecord = {
 	trustedToSend: boolean;
 	/** Signs the mail it sends with the "is an AI assistant" line (on unless the owner turned it off). */
 	aiFooter: boolean;
+	/** Emails agents may send one person in 24 hours before this agent stops; 0 means no limit. */
+	maxSendsPerRecipient: number;
 	version: { id: string; number: number; definition: AgentDefinition; createdByPrincipalId: string | null };
 };
 
@@ -230,6 +232,7 @@ type AgentRow = {
 	shadow_remaining: number;
 	trusted_to_send: number | null;
 	ai_footer: number | null;
+	max_sends_per_recipient: number | null;
 	version_id: string;
 	version_created_by: string | null;
 	version: number;
@@ -240,7 +243,7 @@ export async function getAgent(db: D1Database, agentId: string): Promise<AgentRe
 	const row = await db
 		.prepare(
 			`SELECT p.id, p.workspace_id, p.display_name, p.owner_principal_id,
-			        a.status, a.runtime, a.shadow_remaining, a.trusted_to_send, a.ai_footer,
+			        a.status, a.runtime, a.shadow_remaining, a.trusted_to_send, a.ai_footer, a.max_sends_per_recipient,
 			        v.id AS version_id, v.created_by_principal_id AS version_created_by, v.version, v.definition_json
 			 FROM principals p
 			 JOIN agents a ON a.principal_id = p.id
@@ -261,6 +264,7 @@ export async function getAgent(db: D1Database, agentId: string): Promise<AgentRe
 		shadowRemaining: row.shadow_remaining,
 		trustedToSend: row.trusted_to_send === 1,
 		aiFooter: row.ai_footer !== 0,
+		maxSendsPerRecipient: row.max_sends_per_recipient ?? 3,
 		version: {
 			id: row.version_id,
 			number: row.version,
@@ -364,6 +368,25 @@ export async function setAgentAiFooter(
 	await db
 		.prepare('UPDATE agents SET ai_footer = ? WHERE principal_id = ?')
 		.bind(input.on ? 1 : 0, agent.id)
+		.run();
+}
+
+/**
+ * How many emails agents may send one person in 24 hours before this agent
+ * stops (0 = no limit). Owner or admin only.
+ */
+export async function setAgentRecipientLimit(
+	db: D1Database,
+	input: { agentId: string; byUserId: string; limit: number }
+): Promise<void> {
+	if (!Number.isInteger(input.limit) || input.limit < 0 || input.limit > 1000) {
+		throw new Error('The per-person limit must be a whole number from 0 to 1000');
+	}
+	const { agent, human } = await requireAgentForUser(db, input.agentId, input.byUserId);
+	if (!canManage(agent, human)) throw new NotAllowedError();
+	await db
+		.prepare('UPDATE agents SET max_sends_per_recipient = ? WHERE principal_id = ?')
+		.bind(input.limit, agent.id)
 		.run();
 }
 
@@ -762,6 +785,7 @@ export type AgentSummary = {
 	shadowRemaining: number;
 	trustedToSend: boolean;
 	aiFooter: boolean;
+	maxSendsPerRecipient: number;
 	versionNumber: number;
 	definition: AgentDefinition;
 	queued: number;
@@ -778,7 +802,7 @@ export async function listAgents(db: D1Database, userId: string, now = new Date(
 	await expireActions(db, now);
 	const { results } = await db
 		.prepare(
-			`SELECT p.id, p.display_name, p.created_at, p.owner_principal_id, a.status, a.runtime, a.shadow_remaining, a.paused_reason, a.trusted_to_send, a.ai_footer,
+			`SELECT p.id, p.display_name, p.created_at, p.owner_principal_id, a.status, a.runtime, a.shadow_remaining, a.paused_reason, a.trusted_to_send, a.ai_footer, a.max_sends_per_recipient,
 			        v.version, v.definition_json,
 			        (SELECT COUNT(*) FROM agent_actions x
 			         WHERE x.agent_principal_id = p.id AND x.status = 'queued') AS queued
@@ -800,6 +824,7 @@ export async function listAgents(db: D1Database, userId: string, now = new Date(
 			paused_reason: string | null;
 			trusted_to_send: number | null;
 			ai_footer: number | null;
+			max_sends_per_recipient: number | null;
 			version: number;
 			definition_json: string;
 			queued: number;
@@ -813,6 +838,7 @@ export async function listAgents(db: D1Database, userId: string, now = new Date(
 		shadowRemaining: row.shadow_remaining,
 		trustedToSend: row.trusted_to_send === 1,
 		aiFooter: row.ai_footer !== 0,
+		maxSendsPerRecipient: row.max_sends_per_recipient ?? 3,
 		versionNumber: row.version,
 		definition: parseDefinition(JSON.parse(row.definition_json)),
 		queued: row.queued,

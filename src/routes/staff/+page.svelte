@@ -392,6 +392,35 @@
 		}
 	}
 
+	/** Choices for how many emails agents may send one person in 24 hours (0 = no limit). */
+	const RECIPIENT_LIMITS = [1, 2, 3, 5, 10, 20, 50, 100, 0];
+
+	async function setRecipientLimit(id: string, name: string, limit: number) {
+		if (
+			limit === 0 &&
+			!confirm(`Let ${name} keep emailing the same person with no daily cap? The loop guard won't stop it for repeat sends.`)
+		)
+			return window.location.reload();
+		listError = '';
+		busy = `limit:${id}`;
+		try {
+			const res = await fetch(`/api/agents/${id}`, {
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ maxSendsPerRecipient: limit })
+			});
+			if (!res.ok) {
+				listError = res.status === 403 ? 'Only its owner or an admin can do that.' : 'Could not change that agent.';
+				return;
+			}
+			window.location.reload();
+		} catch {
+			listError = 'Network error';
+		} finally {
+			busy = null;
+		}
+	}
+
 	async function setTrusted(id: string, name: string, trusted: boolean) {
 		if (
 			trusted &&
@@ -1112,6 +1141,20 @@
 								>
 									{agent.aiFooter ? 'Hide AI footer' : 'Show AI footer'}
 								</button>
+							{/if}
+							{#if agent.canManage}
+								<label class="limit-pick text-xs" title="Emails agents may send one person in 24 hours before {agent.displayName} stops">
+									Per person a day
+									<select
+										value={agent.maxSendsPerRecipient}
+										disabled={busy === `limit:${agent.id}`}
+										onchange={(event) => setRecipientLimit(agent.id, agent.displayName, Number(event.currentTarget.value))}
+									>
+										{#each RECIPIENT_LIMITS.includes(agent.maxSendsPerRecipient) ? RECIPIENT_LIMITS : [...RECIPIENT_LIMITS, agent.maxSendsPerRecipient] as option (option)}
+											<option value={option}>{option === 0 ? 'No limit' : option}</option>
+										{/each}
+									</select>
+								</label>
 							{/if}
 							{#if agent.runtime === 'external' && agent.canManage}
 								{@const hasKey = !!data.external[agent.id]?.connections.some((connection) => connection.auth === 'api_key' && connection.status === 'active')}
@@ -2128,5 +2171,16 @@
 	.chip-warn {
 		color: var(--color-text-secondary);
 		box-shadow: 0 0 0 1px var(--tone-notice-line);
+	}
+	.limit-pick {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		color: var(--color-muted);
+	}
+
+	.limit-pick select {
+		font-size: inherit;
+		padding: 2px 4px;
 	}
 </style>

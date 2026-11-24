@@ -37,8 +37,13 @@ import type { EmailProvider } from './email-provider.ts';
  * from the exact addresses the policy authorized, with an AI disclosure.
  */
 
-/** Sends by any agent to one person in 24 hours before the guard stops them. */
+/**
+ * The default for sends by any agent to one person in 24 hours before the
+ * guard stops an agent. Each agent's owner can change it (0 = no limit).
+ */
 export const MAX_SENDS_PER_RECIPIENT_PER_DAY = 3;
+/** The highest per-person limit an owner can set, short of no limit. */
+export const MAX_RECIPIENT_LIMIT = 1000;
 /** Agent messages on one thread with no human reply before the guard stops them. */
 export const MAX_AGENT_MESSAGES_WITHOUT_HUMAN = 6;
 /** A claim older than this was cut off, so the action can be tried again. */
@@ -71,6 +76,8 @@ type ClaimedAction = {
 	agent_runtime: string;
 	/** 0 when the owner turned off the AI-assistant footer. */
 	agent_ai_footer: number | null;
+	/** This agent's per-person limit for 24 hours; 0 means none. */
+	agent_max_sends_per_recipient: number | null;
 	/** What woke the agent up: 'ask' means the owner asked for this. */
 	trigger_kind: string | null;
 	/** The mail that started the run. */
@@ -140,7 +147,7 @@ export async function executeAction(
 		.prepare(
 			`SELECT x.id, x.workspace_id, x.agent_principal_id, x.status, x.capability, x.thread_id, x.payload_json,
 			        x.authorized_json, x.mailbox_user_id, x.decided_by_principal_id,
-			        p.display_name AS agent_name, a.status AS agent_status, a.runtime AS agent_runtime, a.ai_footer AS agent_ai_footer, r.trigger_kind, r.email_id AS trigger_email_id,
+			        p.display_name AS agent_name, a.status AS agent_status, a.runtime AS agent_runtime, a.ai_footer AS agent_ai_footer, a.max_sends_per_recipient AS agent_max_sends_per_recipient, r.trigger_kind, r.email_id AS trigger_email_id,
 			        CASE WHEN asker.id IS NULL THEN NULL ELSE coalesce(asker.display_name, 'a teammate') END AS asked_by_name
 			 FROM agent_actions x
 			 JOIN principals p ON p.id = x.agent_principal_id
@@ -177,7 +184,7 @@ export async function executeAction(
 				threadId: action.thread_id,
 				authorId: action.agent_principal_id,
 				kind: 'alert',
-				body: guardMessage(action.agent_name, stop.code),
+				body: guardMessage(action.agent_name, stop.code, recipientLimit(action)),
 				actionId: action.id,
 				now
 			});
@@ -187,12 +194,18 @@ export async function executeAction(
 	}
 }
 
-function guardMessage(agent: string, code: string): string {
+/** The agent's per-person limit for 24 hours, or null for none. */
+function recipientLimit(action: ClaimedAction): number | null {
+	const limit = action.agent_max_sends_per_recipient ?? MAX_SENDS_PER_RECIPIENT_PER_DAY;
+	return limit > 0 ? limit : null;
+}
+
+function guardMessage(agent: string, code: string, recipientCap: number | null): string {
 	switch (code) {
 		case 'loop_auto_reply':
 			return `${agent} stopped: the last message looks like an automatic reply, so answering it could start a loop. Reply yourself if it needs one.`;
 		case 'loop_recipient_flood':
-			return `${agent} stopped: agents already wrote to this person ${MAX_SENDS_PER_RECIPIENT_PER_DAY} times in the last day. Check the thread before anything else goes out.`;
+			return `${agent} stopped: agents already wrote to this person ${recipientCap ?? 'several'} times in the last day. Check the thread before anything else goes out, or raise ${agent}'s per-person limit on the Staff page.`;
 		case 'loop_thread_runaway':
 			return `${agent} stopped: agents sent ${MAX_AGENT_MESSAGES_WITHOUT_HUMAN} messages on this thread without anyone from your side replying. Take a look before it continues.`;
 		case 'leaks_instructions':
@@ -785,7 +798,8 @@ async function loopGuard(
 	if (lastInbound && looksLikeAutoReply(lastInbound.subject)) throw new StopError('loop_auto_reply', true);
 
 	const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
-	for (const recipient of recipients) {
+	const cap = recipientLimit(action);
+	for (const recipient of cap === null ? [] : recipients) {
 		const row = await db
 			.prepare(
 				`SELECT COUNT(*) AS n FROM agent_actions
@@ -795,7 +809,7 @@ async function loopGuard(
 			)
 			.bind(action.workspace_id, action.id, dayAgo, dayAgo, recipient)
 			.first<{ n: number }>();
-		if ((row?.n ?? 0) >= MAX_SENDS_PER_RECIPIENT_PER_DAY) throw new StopError('loop_recipient_flood', true);
+		if ((row?.n ?? 0) >= (cap ?? Infinity)) throw new StopError('loop_recipient_flood', true);
 	}
 
 	// Agent messages on this thread since someone on our side last wrote on it themselves.

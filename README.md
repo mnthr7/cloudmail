@@ -339,6 +339,10 @@ either on the Staff page: **End shadow mode**, and **Skip the 20-approval
 wait** (also offered when you hire an agent with an API key). Daily limits,
 recipient scope and the do-not-send list still apply. Under **Edit → Who it may
 email**, recipients can be people on the thread, whole domains, or **Anyone**.
+Agents stop after 3 emails to the same person in 24 hours, counting every
+agent's sends. Change that per agent with **Per person a day** on the Staff
+page (1 to 1000, or **No limit**), or `PATCH /api/agents/:id
+{ "maxSendsPerRecipient": n }` (0 = no limit).
 
 It works through tools: `search_threads`, `get_thread`, `draft_reply`,
 `send_reply`, `send_email`, `organize`, `set_timer`, calendar booking, and

@@ -4,6 +4,7 @@ import { caller, failure, readBody } from '#lib/server/agents-http.ts';
 import {
 	getAgentForUser,
 	setAgentAiFooter,
+	setAgentRecipientLimit,
 	setAgentStatus,
 	setAgentTrustedToSend,
 	updateAgentDefinition
@@ -26,6 +27,8 @@ export const GET: RequestHandler = async ({ params, locals, platform }) => {
  * `{ definition }` saves a new version (A3). `{ trustedToSend }` lets an
  * external agent send on its own without the 20-approval track record.
  * `{ aiFooter }` turns the "is an AI assistant" line on its mail on or off.
+ * `{ maxSendsPerRecipient }` sets how many emails agents may send one person
+ * in 24 hours before this one stops (0 = no limit, up to 1000).
  * One of these per request.
  */
 export const PATCH: RequestHandler = async ({ params, request, locals, platform }) => {
@@ -39,12 +42,19 @@ export const PATCH: RequestHandler = async ({ params, request, locals, platform 
 	const hasDefinition = 'definition' in body;
 	const hasTrust = 'trustedToSend' in body;
 	const hasFooter = 'aiFooter' in body;
-	if ([hasStatus, hasDefinition, hasTrust, hasFooter].filter(Boolean).length !== 1) {
+	const hasLimit = 'maxSendsPerRecipient' in body;
+	if ([hasStatus, hasDefinition, hasTrust, hasFooter, hasLimit].filter(Boolean).length !== 1) {
 		return json({ error: 'Bad request' }, { status: 400 });
 	}
 
 	try {
-		if (hasFooter) {
+		if (hasLimit) {
+			const limit = body.maxSendsPerRecipient;
+			if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 0 || limit > 1000) {
+				return json({ error: 'maxSendsPerRecipient' }, { status: 400 });
+			}
+			await setAgentRecipientLimit(who.db, { agentId: id, byUserId: who.userId, limit });
+		} else if (hasFooter) {
 			if (typeof body.aiFooter !== 'boolean') return json({ error: 'aiFooter' }, { status: 400 });
 			await setAgentAiFooter(who.db, { agentId: id, byUserId: who.userId, on: body.aiFooter });
 		} else if (hasTrust) {

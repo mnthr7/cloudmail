@@ -8,7 +8,9 @@ import { defaultDefinition, type AgentDefinition } from '../src/lib/agents/defin
 import {
 	createAgent,
 	decideAction,
+	getAgent,
 	proposeAction,
+	setAgentRecipientLimit,
 	setAgentStatus,
 	updateAgentDefinition
 } from '../src/lib/server/agents-store';
@@ -370,6 +372,33 @@ describe('loop and runaway protection', () => {
 			results.push((await executeAction(db, actionId, NOW)).status);
 		}
 		expect(results).toEqual([...Array(MAX_SENDS_PER_RECIPIENT_PER_DAY).fill('executed'), 'blocked']);
+	});
+
+	test('the owner can raise the per-person limit, or turn it off', async () => {
+		const { sqlite, db } = open();
+		const agent = await hire(db, autoSender({ send_reply: { level: 'auto', dailyLimit: 50 } }));
+		await setAgentRecipientLimit(db, { agentId: agent.id, byUserId: 'u1', limit: 5 });
+		const results: string[] = [];
+		for (let i = 0; i <= 5; i++) {
+			const email = addMail(sqlite, {});
+			const { actionId } = await proposeReply(db, agent.id, email, email);
+			results.push((await executeAction(db, actionId, NOW)).status);
+		}
+		expect(results).toEqual([...Array(5).fill('executed'), 'blocked']);
+
+		await setAgentRecipientLimit(db, { agentId: agent.id, byUserId: 'u1', limit: 0 });
+		const email = addMail(sqlite, {});
+		const { actionId } = await proposeReply(db, agent.id, email, email);
+		expect((await executeAction(db, actionId, NOW)).status).toBe('executed');
+		expect(await getAgent(db, agent.id)).toMatchObject({ maxSendsPerRecipient: 0 });
+	});
+
+	test('the per-person limit must be a whole number from 0 to 1000', async () => {
+		const { db } = open();
+		const agent = await hire(db);
+		for (const limit of [-1, 1.5, 1001]) {
+			await expect(setAgentRecipientLimit(db, { agentId: agent.id, byUserId: 'u1', limit })).rejects.toThrow('per-person limit');
+		}
 	});
 
 	test('sends being carried out at the same moment count toward the cap', async () => {

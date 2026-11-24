@@ -331,7 +331,7 @@ const TOOLS: ToolDef[] = [
 		name: 'get_thread',
 		capability: 'read_threads',
 		readOnly: true,
-		description: `Every message in a thread, oldest first, with attachments and notes. ${UNTRUSTED_NOTE}`,
+		description: `Every message in a thread, oldest first, with attachments and notes. Messages you or the founder sent carry their delivery status. ${UNTRUSTED_NOTE}`,
 		input: { thread_id: threadId },
 		async run(ctx, args) {
 			const latest = await threadInScope(ctx, args.thread_id);
@@ -346,6 +346,11 @@ const TOOLS: ToolDef[] = [
 					at: message.created_at,
 					subject: untrusted(message.subject, message.from_addr),
 					body: untrusted(message.body_text ?? '', message.from_addr),
+					// What the provider last reported for mail we sent: sent, delivered,
+					// delayed, bounced, complained or failed (null while still queued).
+					...(message.direction === 'outbound'
+						? { delivery: { status: message.status ?? null, detail: message.status_detail ?? null } }
+						: {}),
 					attachments: (await listAttachments(ctx.db, message.id)).map((attachment) => ({
 						attachment_id: attachment.id,
 						filename: attachment.filename,

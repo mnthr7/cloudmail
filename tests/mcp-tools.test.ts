@@ -180,6 +180,16 @@ describe('reading stays inside the read scope, and mail comes back untrusted', (
 		});
 		expect((body.notes as Array<Record<string, unknown>>)[0]).toMatchObject({ untrusted: false, source: 'principal', text: 'Be brief with Pat.' });
 	});
+	test('sent messages carry their delivery status, received ones do not', async () => {
+		const w = await open();
+		const thread = addMail(w.sqlite);
+		const sent = addMail(w.sqlite, { direction: 'outbound', from: 'sada@acme.com', to: 'pat@vc.com', thread });
+		w.sqlite.run(`UPDATE emails SET status = 'bounced', status_detail = 'Mailbox does not exist' WHERE id = ?`, [sent]);
+		const { body } = await call(w, 'get_thread', { thread_id: thread });
+		const [received, reply] = body.messages as Array<Record<string, unknown>>;
+		expect(received.delivery).toBeUndefined();
+		expect(reply.delivery).toEqual({ status: 'bounced', detail: 'Mailbox does not exist' });
+	});
 });
 
 describe('changes go through the policy', () => {

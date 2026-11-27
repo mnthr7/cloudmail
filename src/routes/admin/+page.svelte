@@ -59,6 +59,45 @@
 		}
 	}
 
+	let addingFor = $state<string | null>(null);
+	let addLocalPart = $state('');
+	let addDomainId = $state('');
+	let addError = $state('');
+	let addingAddress = $state(false);
+
+	function openAddAddress(userId: string) {
+		addingFor = addingFor === userId ? null : userId;
+		addLocalPart = '';
+		addError = '';
+		// Domains are oldest-first; a just-connected domain is the likeliest target.
+		addDomainId = data.domains.at(-1)?.id ?? '';
+	}
+
+	async function addAddress(event: SubmitEvent) {
+		event.preventDefault();
+		if (!addingFor) return;
+		addError = '';
+		addingAddress = true;
+
+		try {
+			const res = await fetch(`/api/admin/users/${encodeURIComponent(addingFor)}/addresses`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ localPart: addLocalPart, domainId: addDomainId })
+			});
+			const body = await res.json();
+			if (!res.ok) {
+				addError = body.error ?? 'Could not add that address';
+				return;
+			}
+			window.location.reload();
+		} catch {
+			addError = 'Network error';
+		} finally {
+			addingAddress = false;
+		}
+	}
+
 	async function connect(domainId: string) {
 		connecting = domainId;
 		domainError = '';
@@ -439,19 +478,46 @@
 		<Section id="users" title="Users" count={data.users.length} icon="group-line" remember="admin">
 			<ul class="user-list">
 				{#each data.users as user (user.id)}
-					<li class="user-row">
-						<div class="user-avatar">{(user.name[0] ?? '?').toUpperCase()}</div>
-						<div class="min-w-0 flex-1">
-							<p class="user-name">{user.name}</p>
-							<p class="user-email">
-								{data.addresses
-									.filter((address) => address.user_id === user.id)
-									.map((address) => address.address)
-									.join(', ') || user.email}
-							</p>
+					<li class="user-item">
+						<div class="user-row">
+							<div class="user-avatar">{(user.name[0] ?? '?').toUpperCase()}</div>
+							<div class="min-w-0 flex-1">
+								<p class="user-name">{user.name}</p>
+								<p class="user-email">
+									{data.addresses
+										.filter((address) => address.user_id === user.id)
+										.map((address) => address.address)
+										.join(', ') || user.email}
+								</p>
+							</div>
+							{#if user.is_admin}
+								<span class="admin-badge">Admin</span>
+							{/if}
+							{#if data.domains.length}
+								<button
+									type="button"
+									class="btn-ghost text-xs"
+									aria-expanded={addingFor === user.id}
+									onclick={() => openAddAddress(user.id)}
+								>
+									{addingFor === user.id ? 'Cancel' : 'Add address'}
+								</button>
+							{/if}
 						</div>
-						{#if user.is_admin}
-							<span class="admin-badge">Admin</span>
+						{#if addingFor === user.id}
+							<form class="add-address space-y-3" onsubmit={addAddress}>
+								<AddressField
+									bind:localPart={addLocalPart}
+									bind:domainId={addDomainId}
+									domains={data.domains}
+									placeholder="name"
+									label="New address for {user.name}"
+								/>
+								{#if addError}<p class="error">{addError}</p>{/if}
+								<button type="submit" disabled={addingAddress} class="btn-primary">
+									{addingAddress ? 'Adding…' : 'Add'}
+								</button>
+							</form>
 						{/if}
 					</li>
 				{/each}
@@ -727,8 +793,13 @@
 		padding: 0.75rem 0;
 	}
 
-	.user-row + .user-row {
+	.user-row + .user-row,
+	.user-item + .user-item {
 		box-shadow: inset 0 1px 0 var(--color-line);
+	}
+
+	.add-address {
+		padding: 0 0 1rem 3rem;
 	}
 
 	.user-avatar {

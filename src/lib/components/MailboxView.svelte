@@ -262,6 +262,12 @@
 	}
 
 	function openThread(thread: ThreadSummary) {
+		// A draft on its own has nothing for the reader to show; edit it instead.
+		// A reply draft stays in the reader, which restores it into the reply box.
+		if (thread.is_draft && thread.message_count === 1) {
+			void goto(href(thread));
+			return;
+		}
 		items = applyThreadReadState(items, thread.latest_id, true);
 		onThreadSelect?.(thread.latest_id);
 	}

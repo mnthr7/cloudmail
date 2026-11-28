@@ -309,6 +309,11 @@
 			if (res.ok) {
 				const body = await res.json();
 				if (threadId !== requestThreadId) return;
+				// A lone draft has no sent messages to read; open it in the composer.
+				if (view === 'drafts' && (body.messages?.length ?? 0) === 0) {
+					void goto(`/compose?draft=${encodeURIComponent(requestThreadId)}`, { replaceState: true });
+					return;
+				}
 				threadData = body;
 				if (opening) {
 					restoredThreadId = requestThreadId;
